@@ -33,7 +33,6 @@ from processors.common.submitted import (
     KEPT_COLUMN_INDEXES,
     REQUIRED_SUBMITTED_HEADERS,
     STATUS_ORDER,
-    STATUS_PRIORITY,
 )
 from processors.large_appliances import _shared as large_appliances_shared
 

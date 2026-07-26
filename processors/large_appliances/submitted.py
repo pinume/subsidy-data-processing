@@ -9,7 +9,6 @@ from processors.common.submitted import (
     KEPT_COLUMN_INDEXES,
     REQUIRED_SUBMITTED_HEADERS,
     STATUS_ORDER,
-    STATUS_PRIORITY,
 )
 
 from . import _shared

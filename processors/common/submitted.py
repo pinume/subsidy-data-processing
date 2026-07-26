@@ -41,7 +41,6 @@ STATUS_ORDER = (
     "待审核",
     "审核通过",
 )
-STATUS_PRIORITY = {status: index for index, status in enumerate(STATUS_ORDER)}
 
 
 @dataclass(frozen=True)
@@ -52,6 +51,15 @@ class SubmittedConfig:
     projects currently share; they are still per-config, not hardcoded into
     build_workbook/validate_output, so a project whose export layout diverges
     later doesn't have to fork the whole pipeline to change them.
+
+    This only covers *which* source columns are kept and *what order* the
+    output sheets/statuses appear in — the roles those columns play once
+    selected are still fixed: the 3rd kept column is always 交易金额 (read
+    positionally in add_subsidy_column), 补贴金额 is always inserted as the
+    4th output column, and 状态/描述/交易金额/补贴金额 are looked up by those
+    exact header names in build_workbook/validate_output. Supporting a source
+    layout where those roles move would mean passing header names for each
+    role instead of relying on fixed positions/names.
     """
 
     input_files: tuple[Path, ...]

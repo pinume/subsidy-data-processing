@@ -19,7 +19,6 @@ from .submitted import (
     SUBSIDY_RATE,
     SUBSIDY_CAP,
     STATUS_ORDER,
-    STATUS_PRIORITY,
     select_columns,
     add_subsidy_column,
     build_workbook,
