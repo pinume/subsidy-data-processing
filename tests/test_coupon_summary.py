@@ -141,7 +141,7 @@ class CouponSummaryTest(unittest.TestCase):
             ),
         ]
 
-        summary, approved, zero_subsidy_count = (
+        summary, zero_subsidy_count = (
             large_appliances.build_coupon_summary(
                 rows,
                 excluded_bottom_rows=1,
@@ -157,16 +157,11 @@ class CouponSummaryTest(unittest.TestCase):
                 ("空调", "格力", "未上传", 1, 0.0),
                 # 已上传 is measured from the 已上传 workbook, 合计 from this
                 # coupon file's own 国补 column, and 未上传 is the difference.
-                ("已上传", None, None, 1, 20.20),
-                ("未上传", None, None, 1, 10.11),
-                ("合计", None, None, 2, 30.31),
-            ],
-        )
-        self.assertEqual(
-            approved,
-            [
-                ("冰箱", "海尔", 1, 10.11),
-                ("合计", None, 1, 10.11),
+                # 财务大类=家电 with no 品牌 so the block matches the 数码 one
+                # appended after it in 审核明细.
+                ("家电", None, "已上传", 1, 20.20),
+                ("家电", None, "未上传", 1, 10.11),
+                ("家电", None, "合计", 2, 30.31),
             ],
         )
         self.assertEqual(zero_subsidy_count, 0)
@@ -205,7 +200,7 @@ class CouponSummaryTest(unittest.TestCase):
             ),
         ]
 
-        summary, _, zero_subsidy_count = (
+        summary, zero_subsidy_count = (
             large_appliances.build_coupon_summary(
                 rows,
                 excluded_bottom_rows=0,
@@ -215,7 +210,7 @@ class CouponSummaryTest(unittest.TestCase):
         )
 
         self.assertEqual(zero_subsidy_count, 1)
-        self.assertEqual(summary[-1], ("合计", None, None, 0, 0.0))
+        self.assertEqual(summary[-1], ("家电", None, "合计", 0, 0.0))
 
     def test_invalid_subsidy_is_rejected(self) -> None:
         for processor in (digital, large_appliances):
@@ -268,7 +263,7 @@ class SummarySheetLayoutTest(unittest.TestCase):
                 subsidy="10.11",
             ),
         ]
-        summary, approved, zero = large_appliances.build_coupon_summary(
+        summary, zero = large_appliances.build_coupon_summary(
             rows,
             excluded_bottom_rows=0,
             uploaded_subsidy_count=1,
@@ -300,7 +295,6 @@ class SummarySheetLayoutTest(unittest.TestCase):
             source_total=None,
             computed_total=Decimal("10.11"),
             summary_rows=summary,
-            approved_rows=approved,
             group_sheets=[],
         )
         fields.update(overrides)
@@ -313,9 +307,13 @@ class SummarySheetLayoutTest(unittest.TestCase):
         large_appliances.build_summary_and_details_sheets(workbook, computation)
         return workbook, computation
 
-    def test_summary_sheet_keeps_approved_panel_and_drops_remark_panel(
-        self,
-    ) -> None:
+    def test_summary_sheet_drops_the_side_panels(self) -> None:
+        """数据汇总 is the 财务大类/品牌/备注 table and nothing else.
+
+        The 备注汇总 and 审核通过明细 panels that once sat beside it were
+        removed; both left dangling row-number references behind when they
+        went, which nothing caught until the real workbook was built.
+        """
         workbook, _ = self.build_sheet()
         try:
             sheet = workbook[large_appliances.SUMMARY_SHEET_NAME]
@@ -325,23 +323,92 @@ class SummarySheetLayoutTest(unittest.TestCase):
                 for cell in row
                 if cell.value is not None
             }
-            self.assertIn(large_appliances.COUPON_APPROVED_SUMMARY_TITLE, values)
+            self.assertNotIn("审核通过明细", values)
             self.assertNotIn("备注汇总", values)
+            self.assertEqual(
+                sheet.max_column,
+                len(large_appliances.COUPON_SUMMARY_HEADER),
+            )
         finally:
             workbook.close()
 
     def test_summary_sheet_ends_with_the_three_tail_rows(self) -> None:
+        """已上传/未上传/合计 sit in 备注, under a single merged 家电 cell.
+
+        The status used to live in 财务大类, which read as three more
+        categories alongside 冰箱/空调 and did not line up with the 数码
+        block appended below it in 审核明细.
+        """
         workbook, computation = self.build_sheet()
         try:
             sheet = workbook[large_appliances.SUMMARY_SHEET_NAME]
             tail_start = 1 + len(computation.summary_rows) - 3
+            remark_column = large_appliances.COUPON_SUMMARY_HEADER.index(
+                "备注"
+            ) + 1
             labels = [
-                sheet.cell(tail_start + offset + 1, 1).value
+                sheet.cell(tail_start + offset + 1, remark_column).value
                 for offset in range(3)
             ]
             self.assertEqual(labels, ["已上传", "未上传", "合计"])
+            categories = [
+                sheet.cell(tail_start + offset + 1, 1).value
+                for offset in range(3)
+            ]
+            # Merged vertically, so only the first row keeps the label.
+            self.assertEqual(
+                categories,
+                [large_appliances.COUPON_SUMMARY_PROJECT_LABEL, None, None],
+            )
         finally:
             workbook.close()
+
+    def test_project_block_spans_both_label_columns(self) -> None:
+        """财务大类 and 品牌 become one cell over each project's block.
+
+        The block is not a brand breakdown, so an empty 品牌 cell beside the
+        家电 label read as a missing value rather than an inapplicable one.
+        """
+        workbook, computation = self.build_sheet()
+        try:
+            sheet = workbook[large_appliances.SUMMARY_SHEET_NAME]
+            tail_start = 1 + len(computation.summary_rows) - 3
+            merges = {str(r) for r in sheet.merged_cells.ranges}
+            self.assertIn(
+                f"A{tail_start + 1}:B{tail_start + 3}",
+                merges,
+            )
+        finally:
+            workbook.close()
+
+
+class ProjectSummaryBlocksTest(unittest.TestCase):
+    """The blocks are found by 品牌 being absent, not by counting three rows
+    from the bottom, so any number of projects can be appended."""
+
+    def test_blocks_are_the_brandless_runs_split_per_project(self) -> None:
+        rows = [
+            ("冰箱", "海尔", "已上传", 1, 1.0),
+            ("空调", "格力", "未上传", 1, 2.0),
+            ("家电", None, "已上传", 1, 1.0),
+            ("家电", None, "未上传", 1, 2.0),
+            ("家电", None, "合计", 2, 3.0),
+            ("数码", None, "已上传", 1, 4.0),
+            ("数码", None, "合计", 1, 4.0),
+        ]
+
+        self.assertEqual(
+            large_appliances.project_summary_blocks(rows),
+            [(2, 4), (5, 6)],
+        )
+
+    def test_brand_only_rows_produce_no_blocks(self) -> None:
+        rows = [
+            ("冰箱", "海尔", "已上传", 1, 1.0),
+            ("空调", "格力", "未上传", 1, 2.0),
+        ]
+
+        self.assertEqual(large_appliances.project_summary_blocks(rows), [])
 
 
 class SourceTotalGapTest(unittest.TestCase):

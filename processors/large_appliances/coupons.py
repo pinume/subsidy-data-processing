@@ -12,7 +12,6 @@ from openpyxl.styles import Alignment, Border, PatternFill, Side
 
 from processors.common.config import load_brand_mapping
 from processors.common.excel import (
-    create_sheet_styles,
     format_sheet,
     load_measurement_font,
     load_uploaded_subsidy_stats,
@@ -94,13 +93,8 @@ COUPON_SUMMARY_HEADER = (
     "数量",
     f"{COUPON_SUBSIDY_HEADER}合计",
 )
-COUPON_APPROVED_SUMMARY_TITLE = "审核通过明细"
-COUPON_APPROVED_SUMMARY_HEADER = (
-    "财务大类",
-    "品牌",
-    "数量",
-    f"{COUPON_SUBSIDY_HEADER}合计",
-)
+# 财务大类 for this project's 已上传/未上传/合计 block at the foot of 数据汇总.
+COUPON_SUMMARY_PROJECT_LABEL = "家电"
 COUPON_REMARK_SORT_PRIORITY = {
     "未上传": 0,
     "已上传": 1,
@@ -736,8 +730,8 @@ def build_coupon_summary(
     excluded_bottom_rows: int,
     uploaded_subsidy_count: int,
     uploaded_subsidy_total: Decimal,
-) -> tuple[list[tuple[object, ...]], list[tuple[object, ...]], int]:
-    """Build the 数据汇总 table and the 审核通过明细 panel beside it.
+) -> tuple[list[tuple[object, ...]], int]:
+    """Build the 数据汇总 table.
 
     The table lists 财务大类 / 品牌 / 备注 groups, then closes with 已上传 /
     未上传 / 合计: 已上传 comes from the generated 已上传 workbook's 补贴金额,
@@ -755,8 +749,6 @@ def build_coupon_summary(
     included_rows = coupon_data_rows(rows, excluded_bottom_rows)
     grouped_counts: Counter[tuple[str, str, str]] = Counter()
     grouped_totals: dict[tuple[str, str, str], Decimal] = {}
-    approved_counts: Counter[tuple[str, str]] = Counter()
-    approved_totals: dict[tuple[str, str], Decimal] = {}
     coupon_count = 0
     coupon_total = Decimal("0")
     zero_subsidy_count = 0
@@ -766,14 +758,9 @@ def build_coupon_summary(
             continue
         brand = str(row[brand_index] or "").strip()
         remark = str(row[remark_index] or "").strip()
-        detail = str(row[detail_index] or "").strip()
         key = (category, brand, remark)
         grouped_counts[key] += 1
         grouped_totals.setdefault(key, Decimal("0"))
-        approved_key = (category, brand)
-        if "审核通过" in detail:
-            approved_counts[approved_key] += 1
-            approved_totals.setdefault(approved_key, Decimal("0"))
         subsidy = row[subsidy_index]
         if subsidy not in (None, ""):
             try:
@@ -787,8 +774,6 @@ def build_coupon_summary(
             coupon_count += coupon_subsidy_count(amount)
             if amount == 0:
                 zero_subsidy_count += 1
-            if "审核通过" in detail:
-                approved_totals[approved_key] += amount
 
     summary_rows = [
         (
@@ -798,52 +783,35 @@ def build_coupon_summary(
         )
         for key in sorted(grouped_counts)
     ]
+    # Labelled 财务大类=家电 with the status in 备注, so this block reads the
+    # same way as the 数码 block appended after it in the merged 审核明细
+    # workbook (see processors/coupon_report.py).
     summary_rows.extend(
         (
             (
+                COUPON_SUMMARY_PROJECT_LABEL,
+                None,
                 "已上传",
-                None,
-                None,
                 uploaded_subsidy_count,
                 float(as_currency(uploaded_subsidy_total)),
             ),
             (
+                COUPON_SUMMARY_PROJECT_LABEL,
+                None,
                 "未上传",
-                None,
-                None,
                 coupon_count - uploaded_subsidy_count,
                 float(as_currency(coupon_total - uploaded_subsidy_total)),
             ),
             (
+                COUPON_SUMMARY_PROJECT_LABEL,
+                None,
                 "合计",
-                None,
-                None,
                 coupon_count,
                 float(as_currency(coupon_total)),
             ),
         )
     )
-    approved_rows = [
-        (
-            *key,
-            approved_counts[key],
-            float(approved_totals[key].quantize(Decimal("0.01"))),
-        )
-        for key in sorted(approved_counts)
-    ]
-    approved_rows.append(
-        (
-            "合计",
-            None,
-            sum(approved_counts.values()),
-            float(
-                sum(approved_totals.values(), Decimal("0")).quantize(
-                    Decimal("0.01")
-                )
-            ),
-        )
-    )
-    return summary_rows, approved_rows, zero_subsidy_count
+    return summary_rows, zero_subsidy_count
 
 
 def coupon_group_sheet_title(
@@ -948,6 +916,50 @@ def merge_coupon_summary_groups(
             group_start = group_end + 1
 
 
+def project_summary_blocks(
+    rows: list[tuple[object, ...]],
+) -> list[tuple[int, int]]:
+    """Locate the trailing per-project 已上传/未上传/合计 blocks.
+
+    They are the rows carrying a 财务大类 but no 品牌 (家电 first, then any
+    project appended by processors/coupon_report.py). Returned as inclusive
+    0-based (start, end) spans so the caller can merge 财务大类 and 品牌 into
+    one cell across each block — the split is meaningless there, and leaving
+    an empty 品牌 column beside the label reads as a missing value.
+    """
+    blocks: list[tuple[int, int]] = []
+    start: int | None = None
+    for index, row in enumerate(rows):
+        if row[1] is None:
+            if start is None:
+                start = index
+            elif rows[start][0] != row[0]:
+                blocks.append((start, index - 1))
+                start = index
+        elif start is not None:
+            blocks.append((start, index - 1))
+            start = None
+    if start is not None:
+        blocks.append((start, len(rows) - 1))
+    return blocks
+
+
+def merge_coupon_summary_projects(
+    sheet,
+    blocks: list[tuple[int, int]],
+    header_rows: int = 1,
+) -> None:
+    centered = Alignment(horizontal="center", vertical="center")
+    for start, end in blocks:
+        sheet.merge_cells(
+            start_row=start + 1 + header_rows,
+            start_column=1,
+            end_row=end + 1 + header_rows,
+            end_column=2,
+        )
+        sheet.cell(start + 1 + header_rows, 1).alignment = centered
+
+
 def merged_coupon_summary_values(
     rows: list[tuple[object, ...]],
 ) -> list[tuple[object, ...]]:
@@ -1026,7 +1038,6 @@ class CouponComputation:
     source_total: Decimal | None
     computed_total: Decimal
     summary_rows: list[tuple[object, ...]]
-    approved_rows: list[tuple[object, ...]]
     group_sheets: list[tuple[str, str, str, list[tuple[list[object], bool]]]]
 
 
@@ -1105,7 +1116,7 @@ def compute_coupon_data() -> CouponComputation:
     uploaded_subsidy_count, uploaded_subsidy_total = (
         load_uploaded_subsidy_stats(COUPON_UPLOADED_SOURCE_FILE)
     )
-    summary_rows, approved_rows, zero_subsidy_count = build_coupon_summary(
+    summary_rows, zero_subsidy_count = build_coupon_summary(
         rows,
         matched_count,
         uploaded_subsidy_count,
@@ -1143,7 +1154,6 @@ def compute_coupon_data() -> CouponComputation:
         source_total=source_total,
         computed_total=computed_total,
         summary_rows=summary_rows,
-        approved_rows=approved_rows,
         group_sheets=group_sheets,
     )
 
@@ -1160,7 +1170,6 @@ def build_summary_and_details_sheets(
     rows = computation.rows
     matched_count = computation.matched_count
     combined_summary_rows = [*computation.summary_rows, *extra_summary_rows]
-    approved_rows = computation.approved_rows
 
     sheet = workbook.create_sheet(DETAILS_SHEET_NAME)
     for row in rows:
@@ -1192,67 +1201,16 @@ def build_summary_and_details_sheets(
     summary_sheet.append(COUPON_SUMMARY_HEADER)
     for summary_row in combined_summary_rows:
         summary_sheet.append(summary_row)
-    approved_title_row = 1
-    approved_start_column = 7
-    summary_sheet.cell(
-        approved_title_row,
-        approved_start_column,
-        COUPON_APPROVED_SUMMARY_TITLE,
-    )
-    approved_header_row = approved_title_row + 1
-    for column, value in enumerate(
-        COUPON_APPROVED_SUMMARY_HEADER,
-        start=approved_start_column,
-    ):
-        summary_sheet.cell(approved_header_row, column, value)
-    approved_data_start_row = approved_header_row + 1
-    for row_number, approved_row in enumerate(
-        approved_rows,
-        start=approved_data_start_row,
-    ):
-        for column, value in enumerate(
-            approved_row,
-            start=approved_start_column,
-        ):
-            summary_sheet.cell(row_number, column, value)
     format_sheet(summary_sheet, font_name, measurement_font)
-    normal_font, header_font, header_fill, centered = create_sheet_styles(
-        font_name
+    # The per-project blocks get one 财务大类+品牌 cell each, so the row-wise
+    # 财务大类/品牌 merging has to stop before them or the two would overlap.
+    project_blocks = project_summary_blocks(combined_summary_rows)
+    brand_rows_end = (
+        project_blocks[0][0] if project_blocks else len(combined_summary_rows)
     )
-    summary_sheet.merge_cells(
-        start_row=approved_title_row,
-        start_column=approved_start_column,
-        end_row=approved_title_row,
-        end_column=approved_start_column + 3,
-    )
-    title_cell = summary_sheet.cell(
-        approved_title_row,
-        approved_start_column,
-    )
-    title_cell.font = header_font
-    title_cell.fill = header_fill
-    title_cell.alignment = centered
-    for cell in summary_sheet.iter_cols(
-        min_col=approved_start_column,
-        max_col=approved_start_column + 3,
-        min_row=approved_header_row,
-        max_row=approved_header_row,
-    ):
-        cell = cell[0]
-        cell.font = header_font
-        cell.fill = header_fill
-        cell.alignment = centered
-    merge_coupon_summary_groups(
-        summary_sheet,
-        2,
-        len(combined_summary_rows) + 1,
-    )
-    merge_coupon_summary_groups(
-        summary_sheet,
-        approved_data_start_row,
-        approved_data_start_row + len(approved_rows) - 1,
-        approved_start_column,
-    )
+    if brand_rows_end:
+        merge_coupon_summary_groups(summary_sheet, 2, brand_rows_end + 1)
+    merge_coupon_summary_projects(summary_sheet, project_blocks)
     apply_coupon_summary_borders(
         summary_sheet,
         min_row=1,
@@ -1260,24 +1218,8 @@ def build_summary_and_details_sheets(
         min_column=1,
         max_column=5,
     )
-    apply_coupon_summary_borders(
-        summary_sheet,
-        min_row=approved_title_row,
-        max_row=approved_data_start_row + len(approved_rows) - 1,
-        min_column=approved_start_column,
-        max_column=approved_start_column + 3,
-    )
     for cell in summary_sheet["E"][1:len(combined_summary_rows) + 1]:
         cell.number_format = "0.00"
-    approved_amount_column = approved_start_column + 3
-    for row_number in range(
-        approved_data_start_row,
-        approved_data_start_row + len(approved_rows),
-    ):
-        summary_sheet.cell(
-            row_number,
-            approved_amount_column,
-        ).number_format = "0.00"
 
     return font_name, measurement_font, matched_fill
 
@@ -1333,7 +1275,6 @@ def validate_summary_and_details_sheets(
     expected_unmatched_rows = computation.unmatched_count
     expected_excluded_category_rows = computation.excluded_category_row_count
     expected_summary_rows = computation.summary_rows
-    expected_approved_rows = computation.approved_rows
     combined_summary_rows = [*expected_summary_rows, *extra_summary_rows]
 
     sheet = workbook[DETAILS_SHEET_NAME]
@@ -1583,11 +1524,24 @@ def validate_summary_and_details_sheets(
         combined_summary_rows
     ):
         raise RuntimeError("销售用券财务大类、品牌和备注汇总校验失败")
-    # The 家电 portion ends in 已上传 / 未上传 / 合计; anything appended after
-    # it (digital's rows) is covered by the row-for-row equality check above.
+    actual_merges = {
+        str(cell_range) for cell_range in summary_sheet.merged_cells.ranges
+    }
+    for start, end in project_summary_blocks(combined_summary_rows):
+        expected_merge = f"A{start + 2}:B{end + 2}"
+        if expected_merge not in actual_merges:
+            raise RuntimeError(
+                "销售用券汇总项目合计块未跨财务大类与品牌两列合并："
+                f"缺少 {expected_merge}"
+            )
+    # The 家电 portion ends in 已上传 / 未上传 / 合计 (in 备注, with 财务大类
+    # merged into a single 家电 cell); anything appended after it (digital's
+    # rows) is covered by the row-for-row equality check above.
+    remark_column = COUPON_SUMMARY_HEADER.index("备注")
     tail_start = len(expected_summary_rows) - 3
     if tail_start < 0 or [
-        row[0] for row in actual_summary_rows[tail_start:tail_start + 3]
+        row[remark_column]
+        for row in actual_summary_rows[tail_start:tail_start + 3]
     ] != ["已上传", "未上传", "合计"]:
         raise RuntimeError("销售用券汇总缺少已上传/未上传/合计三行")
     brand_summary_rows = actual_summary_rows[:tail_start]
@@ -1640,109 +1594,25 @@ def validate_summary_and_details_sheets(
             f"预期 {expected_count} / {as_currency(expected_total)}，"
             f"实际 {total_row[3]} / {total_row[4]}"
         )
-    approved_title_row = 1
-    approved_start_column = 7
-    if summary_sheet.cell(
-        approved_title_row,
-        approved_start_column,
-    ).value != (
-        COUPON_APPROVED_SUMMARY_TITLE
+    for row in summary_sheet.iter_rows(
+        min_row=1,
+        max_row=len(combined_summary_rows) + 1,
+        min_col=1,
+        max_col=5,
     ):
-        raise RuntimeError("销售用券汇总缺少“审核通过明细”表头")
-    expected_title_range = (
-        f"G{approved_title_row}:J"
-        f"{approved_title_row}"
-    )
-    if expected_title_range not in {
-        str(cell_range) for cell_range in summary_sheet.merged_cells.ranges
-    }:
-        raise RuntimeError("销售用券审核通过明细标题未跨表格全宽合并")
-    title_alignment = summary_sheet.cell(
-        approved_title_row,
-        approved_start_column,
-    ).alignment
-    if (
-        title_alignment.horizontal != "center"
-        or title_alignment.vertical != "center"
-    ):
-        raise RuntimeError("销售用券审核通过明细标题未全局居中")
-    approved_header = tuple(
-        summary_sheet.cell(
-            approved_title_row + 1,
-            approved_start_column + column,
-        ).value
-        for column in range(4)
-    )
-    if approved_header != COUPON_APPROVED_SUMMARY_HEADER:
-        raise RuntimeError("销售用券审核通过明细字段标题校验失败")
-    actual_approved_rows = [
-        tuple(
-            summary_sheet.cell(
-                row_number,
-                approved_start_column + column,
-            ).value
-            for column in range(4)
-        )
-        for row_number in range(
-            approved_title_row + 2,
-            approved_title_row + 2 + len(expected_approved_rows),
-        )
-    ]
-    if actual_approved_rows != merged_coupon_summary_values(
-        expected_approved_rows
-    ):
-        expected_merged_approved_rows = merged_coupon_summary_values(
-            expected_approved_rows
-        )
-        first_difference = next(
-            (
-                (index, actual, expected)
-                for index, (actual, expected) in enumerate(
-                    zip(
-                        actual_approved_rows,
-                        expected_merged_approved_rows,
-                    ),
-                    start=1,
+        for cell in row:
+            if isinstance(cell, MergedCell):
+                continue
+            if any(
+                side.style != "thin"
+                for side in (
+                    cell.border.left,
+                    cell.border.right,
+                    cell.border.top,
+                    cell.border.bottom,
                 )
-                if actual != expected
-            ),
-            None,
-        )
-        raise RuntimeError(
-            "销售用券审核通过明细汇总校验失败："
-            f"{first_difference}"
-        )
-    if not actual_approved_rows or actual_approved_rows[-1][0] != "合计":
-        raise RuntimeError("销售用券审核通过明细缺少底部合计行")
-    bordered_ranges = (
-        (1, len(combined_summary_rows) + 1, 1, 5),
-        (
-            approved_title_row,
-            approved_title_row + len(expected_approved_rows) + 1,
-            7,
-            10,
-        ),
-    )
-    for min_row, max_row, min_column, max_column in bordered_ranges:
-        for row in summary_sheet.iter_rows(
-            min_row=min_row,
-            max_row=max_row,
-            min_col=min_column,
-            max_col=max_column,
-        ):
-            for cell in row:
-                if isinstance(cell, MergedCell):
-                    continue
-                if any(
-                    side.style != "thin"
-                    for side in (
-                        cell.border.left,
-                        cell.border.right,
-                        cell.border.top,
-                        cell.border.bottom,
-                    )
-                ):
-                    raise RuntimeError("销售用券汇总表格边框校验失败")
+            ):
+                raise RuntimeError("销售用券汇总表格边框校验失败")
 
 
 def validate_group_sheets(

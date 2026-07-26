@@ -40,6 +40,8 @@ REFERENCE_REPORT_HEADER = (
 # need a human to confirm. Conflicts next, then the leftovers.
 REFERENCE_REPORT_ORDER = large_appliances_coupons.REFERENCE_REPORT_ORDER
 REPORT_PROJECT_ORDER = ("家电", "数码")
+# 财务大类 for digital's 已上传/未上传/合计 block at the foot of 数据汇总.
+DIGITAL_SUMMARY_PROJECT_LABEL = "数码"
 
 
 def merged_reference_decisions(
@@ -116,9 +118,10 @@ def digital_extra_summary_rows(
 ) -> list[tuple[object, ...]]:
     """Recast digital's 3-column summary rows (备注, 数量, 合计) as rows in
     家电's 5-column 数据汇总 table, labeling every row (including digital's
-    own "合计" row) with 财务大类=品牌="数码"."""
+    own "合计" row) with 财务大类="数码" and no 品牌, so the block mirrors the
+    家电 one that precedes it (see COUPON_SUMMARY_PROJECT_LABEL)."""
     return [
-        ("数码", "数码", remark, count, total)
+        (DIGITAL_SUMMARY_PROJECT_LABEL, None, remark, count, total)
         for remark, count, total in digital_computation.summary_rows
     ]
 
