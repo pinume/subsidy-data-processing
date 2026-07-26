@@ -17,7 +17,6 @@ from processors.common.excel import (
     load_measurement_font,
     load_uploaded_subsidy_stats,
     resolve_font,
-    save_workbook_atomically,
 )
 from processors.common.dates import (
     normalize_coupon_date,
@@ -35,7 +34,6 @@ from processors.common.submitted import (
     REQUIRED_SUBMITTED_HEADERS,
     STATUS_ORDER,
     STATUS_PRIORITY,
-    select_columns,
 )
 from processors.large_appliances import _shared as large_appliances_shared
 
@@ -123,6 +121,21 @@ def as_currency(amount: Decimal) -> Decimal:
     return amount.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
 
 
+def select_columns(row: list[object]) -> list[object]:
+    return common_submitted.select_columns(row, KEPT_COLUMN_INDEXES)
+
+
+def _config() -> common_submitted.SubmittedConfig:
+    return common_submitted.SubmittedConfig(
+        input_files=SUBMITTED_FILES,
+        data_dir=DATA_DIR,
+        source_marker=SUBMITTED_FILE_MARKER,
+        output_file=OUTPUT_FILE,
+        subsidy_rate=SUBSIDY_RATE,
+        subsidy_cap=SUBSIDY_CAP,
+    )
+
+
 def add_subsidy_column(
     row: list[object],
     *,
@@ -141,34 +154,15 @@ def add_subsidy_column(
 
 
 def build_workbook() -> tuple[Workbook, int, int]:
-    return common_submitted.build_workbook(
-        list(SUBMITTED_FILES),
-        data_dir=DATA_DIR,
-        file_marker=SUBMITTED_FILE_MARKER,
-        subsidy_rate=SUBSIDY_RATE,
-        subsidy_cap=SUBSIDY_CAP,
-    )
+    return common_submitted.build_workbook(_config())
 
 
 def validate_output(path: Path, expected_data_rows: int) -> None:
-    common_submitted.validate_output(
-        path,
-        expected_data_rows,
-        subsidy_rate=SUBSIDY_RATE,
-        subsidy_cap=SUBSIDY_CAP,
-    )
+    common_submitted.validate_output(path, expected_data_rows, _config())
 
 
 def process_submitted_files() -> None:
-    workbook, file_count, data_row_count = build_workbook()
-    save_workbook_atomically(
-        workbook,
-        OUTPUT_FILE,
-        lambda path: validate_output(path, data_row_count),
-    )
-
-    print(f"Submitted data complete: merged {file_count} files, {data_row_count} rows")
-    print(f"Output file: {OUTPUT_FILE}")
+    common_submitted.process_submitted_files(_config())
 
 
 def read_coupon_rows(source: Path) -> list[list[object]]:
