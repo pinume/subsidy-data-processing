@@ -1,18 +1,26 @@
 import unittest
+from datetime import date
 
 from processors import digital, large_appliances
 
 
 PROCESSORS = (digital, large_appliances)
+DOCUMENT_DATE = date(2026, 7, 6)
 
 
 def coupon_rows(processor: object, *references: str) -> list[list[object]]:
+    """Build detail rows carrying the 单据号/单据日期 the report identifies
+    decisions by, one document number per row so they stay distinguishable."""
     header = processor.COUPON_OUTPUT_HEADER
     summary_index = header.index("明细摘要")
+    document_index = header.index("单据号")
+    date_index = header.index("单据日期")
     rows = [list(header)]
-    for reference in references:
+    for offset, reference in enumerate(references):
         row: list[object] = [None] * len(header)
         row[summary_index] = reference
+        row[document_index] = f"100{offset}"
+        row[date_index] = DOCUMENT_DATE
         rows.append(row)
     return rows
 
@@ -83,9 +91,18 @@ class CouponReferenceCorrectionTest(unittest.TestCase):
                 self.assertEqual(rows[1][summary_index], target)
                 # Every applied correction must be auditable in the report.
                 self.assertEqual(len(decisions), 1)
-                result_kind, row_number, original, explanation = decisions[0]
+                (
+                    result_kind,
+                    document_number,
+                    document_date,
+                    original,
+                    explanation,
+                ) = decisions[0]
                 self.assertEqual(result_kind, processor.REFERENCE_REPORT_CORRECTED)
-                self.assertEqual(row_number, "2")
+                # Identified by document, not row position: the detail rows get
+                # re-sorted after this runs, so a row number would go stale.
+                self.assertEqual(document_number, "1000")
+                self.assertEqual(document_date, DOCUMENT_DATE)
                 self.assertEqual(original, "12345 678901 A")
                 self.assertIn(target, explanation)
 
@@ -112,8 +129,15 @@ class CouponReferenceCorrectionTest(unittest.TestCase):
                     [processor.REFERENCE_REPORT_COLLISION] * 2,
                 )
 
-    def test_unresolvable_reference_is_reported_and_left_alone(self) -> None:
-        """A reference with no match in submitted data must still be visible."""
+    def test_well_formed_reference_with_no_candidate_is_left_out_of_report(
+        self,
+    ) -> None:
+        """A well-formed reference that simply was never submitted is noise.
+
+        The detail row already carries a 未上传 remark, so reporting it again
+        only buries the corrections an operator actually has to review — on
+        real data this was 815 of 898 report lines.
+        """
         for processor in PROCESSORS:
             with self.subTest(processor=processor.__name__):
                 rows = coupon_rows(processor, "99999999999Z")
@@ -125,12 +149,35 @@ class CouponReferenceCorrectionTest(unittest.TestCase):
                 summary_index = processor.COUPON_OUTPUT_HEADER.index("明细摘要")
                 self.assertEqual((corrected, unresolved, collisions), (0, 1, 0))
                 self.assertEqual(rows[1][summary_index], "99999999999Z")
-                self.assertEqual(len(decisions), 1)
-                self.assertEqual(
-                    decisions[0][0],
-                    processor.REFERENCE_REPORT_UNRESOLVED,
-                )
-                self.assertEqual(decisions[0][2], "99999999999Z")
+                self.assertEqual(decisions, [])
+
+    def test_malformed_reference_is_reported(self) -> None:
+        """Junk in the reference column is a data-entry problem worth fixing.
+
+        Real exports contained placeholder text such as 预售 here.
+        """
+        for processor in PROCESSORS:
+            for raw_reference in ("预售", "1234567890", "99999999999"):
+                with self.subTest(
+                    processor=processor.__name__,
+                    raw_reference=raw_reference,
+                ):
+                    rows = coupon_rows(processor, raw_reference)
+
+                    corrected, unresolved, collisions, decisions = (
+                        correct_references(processor, rows, {"12345678901A"})
+                    )
+
+                    self.assertEqual(
+                        (corrected, unresolved, collisions),
+                        (0, 1, 0),
+                    )
+                    self.assertEqual(len(decisions), 1)
+                    self.assertEqual(
+                        decisions[0][0],
+                        processor.REFERENCE_REPORT_UNRESOLVED,
+                    )
+                    self.assertEqual(decisions[0][3], raw_reference)
 
 
 if __name__ == "__main__":

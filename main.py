@@ -1,22 +1,67 @@
 import os
 import sys
 import traceback
-from types import ModuleType
+from collections.abc import Callable
+from pathlib import Path
 
 from processors import digital, large_appliances
 from processors.common.paths import resolve_data_dir
 
 
-PROJECTS: tuple[tuple[str, ModuleType], ...] = (
-    ("large appliances", large_appliances),
-    ("digital", digital),
-)
+def process_submitted_files() -> None:
+    """Process both projects' submitted data together.
+
+    Each project reads a different set of source files (told apart by
+    filename marker) and writes its own output, but an operator has no
+    reason to run one without the other, so a single menu entry covers both.
+    """
+    large_appliances.process_submitted_files()
+    digital.process_submitted_files()
 
 
-def choose_project() -> ModuleType | None:
-    print("Select a data type:")
-    for index, (project_name, _) in enumerate(PROJECTS, start=1):
-        print(f"  {index}. {project_name}")
+def build_processors() -> tuple[tuple[str, Path, Callable[[], None]], ...]:
+    """List every processing mode across both projects.
+
+    Receipt statistics and subsidy coupon statistics are shared, produced
+    once regardless of which entry triggers them. The coupon_report import
+    is deferred so it only runs after both projects have finished loading
+    (see processors/coupon_report.py for why).
+    """
+    from processors.coupon_report import process_coupon_sales as process_coupon_report
+
+    return (
+        (
+            "已上传数据（家电+数码）",
+            large_appliances.DATA_DIR,
+            process_submitted_files,
+        ),
+        (
+            "收款单统计",
+            large_appliances.RECEIPTS_SOURCE_FILE or large_appliances.DATA_DIR,
+            large_appliances.process_receipts,
+        ),
+        (
+            "审核明细（销售用券情况统计）",
+            large_appliances.COUPON_SOURCE_FILE or large_appliances.DATA_DIR,
+            process_coupon_report,
+        ),
+    )
+
+
+def process_all(processors: tuple[tuple[str, Path, Callable[[], None]], ...]) -> None:
+    for _, source_path, processor in processors:
+        print(f"Processing: {source_path}")
+        processor()
+
+
+def choose_data_processor() -> Callable[[], None] | None:
+    processors = build_processors()
+    all_choice = len(processors) + 1
+
+    print("Select a processing mode:")
+    for index, (label, _, _) in enumerate(processors, start=1):
+        print(f"  {index}. {label}")
+    print(f"  {all_choice}. all")
     print("  0. Exit")
 
     while True:
@@ -29,13 +74,17 @@ def choose_project() -> ModuleType | None:
         if choice == "0":
             print("Exited")
             return None
+        if choice == str(all_choice) or choice.lower() == "all":
+            print(f"Processing all data in order: 1-{len(processors)}")
+            return lambda: process_all(processors)
+        if choice.isdigit():
+            selected_index = int(choice) - 1
+            if 0 <= selected_index < len(processors):
+                _, source_path, processor = processors[selected_index]
+                print(f"Processing: {source_path}")
+                return processor
 
-        for index, (project_name, project) in enumerate(PROJECTS, start=1):
-            if choice == str(index) or choice == project_name:
-                print(f"Selected: {project_name}")
-                return project
-
-        print("Invalid input. Enter a menu number or data type name.")
+        print("Invalid input. Enter a menu number or all.")
 
 
 def report_failure(error: BaseException) -> None:
@@ -60,12 +109,13 @@ def main() -> int:
     if data_dir is None:
         return 0
 
-    project = choose_project()
-    if project is None:
-        return 0
+    # Both projects share this data directory, and several processing modes
+    # are no longer project-specific, so both need to be configured up
+    # front rather than only the one the operator picks.
+    digital.configure_data_dir(data_dir)
+    large_appliances.configure_data_dir(data_dir)
 
-    project.configure_data_dir(data_dir)
-    processor = project.choose_data_processor()
+    processor = choose_data_processor()
     if processor is None:
         return 0
 

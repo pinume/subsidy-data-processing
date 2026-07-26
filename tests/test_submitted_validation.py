@@ -1,6 +1,7 @@
 import tempfile
 import unittest
 from datetime import date
+from decimal import Decimal
 from pathlib import Path
 
 from openpyxl import Workbook, load_workbook
@@ -56,6 +57,42 @@ def write_submitted_source(path: Path, header: tuple[str, ...]) -> None:
     workbook.close()
 
 
+class SubsidyCapTest(unittest.TestCase):
+    """The two projects share the 15% rate but cap at different amounts.
+
+    Household appliances cap at 1500, digital at 500. They were once both
+    written as 500, which silently understated 43% of the appliance rows, so
+    the caps are pinned here rather than left to a shared default.
+    """
+
+    def subsidy_for(self, module, amount: object) -> object:
+        row = module.add_subsidy_column([None, None, amount])
+        return row[3]
+
+    def test_rate_is_15_percent_below_either_cap(self) -> None:
+        for module in (digital, large_appliances):
+            with self.subTest(module=module.__name__):
+                self.assertEqual(self.subsidy_for(module, 1000), 150.00)
+
+    def test_caps_differ_between_projects(self) -> None:
+        self.assertEqual(large_appliances.SUBSIDY_CAP, Decimal("1500"))
+        self.assertEqual(digital.SUBSIDY_CAP, Decimal("500"))
+
+    def test_appliance_cap_applies_at_1500_not_500(self) -> None:
+        # 6000 * 0.15 = 900: above digital's cap, still below the appliance one.
+        self.assertEqual(self.subsidy_for(large_appliances, 6000), 900.00)
+        self.assertEqual(self.subsidy_for(digital, 6000), 500.00)
+        # 20000 * 0.15 = 3000: both capped, but at different values.
+        self.assertEqual(self.subsidy_for(large_appliances, 20000), 1500.00)
+        self.assertEqual(self.subsidy_for(digital, 20000), 500.00)
+
+    def test_blank_amount_yields_no_subsidy(self) -> None:
+        for module in (digital, large_appliances):
+            with self.subTest(module=module.__name__):
+                self.assertIsNone(self.subsidy_for(module, None))
+                self.assertIsNone(self.subsidy_for(module, ""))
+
+
 class WidthMeasurerTest(unittest.TestCase):
     """The cached measurer must stay numerically identical to the direct call."""
 
@@ -108,9 +145,8 @@ class SubmittedHeaderValidationTest(unittest.TestCase):
     def run_build(self, module, header: tuple[str, ...]):
         with tempfile.TemporaryDirectory() as directory:
             data_dir = Path(directory)
-            (data_dir / "submitted").mkdir()
             write_submitted_source(
-                data_dir / "submitted" / "export.xlsx",
+                data_dir / f"{module.SUBMITTED_FILE_MARKER}_export.xlsx",
                 header,
             )
             module.configure_data_dir(data_dir)
@@ -151,9 +187,8 @@ class ValidatorRejectsBadOutputTest(unittest.TestCase):
     def build_valid_output(self, module, path: Path) -> int:
         with tempfile.TemporaryDirectory() as directory:
             data_dir = Path(directory)
-            (data_dir / "submitted").mkdir()
             write_submitted_source(
-                data_dir / "submitted" / "export.xlsx",
+                data_dir / f"{module.SUBMITTED_FILE_MARKER}_export.xlsx",
                 SUBMITTED_HEADER,
             )
             module.configure_data_dir(data_dir)

@@ -1,4 +1,12 @@
+import io
+import tempfile
 import unittest
+from contextlib import redirect_stdout
+from collections import Counter
+from decimal import Decimal
+from pathlib import Path
+
+from openpyxl import Workbook
 
 from processors import digital, large_appliances
 
@@ -24,7 +32,27 @@ def summary_row(
 
 
 class CouponSummaryTest(unittest.TestCase):
-    def test_digital_summary_uses_declared_counts_and_amounts(self) -> None:
+    def test_digital_uploaded_subsidy_stats_come_from_uploaded_summary(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "已上传.xlsx"
+            workbook = Workbook()
+            sheet = workbook.active
+            sheet.title = "Summary"
+            sheet.append(["检索参考号", "补贴金额"])
+            sheet.append(["12345678901A", 10.1])
+            sheet.append(["12345678902A", None])
+            sheet.append(["12345678903A", 20])
+            workbook.save(source)
+            workbook.close()
+
+            self.assertEqual(
+                digital.load_uploaded_subsidy_stats(source),
+                (2, Decimal("30.1")),
+            )
+
+    def test_digital_summary_subtracts_uploaded_stats_from_coupon_totals(
+        self,
+    ) -> None:
         rows = [
             list(digital.COUPON_OUTPUT_HEADER),
             summary_row(
@@ -48,19 +76,31 @@ class CouponSummaryTest(unittest.TestCase):
                 category="数码",
                 brand="C",
                 remark="已上传",
-                detail="底部排除行",
-                subsidy=999,
+                detail="备注不影响汇总口径",
+                subsidy=0,
+            ),
+            summary_row(
+                digital,
+                category="数码",
+                brand="D",
+                remark="未上传",
+                detail="负数按负一计数",
+                subsidy=-5,
             ),
         ]
 
-        result = digital.build_coupon_summary(rows, excluded_bottom_rows=1)
+        result = digital.build_coupon_summary(
+            rows,
+            uploaded_count=1,
+            uploaded_subsidy_total=Decimal("20.10"),
+        )
 
         self.assertEqual(
             result,
             [
-                ("已上传", 1, 10.1),
-                ("未上传", 1, 20.0),
-                ("合计", 2, 30.1),
+                ("已上传", 1, 20.1),
+                ("未上传", 0, 5.0),
+                ("合计", 1, 25.1),
             ],
         )
 
@@ -101,9 +141,13 @@ class CouponSummaryTest(unittest.TestCase):
             ),
         ]
 
-        summary, approved, remarks = large_appliances.build_coupon_summary(
-            rows,
-            excluded_bottom_rows=1,
+        summary, approved, zero_subsidy_count = (
+            large_appliances.build_coupon_summary(
+                rows,
+                excluded_bottom_rows=1,
+                uploaded_subsidy_count=1,
+                uploaded_subsidy_total=Decimal("20.20"),
+            )
         )
 
         self.assertEqual(
@@ -111,7 +155,11 @@ class CouponSummaryTest(unittest.TestCase):
             [
                 ("冰箱", "海尔", "已上传", 2, 30.31),
                 ("空调", "格力", "未上传", 1, 0.0),
-                ("合计", None, None, 3, 30.31),
+                # 已上传 is measured from the 已上传 workbook, 合计 from this
+                # coupon file's own 国补 column, and 未上传 is the difference.
+                ("已上传", None, None, 1, 20.20),
+                ("未上传", None, None, 1, 10.11),
+                ("合计", None, None, 2, 30.31),
             ],
         )
         self.assertEqual(
@@ -121,14 +169,53 @@ class CouponSummaryTest(unittest.TestCase):
                 ("合计", None, 1, 10.11),
             ],
         )
-        self.assertEqual(
-            remarks,
-            [
-                ("已上传", 2, 30.31),
-                ("未上传", 1, 0.0),
-                ("合计", 3, 30.31),
-            ],
+        self.assertEqual(zero_subsidy_count, 0)
+
+    def test_reversal_counts_as_minus_one_and_zero_is_flagged(self) -> None:
+        """A return cancels its original, so it counts -1, not +1.
+
+        A zero 国补 cannot happen legitimately; it is counted as 0 and
+        reported so the operator can go fix the source row.
+        """
+        rows = [
+            list(large_appliances.COUPON_OUTPUT_HEADER),
+            summary_row(
+                large_appliances,
+                category="冰箱",
+                brand="海尔",
+                remark="",
+                detail="",
+                subsidy="100.00",
+            ),
+            summary_row(
+                large_appliances,
+                category="冰箱",
+                brand="海尔",
+                remark="",
+                detail="",
+                subsidy="-100.00",
+            ),
+            summary_row(
+                large_appliances,
+                category="冰箱",
+                brand="海尔",
+                remark="",
+                detail="",
+                subsidy=0,
+            ),
+        ]
+
+        summary, _, zero_subsidy_count = (
+            large_appliances.build_coupon_summary(
+                rows,
+                excluded_bottom_rows=0,
+                uploaded_subsidy_count=0,
+                uploaded_subsidy_total=Decimal("0"),
+            )
         )
+
+        self.assertEqual(zero_subsidy_count, 1)
+        self.assertEqual(summary[-1], ("合计", None, None, 0, 0.0))
 
     def test_invalid_subsidy_is_rejected(self) -> None:
         for processor in (digital, large_appliances):
@@ -146,10 +233,148 @@ class CouponSummaryTest(unittest.TestCase):
                 ]
 
                 with self.assertRaisesRegex(ValueError, "国补金额无效"):
-                    processor.build_coupon_summary(
-                        rows,
-                        excluded_bottom_rows=0,
-                    )
+                    if processor is digital:
+                        processor.build_coupon_summary(
+                            rows,
+                            uploaded_count=0,
+                            uploaded_subsidy_total=Decimal("0"),
+                        )
+                    else:
+                        processor.build_coupon_summary(
+                            rows,
+                            excluded_bottom_rows=0,
+                            uploaded_subsidy_count=0,
+                            uploaded_subsidy_total=Decimal("0"),
+                        )
+
+
+class SummarySheetLayoutTest(unittest.TestCase):
+    """Cover the sheet builder itself, not just the row computation.
+
+    Removing the 备注汇总 panel once left a dangling reference to its row
+    numbers behind; nothing failed until the real workbook was built, because
+    no test called the builder.
+    """
+
+    def build_computation(self, **overrides) -> object:
+        rows = [
+            list(large_appliances.COUPON_OUTPUT_HEADER),
+            summary_row(
+                large_appliances,
+                category="冰箱",
+                brand="海尔",
+                remark="已上传",
+                detail="状态：审核通过",
+                subsidy="10.11",
+            ),
+        ]
+        summary, approved, zero = large_appliances.build_coupon_summary(
+            rows,
+            excluded_bottom_rows=0,
+            uploaded_subsidy_count=1,
+            uploaded_subsidy_total=Decimal("10.11"),
+        )
+        fields = dict(
+            rows=rows,
+            data_row_count=1,
+            matched_count=0,
+            matched_subsidy_total=Decimal("0"),
+            receipt_remark_count=0,
+            remark_lookup={},
+            detail_lookup={},
+            reference_universe=set(),
+            reference_supplement_count=0,
+            ambiguous_reference_supplement_count=0,
+            reference_supplement_matches=Counter(),
+            corrected_count=0,
+            unresolved_count=0,
+            correction_collision_count=0,
+            reference_decisions=[],
+            final_unresolved_reference_count=0,
+            uploaded_count=0,
+            unmatched_count=0,
+            excluded_category_row_count=0,
+            uploaded_subsidy_count=1,
+            uploaded_subsidy_total=Decimal("10.11"),
+            zero_subsidy_count=zero,
+            source_total=None,
+            computed_total=Decimal("10.11"),
+            summary_rows=summary,
+            approved_rows=approved,
+            group_sheets=[],
+        )
+        fields.update(overrides)
+        return large_appliances.CouponComputation(**fields)
+
+    def build_sheet(self):
+        workbook = Workbook()
+        workbook.remove(workbook.active)
+        computation = self.build_computation()
+        large_appliances.build_summary_and_details_sheets(workbook, computation)
+        return workbook, computation
+
+    def test_summary_sheet_keeps_approved_panel_and_drops_remark_panel(
+        self,
+    ) -> None:
+        workbook, _ = self.build_sheet()
+        try:
+            sheet = workbook[large_appliances.SUMMARY_SHEET_NAME]
+            values = {
+                str(cell.value)
+                for row in sheet.iter_rows()
+                for cell in row
+                if cell.value is not None
+            }
+            self.assertIn(large_appliances.COUPON_APPROVED_SUMMARY_TITLE, values)
+            self.assertNotIn("备注汇总", values)
+        finally:
+            workbook.close()
+
+    def test_summary_sheet_ends_with_the_three_tail_rows(self) -> None:
+        workbook, computation = self.build_sheet()
+        try:
+            sheet = workbook[large_appliances.SUMMARY_SHEET_NAME]
+            tail_start = 1 + len(computation.summary_rows) - 3
+            labels = [
+                sheet.cell(tail_start + offset + 1, 1).value
+                for offset in range(3)
+            ]
+            self.assertEqual(labels, ["已上传", "未上传", "合计"])
+        finally:
+            workbook.close()
+
+
+class SourceTotalGapTest(unittest.TestCase):
+    """The coupon export's own 合计 row can disagree with its detail rows.
+
+    Seen in production: a return recorded after the detail rows were written
+    left the 合计 row 1,290.00 lower. The program keeps the detail-row total
+    (so 数据汇总 matches 家电-明细总表) and reports the gap instead.
+    """
+
+    def report(self, source_total, computed_total) -> str:
+        from processors.coupon_report import report_source_total_gap
+
+        output = io.StringIO()
+        with redirect_stdout(output):
+            report_source_total_gap("家电", source_total, computed_total)
+        return output.getvalue()
+
+    def test_gap_is_reported_with_both_totals_and_the_difference(self) -> None:
+        message = self.report(Decimal("2866331.40"), Decimal("2867621.40"))
+
+        self.assertIn("2,866,331.40", message)
+        self.assertIn("2,867,621.40", message)
+        self.assertIn("1,290.00", message)
+
+    def test_matching_totals_report_nothing(self) -> None:
+        self.assertEqual(
+            self.report(Decimal("2867621.40"), Decimal("2867621.40")),
+            "",
+        )
+
+    def test_unparsable_source_total_reports_nothing(self) -> None:
+        self.assertEqual(self.report(None, Decimal("2867621.40")), "")
 
 
 if __name__ == "__main__":

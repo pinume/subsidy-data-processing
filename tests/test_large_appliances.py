@@ -8,7 +8,6 @@ from pathlib import Path
 from openpyxl import Workbook
 
 from processors import large_appliances
-from processors.common.paths import DATA_SUBDIRECTORIES
 from processors.large_appliances import (
     COUPON_OUTPUT_HEADER,
     fill_coupon_reference_supplement,
@@ -45,7 +44,20 @@ class CouponReferenceSupplementTest(unittest.TestCase):
             )
             self.assertIn(str(source), output.getvalue())
 
-    def test_configures_supplement_file_in_dedicated_directory(self) -> None:
+    def test_finds_supplement_file_by_keyword_in_flat_directory(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            data_dir = Path(directory)
+            supplement_file = data_dir / "新建 Microsoft Excel 工作表.xlsx"
+            supplement_file.touch()
+
+            large_appliances.configure_data_dir(data_dir)
+
+            self.assertEqual(
+                large_appliances.COUPON_REFERENCE_SUPPLEMENT_FILE,
+                supplement_file,
+            )
+
+    def test_missing_supplement_file_falls_back_to_a_display_path(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             data_dir = Path(directory)
 
@@ -53,12 +65,8 @@ class CouponReferenceSupplementTest(unittest.TestCase):
 
             self.assertEqual(
                 large_appliances.COUPON_REFERENCE_SUPPLEMENT_FILE,
-                data_dir
-                / "reference_number_supplement"
-                / "reference_number_supplement.xlsx",
+                data_dir / "新建 Microsoft Excel 工作表.xlsx",
             )
-            self.assertIn("reference_number_supplement", DATA_SUBDIRECTORIES)
-            self.assertNotIn("invoice", DATA_SUBDIRECTORIES)
 
     def test_loads_and_deduplicates_valid_references(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
