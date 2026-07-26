@@ -34,6 +34,9 @@ def _config() -> common_submitted.SubmittedConfig:
         output_file=OUTPUT_FILE,
         subsidy_rate=SUBSIDY_RATE,
         subsidy_cap=SUBSIDY_CAP,
+        kept_columns=KEPT_SOURCE_COLUMNS,
+        required_headers=REQUIRED_SUBMITTED_HEADERS,
+        status_order=STATUS_ORDER,
     )
 
 
