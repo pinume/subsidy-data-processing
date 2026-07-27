@@ -243,6 +243,11 @@ class WorkbookLoadingTests(unittest.TestCase):
 
             self.assertEqual(payment.detect_profile(source).name, "数码")
 
+    def test_header_normalization_preserves_canonical_names(self) -> None:
+        canonical = ("交易时间", "商户编号", "销售金额", "发票号", "ID")
+
+        self.assertEqual(payment._normalize_header_names(canonical), list(canonical))
+
     def test_detect_profile_prefers_the_source_filename(self) -> None:
         with TemporaryDirectory(dir=".") as temporary_dir:
             source = Path(temporary_dir).resolve() / "source.xlsx"
