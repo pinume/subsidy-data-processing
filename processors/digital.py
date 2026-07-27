@@ -12,6 +12,7 @@ from openpyxl import Workbook, load_workbook
 from openpyxl.styles import PatternFill
 
 from processors.common import submitted as common_submitted
+from processors.common.config import submitted_file_marker
 from processors.common.excel import (
     format_sheet,
     load_measurement_font,
@@ -49,11 +50,15 @@ COUPON_SOURCE_FILE: Path | None
 COUPON_REMARK_SOURCE_FILE = large_appliances_shared.RECEIPTS_OUTPUT_FILE
 COUPON_UPLOADED_SOURCE_FILE = OUTPUT_FILE
 
+DATA_TYPE = "数码"
 # Files live directly in the flat data directory; the digital submitted
 # export is told apart from the large appliances one by filename keyword,
 # and the coupon export (whose filename keyword both projects happen to
 # share) by header content.
-SUBMITTED_FILE_MARKER = "MER_89813014812B06R"
+# The submitted marker is derived from config/merchants.yaml in
+# configure_data_dir rather than at import time, so a missing or malformed
+# config fails the run with a readable error instead of breaking the import.
+SUBMITTED_FILE_MARKER: str
 COUPON_STATISTICS_KEYWORD = "销售用券情况统计"
 # The coupon export's field header row (row 2) at its last kept column
 # (column 26); see COUPON_KEPT_SOURCE_COLUMNS below.
@@ -64,8 +69,10 @@ def configure_data_dir(data_dir: Path) -> None:
     global DATA_DIR
     global SUBMITTED_FILES
     global COUPON_SOURCE_FILE
+    global SUBMITTED_FILE_MARKER
 
     DATA_DIR = data_dir
+    SUBMITTED_FILE_MARKER = submitted_file_marker(DATA_TYPE)
     SUBMITTED_FILES = tuple(
         find_data_files(data_dir, SUBMITTED_FILE_MARKER, (".xlsx",))
     )
@@ -314,7 +321,7 @@ def load_uploaded_detail_lookup(source: Path) -> dict[str, str]:
     workbook = load_workbook(source, read_only=True, data_only=True)
     try:
         if "Summary" not in workbook.sheetnames:
-            raise ValueError(f"{source.name} 缺少“汇总”工作表")
+            raise ValueError(f"{source.name} 缺少 Summary 工作表")
         sheet = workbook["Summary"]
         header = [cell.value for cell in sheet[1]]
         required_headers = ("检索参考号", "状态", "描述")

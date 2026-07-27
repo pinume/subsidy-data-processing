@@ -5,12 +5,12 @@ from pathlib import Path
 from . import _shared
 from ._shared import (
     BASE_DIR,
+    DATA_TYPE,
     OUTPUT_DIR,
     OUTPUT_FILE,
     RECEIPTS_OUTPUT_FILE,
     COUPON_REMARK_SOURCE_FILE,
     COUPON_UPLOADED_SOURCE_FILE,
-    SUBMITTED_FILE_MARKER,
 )
 from .submitted import (
     KEPT_SOURCE_COLUMNS,
@@ -105,6 +105,7 @@ INPUT_FILES: tuple[Path, ...]
 RECEIPTS_SOURCE_FILE: Path | None
 COUPON_SOURCE_FILE: Path | None
 COUPON_REFERENCE_SUPPLEMENT_FILE: Path
+SUBMITTED_FILE_MARKER: str
 
 
 def configure_data_dir(data_dir: Path) -> None:
@@ -113,9 +114,11 @@ def configure_data_dir(data_dir: Path) -> None:
     global RECEIPTS_SOURCE_FILE
     global COUPON_SOURCE_FILE
     global COUPON_REFERENCE_SUPPLEMENT_FILE
+    global SUBMITTED_FILE_MARKER
 
     _shared.configure_data_dir(data_dir)
     DATA_DIR = _shared.DATA_DIR
+    SUBMITTED_FILE_MARKER = _shared.SUBMITTED_FILE_MARKER
     INPUT_FILES = _shared.INPUT_FILES
     RECEIPTS_SOURCE_FILE = _shared.RECEIPTS_SOURCE_FILE
     COUPON_SOURCE_FILE = _shared.COUPON_SOURCE_FILE

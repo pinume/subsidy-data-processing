@@ -1,6 +1,7 @@
 from functools import partial
 from pathlib import Path
 
+from processors.common.config import submitted_file_marker
 from processors.common.paths import (
     find_data_files,
     match_source_file_by_header,
@@ -23,10 +24,14 @@ COUPON_REFERENCE_SUPPLEMENT_FILE: Path
 COUPON_REMARK_SOURCE_FILE = RECEIPTS_OUTPUT_FILE
 COUPON_UPLOADED_SOURCE_FILE = OUTPUT_FILE
 
+DATA_TYPE = "家电"
 # Files live directly in the flat data directory; each project tells its own
 # files apart by filename keyword, and (for the coupon export, which both
 # projects' files happen to share a keyword for) by header content.
-SUBMITTED_FILE_MARKER = "MER_89813015722APT1"
+# The submitted marker is derived from config/merchants.yaml in
+# configure_data_dir rather than at import time, so a missing or malformed
+# config fails the run with a readable error instead of breaking the import.
+SUBMITTED_FILE_MARKER: str
 RECEIPT_STATISTICS_KEYWORD = "收款单统计"
 COUPON_STATISTICS_KEYWORD = "销售用券情况统计"
 COUPON_REFERENCE_SUPPLEMENT_KEYWORD = "新建 Microsoft Excel 工作表"
@@ -41,8 +46,10 @@ def configure_data_dir(data_dir: Path) -> None:
     global RECEIPTS_SOURCE_FILE
     global COUPON_SOURCE_FILE
     global COUPON_REFERENCE_SUPPLEMENT_FILE
+    global SUBMITTED_FILE_MARKER
 
     DATA_DIR = data_dir
+    SUBMITTED_FILE_MARKER = submitted_file_marker(DATA_TYPE)
     INPUT_FILES = tuple(
         find_data_files(data_dir, SUBMITTED_FILE_MARKER, (".xlsx",))
     )

@@ -1,0 +1,196 @@
+# 回款明细的品类与品牌数据，从 processors/payment.py 挪出来，改这些不必碰代码。
+#
+# categories: 编码品类 -> 财务大类。顺序即汇总/明细排序里财务大类出现的顺序。
+#
+# brand_keywords: 品牌关键词，按品类（家电/数码）各一份列表；列表顺序就是匹配
+# 优先级，一个商品名只要命中某条的任一关键词就归为该品牌，不再往下比对，所以
+# 越靠前的品牌优先级越高（例如家电里“华为”排在“美的”前面，MATEBOOK 才不会被
+# 误判成别的牌子）。
+#
+# brand_normalization（仅家电）：识别出的子品牌统一并入母品牌，例如 COLMO 计入
+# 美的、卡萨帝计入海尔。
+#
+# midea_group（仅家电）：财务大类为洗衣机或冰箱时，美的、小天鹅、东芝三个牌子
+# 进一步合并显示为“美的系”，与母品牌合并是两道独立的归并。
+#
+# brand_model_aliases（仅家电）：型号关键词直接对应品牌，用于商品名里不含品牌
+# 关键词、只有型号的行；按运营核对逐条累积，会持续增加。
+
+categories:
+  appliance:
+    A04-空调: 空调
+    A05-电脑: 电脑
+    A06-热水器: 厨卫
+    A01-电视机: 电视
+    A03-洗衣机: 洗衣机
+    A02-电冰箱: 冰箱
+  digital:
+    B01-手机: 手机
+    B02-平板: 平板
+    B03-智能手表手环: 智能穿戴
+
+brand_keywords:
+  appliance:
+    - brand: 华为
+      keywords: [华为, HUAWEI, MATEBOOK]
+    - brand: 小米
+      keywords: [小米, XIAOMI, REDMI, 米家, MIJIA]
+    - brand: A.O.史密斯
+      keywords: [A.O.史密斯, AO史密斯]
+    - brand: 卡萨帝
+      keywords: [卡萨帝, CASARTE]
+    - brand: 小天鹅
+      keywords: [小天鹅]
+    - brand: 西门子
+      keywords: [西门子]
+    - brand: 奥克斯
+      keywords: [奥克斯]
+    - brand: 万家乐
+      keywords: [万家乐]
+    - brand: Leader
+      keywords: [LEADER]
+    - brand: COLMO
+      keywords: [COLMO]
+    - brand: TCL
+      keywords: [TCL]
+    - brand: 小鸭
+      keywords: [小鸭]
+    - brand: 美菱
+      keywords: [美菱]
+    - brand: 晶弘
+      keywords: [晶弘]
+    - brand: 华凌
+      keywords: [华凌]
+    - brand: 格力
+      keywords: [格力]
+    - brand: 海尔
+      keywords: [海尔]
+    - brand: 美的
+      keywords: [美的, MIDEA]
+    - brand: 海信
+      keywords: [海信]
+    - brand: 康佳
+      keywords: [康佳, KONKA]
+    - brand: 三星
+      keywords: [三星, SAMSUNG]
+    - brand: 索尼
+      keywords: [索尼, SONY]
+    - brand: LG
+      keywords: ["LG "]
+    - brand: 东芝
+      keywords: [东芝, TOSHIBA]
+    - brand: 松下
+      keywords: [松下, PANASONIC]
+    - brand: 长虹
+      keywords: [长虹, CHANGHONG]
+    - brand: 容声
+      keywords: [容声, RONSHEN]
+    - brand: 夏普
+      keywords: [夏普, SHARP]
+    - brand: 飞利浦
+      keywords: [飞利浦, PHILIPS]
+    - brand: 林内
+      keywords: [林内, RINNAI]
+    - brand: 澳柯玛
+      keywords: [澳柯玛, AUCMA]
+    - brand: 日立
+      keywords: [日立, HITACHI]
+    - brand: 荣耀
+      keywords: [荣耀, HONOR]
+    - brand: 苹果
+      keywords: [苹果, APPLE, MACBOOK, "MAC MINI"]
+    - brand: 惠普
+      keywords: [惠普, "HP ", "OMEN ", "VICTUS "]
+    - brand: 联想
+      keywords: [联想, LENOVO, THINKBOOK, 小新]
+    - brand: 华硕
+      keywords: [华硕, ASUS]
+    - brand: 戴尔
+      keywords: [戴尔, DELL]
+    - brand: 帅康
+      keywords: [帅康, SACON]
+    - brand: 万和
+      keywords: [万和, VANWARD]
+    - brand: 方太
+      keywords: [方太, FOTILE]
+    - brand: 创维
+      keywords: [创维]
+    - brand: 科龙
+      keywords: [科龙]
+    - brand: 博世
+      keywords: [博世]
+    - brand: 统帅
+      keywords: [统帅]
+  digital:
+    - brand: 华为
+      keywords: [华为, HUAWEI, PURA, MATE, NOVA]
+    - brand: 小米
+      keywords: [小米, XIAOMI, REDMI, 红米]
+    - brand: 荣耀
+      keywords: [荣耀, HONOR]
+    - brand: OPPO
+      keywords: [OPPO]
+    - brand: vivo
+      keywords:
+        [VIVO, IQOO, X300, X200, Y600, Y500, Y300, "Y50 ", S50, S30]
+    - brand: 一加
+      keywords: [一加, ONEPLUS]
+    - brand: 苹果
+      keywords: [苹果, IPHONE, IPAD, APPLE]
+    - brand: 三星
+      keywords: [三星, SAMSUNG]
+    - brand: 小天才
+      keywords: [小天才]
+    - brand: 作业帮
+      keywords: [作业帮]
+    - brand: 学而思
+      keywords: [学而思]
+    - brand: 洪恩
+      keywords: [洪恩]
+    - brand: 步步高
+      keywords: [步步高]
+
+brand_normalization:
+  appliance:
+    COLMO: 美的
+    卡萨帝: 海尔
+    Leader: 海尔
+    科龙: 海信
+    统帅: 海尔
+    华凌: 美的
+    晶弘: 格力
+
+midea_group:
+  categories: [洗衣机, 冰箱]
+  brands: [美的, 小天鹅, 东芝]
+
+brand_model_aliases:
+  appliance:
+    TNDD20-08AIDE: 小天鹅
+    65A6Q: 海信
+    85A6Q: 海信
+    KFR-50GW/CX2S: 美的
+    NR-D521CG-W: 松下
+    NR-D531AX-S: 松下
+    NR-W592CG-S: 松下
+    WV20G-H: 海信
+    WV20W: 海信
+    WH130U9Q-1: 海信
+    WH130U9Q: 海信
+    DSF-60D956: 帅康
+    DSF-60J925: 帅康
+    自然风 双出风: 小米
+    自然风PRO 双出风: 小米
+    柔风（1.5匹/变频/新一级能效）: 小米
+    KFRD-72FW/C3AA1: 海信
+    D60-H7C1: 万家乐
+    D60-S3C2: 万家乐
+    新风PRO 双出风: 小米
+    超净洗 洗烘10KG银灰: 小米
+    自然风（1.5匹/变频/一级能效）白色: 小米
+    GMV舒韵家庭中央空调: 格力
+    自然风（2匹//变频/新一级能效）: 小米
+    DSF-60DY6(E): 帅康
+    D60-G5C1: 万家乐
+    超净洗 滚筒10KG 银灰: 小米
+    精护洗PRO 洗烘10KG: 小米

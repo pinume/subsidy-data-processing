@@ -405,7 +405,7 @@ def load_uploaded_detail_lookup(source: Path) -> dict[str, str]:
     workbook = load_workbook(source, read_only=True, data_only=True)
     try:
         if "Summary" not in workbook.sheetnames:
-            raise ValueError(f"{source.name} 缺少“汇总”工作表")
+            raise ValueError(f"{source.name} 缺少 Summary 工作表")
         sheet = workbook["Summary"]
         header = [cell.value for cell in sheet[1]]
         required_headers = ("检索参考号", "状态", "描述")

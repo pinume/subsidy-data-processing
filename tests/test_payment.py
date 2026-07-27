@@ -1,0 +1,422 @@
+from __future__ import annotations
+
+import unittest
+from decimal import Decimal
+from pathlib import Path
+from tempfile import TemporaryDirectory
+from unittest.mock import patch
+from zipfile import ZIP_DEFLATED, ZipFile
+
+from openpyxl import Workbook, load_workbook
+
+from processors import payment
+
+
+def _detail_row(profile, category: str, product: str, subsidy: str | None = None):
+    row = [None] * len(profile.detail_headers)
+    row[profile.detail_headers.index("拨付批次")] = "batch"
+    row[profile.detail_headers.index("商户编号")] = "ABC123"
+    row[profile.detail_headers.index("编码品类")] = category
+    row[profile.detail_headers.index("商品名称")] = product
+    if subsidy is not None:
+        row[profile.detail_headers.index("补贴金额")] = subsidy
+    return row
+
+
+def _write_source(path: Path, profile, category: str, product: str, subsidy: str) -> None:
+    workbook = Workbook()
+    detail = workbook.active
+    detail.append(profile.detail_headers)
+    detail.append(_detail_row(profile, category, product, subsidy))
+    workbook.save(path)
+
+
+class DetailProcessingTests(unittest.TestCase):
+    def test_actual_rows_include_data_after_long_blank_run(self) -> None:
+        workbook = Workbook()
+        source = workbook.active
+        source.append(["first"])
+        for _ in range(100):
+            source.append([None])
+        source.append(["last"])
+
+        rows = list(payment._iter_actual_rows_with_numbers(source))
+
+        self.assertEqual([row_number for row_number, _ in rows], [1, 102])
+        self.assertEqual(rows[-1][1][0], "last")
+
+    def test_source_headers_are_trimmed(self) -> None:
+        profile = payment.PROFILES["家电"]
+        workbook = Workbook()
+        source = workbook.active
+        source.append(tuple(f" {header} " for header in profile.detail_headers))
+        source.append(_detail_row(profile, "A04-空调", "格力空调"))
+        target = workbook.create_sheet("target")
+
+        written, unidentified = payment._write_normalized_detail(
+            source,
+            target,
+            write_header=True,
+            profile=profile,
+            merchant_id="ABC123",
+        )
+
+        self.assertEqual(written, 1)
+        self.assertEqual(unidentified, 0)
+
+    def test_header_fields_after_column_twenty_are_supported(self) -> None:
+        profile = payment.PROFILES["家电"]
+        workbook = Workbook()
+        source = workbook.active
+        headers = ("辅助列",) + profile.detail_headers
+        source.append(headers)
+        source.append(["ignored"] + _detail_row(profile, "A04-空调", "格力空调"))
+        target = workbook.create_sheet("target")
+
+        written, unidentified = payment._write_normalized_detail(
+            source,
+            target,
+            write_header=True,
+            profile=profile,
+            merchant_id="ABC123",
+        )
+
+        self.assertEqual(written, 1)
+        self.assertEqual(unidentified, 0)
+        self.assertEqual(target.cell(2, len(profile.detail_headers) + 2).value, "格力")
+
+    def test_summary_uses_decimal_and_signed_count(self) -> None:
+        workbook = Workbook()
+        detail = workbook.active
+        detail.append(["财务大类", "品牌", "补贴金额"])
+        detail.append(["空调", "格力", "0.10"])
+        detail.append(["空调", "格力", "0.20"])
+        detail.append(["空调", "格力", "-0.05"])
+        summary = workbook.create_sheet("汇总")
+
+        groups, bold_rows = payment._build_summary_sheet(
+            summary, [("家电", [detail], payment.APPLIANCE_CATEGORY_MAP)]
+        )
+
+        self.assertEqual(groups, 1)
+        rows = [tuple(row) for row in summary.iter_rows(values_only=True)]
+        self.assertEqual(
+            rows,
+            [
+                ("财务大类", "品牌", "补贴金额合计", "补贴金额计数"),
+                ("空调", "格力", 0.25, 1),
+                ("合计", None, 0.25, 1),
+                ("合计", None, 0.25, 1),
+            ],
+        )
+        self.assertEqual(bold_rows, [3, 4])
+
+
+class WorkbookLoadingTests(unittest.TestCase):
+    def test_xlsm_conversion_preserves_cached_formula_values(self) -> None:
+        with TemporaryDirectory(dir=".") as temporary_dir:
+            temporary_path = Path(temporary_dir).resolve()
+            seed = temporary_path / "seed.xlsm"
+            source = temporary_path / "source.xlsm"
+            destination = temporary_path / "destination.xlsx"
+
+            workbook = Workbook()
+            workbook.active["A1"] = "=1+1"
+            workbook.save(seed)
+
+            with ZipFile(seed) as source_archive, ZipFile(
+                source, "w", ZIP_DEFLATED
+            ) as target_archive:
+                for item in source_archive.infolist():
+                    data = source_archive.read(item.filename)
+                    if item.filename == "xl/worksheets/sheet1.xml":
+                        data = data.replace(b"<v />", b"<v>2</v>")
+                    target_archive.writestr(item, data)
+
+            before = load_workbook(source, data_only=True)
+            self.assertEqual(before.active["A1"].value, 2)
+            before.close()
+
+            payment._convert_xlsm(source, destination)
+
+            converted = load_workbook(destination, data_only=True)
+            self.assertEqual(converted.active["A1"].value, 2)
+            converted.close()
+
+    def test_process_sources_reads_cached_formula_values(self) -> None:
+        # This checks the loader contract without requiring Excel to calculate a file.
+        source = Path("source.xlsx")
+        profile = payment.PROFILES["家电"]
+        calls = []
+
+        def recording_loader(path, **kwargs):
+            calls.append((path, kwargs))
+            raise RuntimeError("stop after loader call")
+
+        with patch.object(payment, "load_workbook", recording_loader):
+            with self.assertRaisesRegex(RuntimeError, "stop after loader call"):
+                payment._process_sources([source], profile, "ABC123", Workbook())
+
+        self.assertTrue(calls[0][1]["read_only"])
+        self.assertTrue(calls[0][1]["data_only"])
+
+    def test_process_sources_rejects_uncached_formula_subsidy_amount(self) -> None:
+        profile = payment.PROFILES["家电"]
+
+        with TemporaryDirectory(dir=".") as temporary_dir:
+            source = Path(temporary_dir).resolve() / "source.xlsx"
+            workbook = Workbook()
+            detail = workbook.active
+            detail.append(profile.detail_headers)
+            detail.append(
+                _detail_row(profile, "A04-空调", "格力空调", "=0.1+0.2")
+            )
+            workbook.save(source)
+
+            with self.assertRaisesRegex(ValueError, "公式但没有缓存计算结果"):
+                payment._process_sources([source], profile, "ABC123", Workbook())
+            self.assertTrue(source.exists())
+
+    def _write_detail_workbook(self, path: Path, headers) -> None:
+        workbook = Workbook()
+        detail = workbook.active
+        detail.title = "明细"
+        detail.append(["报表标题"])
+        detail.append(headers)
+        workbook.save(path)
+
+    def test_detect_profile_matches_appliance_and_digital_headers(self) -> None:
+        with TemporaryDirectory(dir=".") as temporary_dir:
+            temporary_path = Path(temporary_dir).resolve()
+            for expected_name, headers in (
+                ("家电", payment.APPLIANCE_DETAIL_HEADERS),
+                ("数码", payment.DIGITAL_DETAIL_HEADERS),
+            ):
+                source = temporary_path / f"{expected_name}.xlsx"
+                self._write_detail_workbook(source, headers)
+
+                self.assertEqual(payment.detect_profile(source).name, expected_name)
+
+    def test_detect_profile_accepts_header_aliases(self) -> None:
+        aliased = {"交易时间": "交易完成时间", "销售企业": "销方名称", "发票号": "发票号码"}
+        headers = [
+            aliased.get(header, header) for header in payment.DIGITAL_DETAIL_HEADERS
+        ]
+        with TemporaryDirectory(dir=".") as temporary_dir:
+            source = Path(temporary_dir).resolve() / "source.xlsx"
+            self._write_detail_workbook(source, headers)
+
+            self.assertEqual(payment.detect_profile(source).name, "数码")
+
+    def test_detect_profile_prefers_the_source_filename(self) -> None:
+        with TemporaryDirectory(dir=".") as temporary_dir:
+            source = Path(temporary_dir).resolve() / "source.xlsx"
+            self._write_detail_workbook(source, payment.APPLIANCE_DETAIL_HEADERS)
+
+            self.assertEqual(
+                payment.detect_profile(source, "2026年数码补贴明细.xlsx").name, "数码"
+            )
+            self.assertEqual(
+                payment.detect_profile(source, "1_2026年以旧换新补贴明细.xlsx").name,
+                "家电",
+            )
+
+    def test_detect_profile_falls_back_to_headers_for_other_filenames(self) -> None:
+        with TemporaryDirectory(dir=".") as temporary_dir:
+            source = Path(temporary_dir).resolve() / "source.xlsx"
+            self._write_detail_workbook(source, payment.DIGITAL_DETAIL_HEADERS)
+
+            self.assertEqual(payment.detect_profile(source, "导出结果.xlsx").name, "数码")
+
+    def test_detect_profile_rejects_unrecognized_headers(self) -> None:
+        headers = [
+            header
+            for header in payment.APPLIANCE_DETAIL_HEADERS
+            if header != "补贴比例"
+        ]
+        with TemporaryDirectory(dir=".") as temporary_dir:
+            source = Path(temporary_dir).resolve() / "source.xlsx"
+            self._write_detail_workbook(source, headers)
+
+            with self.assertRaisesRegex(ValueError, "无法识别数据类型"):
+                payment.detect_profile(source)
+
+
+class PaymentPipelineTests(unittest.TestCase):
+    """End-to-end runs against a temporary data directory and output file."""
+
+    def _run(self, temporary_path: Path, merchants: dict[str, str]) -> Path:
+        output_dir = temporary_path / "output"
+        output_dir.mkdir(exist_ok=True)
+        output_file = output_dir / "回款明细.xlsx"
+
+        def fake_merchant_id(data_type: str) -> str:
+            merchant = merchants.get(data_type)
+            if not merchant:
+                raise ValueError(f"merchants.yaml 缺少{data_type}的商户编号")
+            return merchant
+
+        with (
+            patch.object(payment, "OUTPUT_DIR", output_dir),
+            patch.object(payment, "OUTPUT_FILE", output_file),
+            patch.object(payment, "merchant_id", fake_merchant_id),
+        ):
+            payment.configure_data_dir(temporary_path / "data")
+            payment.process_payment_files()
+        return output_file
+
+    def _prepare_data_dir(self, temporary_path: Path) -> Path:
+        data_dir = temporary_path / "data"
+        data_dir.mkdir()
+        _write_source(
+            data_dir / "1_2026年以旧换新补贴明细.xlsx",
+            payment.PROFILES["家电"],
+            "A04-空调",
+            "格力空调",
+            "10.00",
+        )
+        _write_source(
+            data_dir / "2026年数码补贴明细.xlsx",
+            payment.PROFILES["数码"],
+            "B01-手机",
+            "华为手机",
+            "25.00",
+        )
+        return data_dir
+
+    def test_both_data_types_share_one_output_workbook(self) -> None:
+        with TemporaryDirectory(dir=".") as temporary_dir:
+            temporary_path = Path(temporary_dir).resolve()
+            self._prepare_data_dir(temporary_path)
+
+            output_file = self._run(
+                temporary_path, {"家电": "ABC123", "数码": "ABC123"}
+            )
+
+            result = load_workbook(output_file, data_only=True)
+            try:
+                self.assertEqual(
+                    result.sheetnames, ["汇总", "家电明细", "数码明细"]
+                )
+                summary = result["汇总"]
+                rows = [
+                    tuple(summary.cell(row, column).value for column in range(1, 5))
+                    for row in range(2, summary.max_row + 1)
+                ]
+                self.assertEqual(
+                    rows,
+                    [
+                        ("空调", "格力", 10.0, 1),
+                        ("合计", None, 10.0, 1),
+                        (None, None, None, None),
+                        ("手机", "华为", 25.0, 1),
+                        ("合计", None, 25.0, 1),
+                        ("合计", None, 35.0, 2),
+                    ],
+                )
+                self.assertEqual(
+                    Decimal(str(summary.cell(summary.max_row, 3).value)),
+                    Decimal("35"),
+                )
+            finally:
+                result.close()
+
+    def test_working_copies_are_removed_and_sources_kept(self) -> None:
+        with TemporaryDirectory(dir=".") as temporary_dir:
+            temporary_path = Path(temporary_dir).resolve()
+            data_dir = self._prepare_data_dir(temporary_path)
+
+            output_file = self._run(
+                temporary_path, {"家电": "ABC123", "数码": "ABC123"}
+            )
+
+            self.assertEqual(
+                sorted(path.name for path in data_dir.iterdir()),
+                ["1_2026年以旧换新补贴明细.xlsx", "2026年数码补贴明细.xlsx"],
+            )
+            self.assertEqual(
+                [path.name for path in output_file.parent.iterdir()],
+                ["回款明细.xlsx"],
+            )
+
+    def test_missing_merchant_id_stops_before_writing_output(self) -> None:
+        with TemporaryDirectory(dir=".") as temporary_dir:
+            temporary_path = Path(temporary_dir).resolve()
+            self._prepare_data_dir(temporary_path)
+
+            with self.assertRaisesRegex(ValueError, "缺少数码的商户编号"):
+                self._run(temporary_path, {"家电": "ABC123"})
+
+            self.assertEqual(
+                list((temporary_path / "output").iterdir()),
+                [],
+                "失败时不应留下工作副本或半成品输出",
+            )
+
+    def test_same_stem_sources_keep_separate_working_copies(self) -> None:
+        # 补贴明细.xls and 补贴明细.xlsx used to share one working copy: the
+        # second conversion overwrote the first, so one file's rows were
+        # processed twice and the other file's rows disappeared silently.
+        with TemporaryDirectory(dir=".") as temporary_dir:
+            temporary_path = Path(temporary_dir).resolve()
+            data_dir = temporary_path / "data"
+            data_dir.mkdir()
+            profile = payment.PROFILES["家电"]
+            _write_source(
+                data_dir / "以旧换新补贴明细.xlsx",
+                profile,
+                "A04-空调",
+                "格力空调",
+                "10.00",
+            )
+            _write_source(
+                data_dir / "以旧换新补贴明细.xlsm",
+                profile,
+                "A04-空调",
+                "海尔空调",
+                "20.00",
+            )
+
+            output_file = self._run(temporary_path, {"家电": "ABC123"})
+
+            sheet = load_workbook(output_file, data_only=True)["家电明细"]
+            product_index = profile.detail_headers.index("商品名称")
+            products = sorted(
+                row[product_index]
+                for row in sheet.iter_rows(min_row=2, values_only=True)
+            )
+            self.assertEqual(products, ["格力空调", "海尔空调"])
+
+    def test_working_copies_are_removed_when_a_later_file_fails(self) -> None:
+        with TemporaryDirectory(dir=".") as temporary_dir:
+            temporary_path = Path(temporary_dir).resolve()
+            data_dir = temporary_path / "data"
+            data_dir.mkdir()
+            output_dir = temporary_path / "output"
+            output_dir.mkdir()
+            profile = payment.PROFILES["家电"]
+            _write_source(
+                data_dir / "A补贴明细.xlsx", profile, "A04-空调", "格力空调", "10.00"
+            )
+            unrecognized = Workbook()
+            unrecognized.active.append(
+                [header for header in profile.detail_headers if header != "补贴比例"]
+            )
+            unrecognized.save(data_dir / "B补贴明细.xlsx")
+
+            with self.assertRaisesRegex(ValueError, "无法识别数据类型"):
+                self._run(temporary_path, {"家电": "ABC123"})
+
+            self.assertEqual(list(output_dir.iterdir()), [])
+
+    def test_empty_data_directory_is_reported(self) -> None:
+        with TemporaryDirectory(dir=".") as temporary_dir:
+            temporary_path = Path(temporary_dir).resolve()
+            (temporary_path / "data").mkdir()
+
+            with self.assertRaisesRegex(FileNotFoundError, "回款原始数据文件"):
+                self._run(temporary_path, {"家电": "ABC123", "数码": "ABC123"})
+
+
+if __name__ == "__main__":
+    unittest.main()

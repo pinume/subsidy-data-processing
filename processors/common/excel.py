@@ -1,5 +1,7 @@
 import os
 import re
+import stat
+import time
 from collections.abc import Callable, Iterator
 from datetime import date, datetime
 from decimal import Decimal, InvalidOperation
@@ -234,15 +236,22 @@ def text_pixel_width(value: object, font) -> float:
     text = measurement_text(value)
     if not text:
         return 0
-    left, _, right, _ = font.getbbox(text)
-    return right - left
+    # getlength (the rendered advance width) rather than getbbox (the ink
+    # extent) — about 3x faster per call, and it is what Excel's own
+    # character-width metric approximates anyway. On a proportional font the
+    # two differ by a fraction of a pixel per string, well inside the ±10%
+    # slack pixels_to_excel_width already adds; on the monospace font this
+    # project prefers (Maple Mono NF CN) they are identical.
+    return font.getlength(text)
 
 
 def width_measurer(value_font) -> Callable[[object], float]:
     """Measure text width, caching by rendered text.
 
-    Sheets repeat dates, statuses, and remarks heavily, so the same few hundred
-    strings account for tens of thousands of cells.
+    Sheets repeat dates, statuses, and remarks heavily, but SN/IMEI/invoice
+    columns are effectively all-distinct, so caching alone cannot bound the
+    number of measurements — text_pixel_width's choice of getlength over
+    getbbox is what keeps each of those measurements cheap.
     """
     cache: dict[str, float] = {}
 
@@ -252,8 +261,7 @@ def width_measurer(value_font) -> Callable[[object], float]:
             return 0
         width = cache.get(text)
         if width is None:
-            left, _, right, _ = value_font.getbbox(text)
-            width = right - left
+            width = value_font.getlength(text)
             cache[text] = width
         return width
 
@@ -318,6 +326,58 @@ def format_sheet(
         )
 
 
+STALE_TEMPORARY_FILE_AGE_SECONDS = 180
+
+
+def remove_stale_temporary_files(
+    output_dir: Path,
+    minimum_age_seconds: float = STALE_TEMPORARY_FILE_AGE_SECONDS,
+) -> list[str]:
+    """Delete leftover intermediate files from an interrupted earlier run.
+
+    Everything this program writes into the output directory as an
+    intermediate is dot-prefixed: save_workbook_atomically's ".<名字>-<随机>"
+    temporary, and the payment pipeline's ".<源文件名>.working.xlsx" copy.
+    Both are removed on a normal run; a crash or a killed process leaves them
+    behind, where they accumulate invisibly and still hold business data.
+    Excel's own lock files are named "~$...", so they are never touched.
+
+    Only files older than minimum_age_seconds are removed. This program was
+    never designed for two instances to run against the same output
+    directory at once, but without an age check this cleanup would make that
+    actively unsafe instead of merely unsupported: a second instance
+    starting up would delete the first instance's temporary file while it is
+    still being written, and the first instance's own save would then fail
+    trying to rename a file that no longer exists. The age check does not
+    make concurrent runs supported — it only keeps a second instance's
+    startup from corrupting a first instance's in-flight save. The default
+    (180s) is comfortably longer than any single sheet this program writes
+    has been observed to take to save.
+    """
+    if not output_dir.is_dir():
+        return []
+
+    now = time.time()
+    removed: list[str] = []
+    for path in sorted(output_dir.iterdir()):
+        if not path.is_file() or not path.name.startswith("."):
+            continue
+        try:
+            age_seconds = now - path.stat().st_mtime
+        except OSError:
+            continue
+        if age_seconds < minimum_age_seconds:
+            continue
+        try:
+            path.chmod(path.stat().st_mode | stat.S_IWRITE)
+            path.unlink()
+        except OSError as error:
+            print(f"Could not remove leftover file {path.name}: {error}")
+            continue
+        removed.append(path.name)
+    return removed
+
+
 def save_workbook_atomically(
     workbook: Workbook,
     output_path: Path,
@@ -357,7 +417,7 @@ def load_uploaded_subsidy_stats(source: Path) -> tuple[int, Decimal]:
     workbook = load_workbook(source, read_only=True, data_only=True)
     try:
         if "Summary" not in workbook.sheetnames:
-            raise ValueError(f"{source.name} 缺少“汇总”工作表")
+            raise ValueError(f"{source.name} 缺少 Summary 工作表")
         sheet = workbook["Summary"]
         header = [cell.value for cell in sheet[1]]
         if "补贴金额" not in header:

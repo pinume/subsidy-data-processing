@@ -8,6 +8,7 @@ from openpyxl import Workbook, load_workbook
 from openpyxl.utils import column_index_from_string
 
 from processors import digital, large_appliances
+from processors.common.config import load_merchants, submitted_file_marker
 from processors.common.excel import (
     load_measurement_font,
     resolve_font,
@@ -121,22 +122,60 @@ class WidthMeasurerTest(unittest.TestCase):
         _, font_path = resolve_font()
         font = load_measurement_font(font_path)
         calls = 0
-        original = font.getbbox
+        original = font.getlength
 
-        def counting_getbbox(text):
+        def counting_getlength(text):
             nonlocal calls
             calls += 1
             return original(text)
 
-        font.getbbox = counting_getbbox
+        font.getlength = counting_getlength
         try:
             measure = width_measurer(font)
             for _ in range(50):
                 measure("同一个值")
         finally:
-            font.getbbox = original
+            font.getlength = original
 
         self.assertEqual(calls, 1)
+
+
+class SubmittedFileMarkerTest(unittest.TestCase):
+    """The marker is derived from the merchant id, never configured twice.
+
+    The export is named MER_<商户编号>_<导出时间>_yjhx.xlsx, so a hardcoded
+    marker could drift out of sync with config/merchants.yaml and send a run
+    looking for files that no longer exist.
+    """
+
+    def test_marker_is_the_merchant_id_with_the_exporter_prefix(self) -> None:
+        merchants = load_merchants()
+        for data_type in ("家电", "数码"):
+            with self.subTest(data_type=data_type):
+                self.assertEqual(
+                    submitted_file_marker(data_type),
+                    f"MER_{merchants[data_type]}",
+                )
+
+    def test_each_module_uses_its_own_data_type(self) -> None:
+        self.assertEqual(digital.DATA_TYPE, "数码")
+        self.assertEqual(large_appliances.DATA_TYPE, "家电")
+        with tempfile.TemporaryDirectory() as directory:
+            data_dir = Path(directory)
+            digital.configure_data_dir(data_dir)
+            large_appliances.configure_data_dir(data_dir)
+            self.assertEqual(
+                digital.SUBMITTED_FILE_MARKER,
+                submitted_file_marker("数码"),
+            )
+            self.assertEqual(
+                large_appliances.SUBMITTED_FILE_MARKER,
+                submitted_file_marker("家电"),
+            )
+
+    def test_unknown_data_type_is_reported(self) -> None:
+        with self.assertRaisesRegex(ValueError, "缺少家具的商户编号"):
+            submitted_file_marker("家具")
 
 
 class SubmittedHeaderValidationTest(unittest.TestCase):
@@ -146,7 +185,7 @@ class SubmittedHeaderValidationTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             data_dir = Path(directory)
             write_submitted_source(
-                data_dir / f"{module.SUBMITTED_FILE_MARKER}_export.xlsx",
+                data_dir / f"{submitted_file_marker(module.DATA_TYPE)}_export.xlsx",
                 header,
             )
             module.configure_data_dir(data_dir)
@@ -188,7 +227,7 @@ class ValidatorRejectsBadOutputTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             data_dir = Path(directory)
             write_submitted_source(
-                data_dir / f"{module.SUBMITTED_FILE_MARKER}_export.xlsx",
+                data_dir / f"{submitted_file_marker(module.DATA_TYPE)}_export.xlsx",
                 SUBMITTED_HEADER,
             )
             module.configure_data_dir(data_dir)

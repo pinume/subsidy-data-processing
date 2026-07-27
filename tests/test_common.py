@@ -15,9 +15,60 @@ from processors.common.dates import (
 from processors.common.excel import (
     format_sheet,
     read_rows,
+    remove_stale_temporary_files,
     resolve_font,
     save_workbook_atomically,
 )
+
+
+class RemoveStaleTemporaryFilesTest(unittest.TestCase):
+    def test_removes_only_dot_prefixed_files(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            output_dir = Path(directory)
+            keep = (
+                "回款明细.xlsx",
+                "家电_已上传.xlsx",
+                "~$回款明细.xlsx",
+            )
+            remove = (
+                ".收款单统计-evx66gk1.xlsx",
+                ".2026年数码补贴明细.xlsx.working.xlsx",
+            )
+            for name in (*keep, *remove):
+                (output_dir / name).write_bytes(b"x")
+            (output_dir / ".子目录").mkdir()
+
+            removed = remove_stale_temporary_files(output_dir, minimum_age_seconds=0)
+
+            self.assertEqual(sorted(removed), sorted(remove))
+            self.assertEqual(
+                sorted(path.name for path in output_dir.iterdir()),
+                sorted([*keep, ".子目录"]),
+            )
+
+    def test_missing_output_directory_is_not_an_error(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            self.assertEqual(
+                remove_stale_temporary_files(Path(directory) / "output"),
+                [],
+            )
+
+    def test_leaves_a_freshly_written_file_alone(self) -> None:
+        # A second instance's startup cleanup must not delete a first
+        # instance's temporary file while save_workbook_atomically is still
+        # writing to it — that would turn a harmless leftover-file feature
+        # into a way for one run to corrupt another's in-flight save.
+        with tempfile.TemporaryDirectory() as directory:
+            output_dir = Path(directory)
+            in_flight = output_dir / ".收款单统计-abc123.xlsx"
+            in_flight.write_bytes(b"x")
+
+            removed = remove_stale_temporary_files(
+                output_dir, minimum_age_seconds=180
+            )
+
+            self.assertEqual(removed, [])
+            self.assertTrue(in_flight.exists())
 
 
 class DateHelpersTest(unittest.TestCase):
@@ -157,8 +208,8 @@ class ExcelHelpersTest(unittest.TestCase):
 
     def test_format_sheet_applies_navigation_and_alignment(self) -> None:
         class MeasurementFont:
-            def getbbox(self, text: str) -> tuple[int, int, int, int]:
-                return 0, 0, len(text) * 8, 16
+            def getlength(self, text: str) -> float:
+                return len(text) * 8
 
         workbook = Workbook()
         sheet = workbook.active
