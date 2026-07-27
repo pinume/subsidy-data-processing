@@ -17,6 +17,7 @@ from processors.common.excel import (
     read_rows,
     remove_stale_temporary_files,
     resolve_font,
+    run_with_output_rollback,
     save_workbook_atomically,
 )
 
@@ -128,6 +129,53 @@ class AtomicSaveTest(unittest.TestCase):
                 self.assertEqual(saved.active["A1"].value, "old")
             finally:
                 saved.close()
+
+
+class OutputRollbackTest(unittest.TestCase):
+    def test_restores_existing_outputs_and_removes_new_outputs(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            output_dir = Path(directory)
+            existing = output_dir / "existing.xlsx"
+            new = output_dir / "new.xlsx"
+            existing.write_bytes(b"old")
+
+            def fail_after_writes() -> None:
+                existing.write_bytes(b"new")
+                new.write_bytes(b"new")
+                raise ValueError("later step failed")
+
+            with self.assertRaisesRegex(ValueError, "later step failed"):
+                run_with_output_rollback((existing, new), fail_after_writes)
+
+            self.assertEqual(existing.read_bytes(), b"old")
+            self.assertFalse(new.exists())
+            self.assertEqual(
+                [path.name for path in output_dir.iterdir()],
+                ["existing.xlsx"],
+            )
+
+    def test_keeps_successful_outputs_and_removes_backups(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            output_dir = Path(directory)
+            first = output_dir / "first.xlsx"
+            second = output_dir / "second.xlsx"
+            first.write_bytes(b"old")
+
+            def succeed() -> str:
+                first.write_bytes(b"new")
+                second.write_bytes(b"new")
+                return "done"
+
+            self.assertEqual(
+                run_with_output_rollback((first, second), succeed),
+                "done",
+            )
+            self.assertEqual(first.read_bytes(), b"new")
+            self.assertEqual(second.read_bytes(), b"new")
+            self.assertEqual(
+                sorted(path.name for path in output_dir.iterdir()),
+                ["first.xlsx", "second.xlsx"],
+            )
 
 
 class ExcelHelpersTest(unittest.TestCase):
