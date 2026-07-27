@@ -270,7 +270,7 @@ def width_measurer(value_font) -> Callable[[object], float]:
 
 
 def pixels_to_excel_width(pixels: float) -> float:
-    return round(((pixels * 1.1) + 16) / 7, 2)
+    return min(round(((pixels * 1.1) + 16) / 7, 2), 255)
 
 
 def create_sheet_styles(font_name: str):
@@ -418,6 +418,7 @@ def run_with_output_rollback(
     """
     unique_paths = tuple(dict.fromkeys(output_paths))
     backups: dict[Path, Path | None] = {}
+    temporary_backups: set[Path] = set()
     try:
         for output_path in unique_paths:
             if not output_path.exists():
@@ -431,6 +432,7 @@ def run_with_output_rollback(
                 delete=False,
             ) as backup_file:
                 backup_path = Path(backup_file.name)
+            temporary_backups.add(backup_path)
             shutil.copy2(output_path, backup_path)
             backups[output_path] = backup_path
 
@@ -444,6 +446,7 @@ def run_with_output_rollback(
                 else:
                     os.replace(backup_path, output_path)
                     backups[output_path] = None
+                    temporary_backups.discard(backup_path)
             except OSError as rollback_error:
                 rollback_errors.append(f"{output_path.name}: {rollback_error}")
         if rollback_errors:
@@ -453,9 +456,8 @@ def run_with_output_rollback(
             ) from operation_error
         raise
     finally:
-        for backup_path in backups.values():
-            if backup_path is not None:
-                backup_path.unlink(missing_ok=True)
+        for backup_path in temporary_backups:
+            backup_path.unlink(missing_ok=True)
 
 
 def load_uploaded_subsidy_stats(source: Path) -> tuple[int, Decimal]:

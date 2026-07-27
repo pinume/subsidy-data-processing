@@ -111,6 +111,41 @@ class DetailProcessingTests(unittest.TestCase):
         )
         self.assertEqual(bold_rows, [3, 4])
 
+    def test_large_read_only_detail_uses_streaming_iteration(self) -> None:
+        with TemporaryDirectory(dir=".") as temporary_dir:
+            path = Path(temporary_dir) / "detail.xlsx"
+            workbook = Workbook()
+            detail = workbook.active
+            detail.title = "家电明细"
+            detail.append(["财务大类", "品牌", "补贴金额"])
+            for _ in range(3000):
+                detail.append(["空调", "格力", 1])
+            workbook.save(path)
+            workbook.close()
+
+            read_only_book = load_workbook(
+                path,
+                read_only=True,
+                data_only=True,
+            )
+            try:
+                read_only_detail = read_only_book["家电明细"]
+                with patch.object(
+                    type(read_only_detail),
+                    "cell",
+                    side_effect=AssertionError(
+                        "read-only aggregation must not use random cell access"
+                    ),
+                ):
+                    groups = payment._sum_detail_groups([read_only_detail])
+            finally:
+                read_only_book.close()
+
+            self.assertEqual(
+                groups[("空调", "格力")],
+                [Decimal("3000"), 3000],
+            )
+
 
 class WorkbookLoadingTests(unittest.TestCase):
     def test_xlsm_conversion_preserves_cached_formula_values(self) -> None:

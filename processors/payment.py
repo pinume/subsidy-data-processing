@@ -623,21 +623,27 @@ def _sort_detail_sheet(worksheet, category_map: dict[str, str]) -> int:
 def _sum_detail_groups(detail_sheets) -> dict[tuple[str, str], list]:
     groups: dict[tuple[str, str], list] = {}
     for detail_sheet in detail_sheets:
+        rows = detail_sheet.iter_rows(values_only=True)
+        header = next(rows, None)
+        if header is None:
+            raise ValueError(f"{detail_sheet.title}缺少表头")
         header_positions = {
-            cell.value: cell.column
-            for cell in detail_sheet[1]
-            if cell.value not in (None, "")
+            value: index
+            for index, value in enumerate(header)
+            if value not in (None, "")
         }
         category_column = header_positions["财务大类"]
         brand_column = header_positions["品牌"]
         subsidy_column = header_positions["补贴金额"]
 
-        for row in range(2, detail_sheet.max_row + 1):
-            category = detail_sheet.cell(row, category_column).value
-            brand = detail_sheet.cell(row, brand_column).value
-            subsidy = detail_sheet.cell(row, subsidy_column).value
+        for row_number, row in enumerate(rows, start=2):
+            category = row[category_column]
+            brand = row[brand_column]
+            subsidy = row[subsidy_column]
             if category in (None, ""):
-                raise ValueError(f"{detail_sheet.title}第 {row} 行缺少财务大类")
+                raise ValueError(
+                    f"{detail_sheet.title}第 {row_number} 行缺少财务大类"
+                )
             key = (str(category), "" if brand in (None, "") else str(brand))
             if key not in groups:
                 groups[key] = [Decimal("0"), 0]
@@ -646,7 +652,7 @@ def _sum_detail_groups(detail_sheets) -> dict[tuple[str, str], list]:
                     subsidy_amount = Decimal(str(subsidy))
                 except (InvalidOperation, ValueError) as error:
                     raise ValueError(
-                        f"{detail_sheet.title}第 {row} 行补贴金额不是有效数值"
+                        f"{detail_sheet.title}第 {row_number} 行补贴金额不是有效数值"
                     ) from error
                 groups[key][0] += subsidy_amount
                 groups[key][1] += -1 if subsidy_amount < 0 else 1

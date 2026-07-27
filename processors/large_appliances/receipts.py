@@ -480,9 +480,8 @@ def process_receipts() -> None:
     sheet.freeze_panes = "A2"
     for column_index, maximum_pixels in enumerate(maximum_widths, start=1):
         column_letter = sheet.cell(1, column_index).column_letter
-        sheet.column_dimensions[column_letter].width = min(
-            pixels_to_excel_width(maximum_pixels),
-            255,
+        sheet.column_dimensions[column_letter].width = pixels_to_excel_width(
+            maximum_pixels
         )
 
     row_count = len(output_rows)

@@ -80,9 +80,14 @@ def build_processors() -> tuple[tuple[str, Path, Callable[[], None]], ...]:
 
 def process_all(processors: tuple[tuple[str, Path, Callable[[], None]], ...]) -> None:
     def process_everything() -> None:
+        print(
+            "Batch mode: step success messages are provisional; "
+            "a later failure rolls every output back."
+        )
         for _, source_path, processor in processors:
             print(f"Processing: {source_path}")
             processor()
+        print("All processing modes completed; output transaction committed.")
 
     run_with_output_rollback(all_output_files(), process_everything)
 

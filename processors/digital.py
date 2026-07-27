@@ -8,7 +8,7 @@ from functools import partial
 from pathlib import Path
 
 import xlrd
-from openpyxl import Workbook, load_workbook
+from openpyxl import Workbook
 from openpyxl.styles import PatternFill
 
 from processors.common import submitted as common_submitted
@@ -721,4 +721,3 @@ def validate_detail_sheet(
             "销售用券匹配行的2026数码国补（计入收入）合计不为 0："
             f"{actual_matched_subsidy_total}"
         )
-

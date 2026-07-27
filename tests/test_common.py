@@ -14,6 +14,7 @@ from processors.common.dates import (
 )
 from processors.common.excel import (
     format_sheet,
+    pixels_to_excel_width,
     read_rows,
     remove_stale_temporary_files,
     resolve_font,
@@ -177,8 +178,30 @@ class OutputRollbackTest(unittest.TestCase):
                 ["first.xlsx", "second.xlsx"],
             )
 
+    def test_failed_backup_copy_does_not_leave_temporary_file(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            output_dir = Path(directory)
+            existing = output_dir / "existing.xlsx"
+            existing.write_bytes(b"old")
+
+            with patch(
+                "processors.common.excel.shutil.copy2",
+                side_effect=OSError("disk full"),
+            ):
+                with self.assertRaisesRegex(OSError, "disk full"):
+                    run_with_output_rollback((existing,), lambda: None)
+
+            self.assertEqual(existing.read_bytes(), b"old")
+            self.assertEqual(
+                [path.name for path in output_dir.iterdir()],
+                ["existing.xlsx"],
+            )
+
 
 class ExcelHelpersTest(unittest.TestCase):
+    def test_excel_column_width_is_capped_at_format_limit(self) -> None:
+        self.assertEqual(pixels_to_excel_width(100_000), 255)
+
     def test_resolve_font_uses_first_existing_candidate(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             missing = Path(directory) / "missing.ttf"
