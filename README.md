@@ -11,9 +11,6 @@ uv sync --locked
 uv run python main.py
 ```
 
-`uv` automatically manages the required Python environment. The minimum supported Python version is 3.12.
-
-
 ## Update
 
 ```powershell
