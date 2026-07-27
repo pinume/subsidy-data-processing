@@ -111,6 +111,41 @@ class DetailProcessingTests(unittest.TestCase):
         )
         self.assertEqual(bold_rows, [3, 4])
 
+    def test_large_read_only_detail_uses_streaming_iteration(self) -> None:
+        with TemporaryDirectory(dir=".") as temporary_dir:
+            path = Path(temporary_dir) / "detail.xlsx"
+            workbook = Workbook()
+            detail = workbook.active
+            detail.title = "家电明细"
+            detail.append(["财务大类", "品牌", "补贴金额"])
+            for _ in range(3000):
+                detail.append(["空调", "格力", 1])
+            workbook.save(path)
+            workbook.close()
+
+            read_only_book = load_workbook(
+                path,
+                read_only=True,
+                data_only=True,
+            )
+            try:
+                read_only_detail = read_only_book["家电明细"]
+                with patch.object(
+                    type(read_only_detail),
+                    "cell",
+                    side_effect=AssertionError(
+                        "read-only aggregation must not use random cell access"
+                    ),
+                ):
+                    groups = payment._sum_detail_groups([read_only_detail])
+            finally:
+                read_only_book.close()
+
+            self.assertEqual(
+                groups[("空调", "格力")],
+                [Decimal("3000"), 3000],
+            )
+
 
 class WorkbookLoadingTests(unittest.TestCase):
     def test_xlsm_conversion_preserves_cached_formula_values(self) -> None:
@@ -352,6 +387,64 @@ class PaymentPipelineTests(unittest.TestCase):
                 [],
                 "失败时不应留下工作副本或半成品输出",
             )
+
+    def test_wrong_merchant_id_does_not_replace_existing_output(self) -> None:
+        with TemporaryDirectory(dir=".") as temporary_dir:
+            temporary_path = Path(temporary_dir).resolve()
+            self._prepare_data_dir(temporary_path)
+            output_dir = temporary_path / "output"
+            output_dir.mkdir()
+            output_file = output_dir / "回款明细.xlsx"
+            existing = Workbook()
+            existing.active["A1"] = "old"
+            existing.save(output_file)
+            existing.close()
+
+            with self.assertRaisesRegex(ValueError, "未找到商户 WRONG 的数据"):
+                self._run(
+                    temporary_path,
+                    {"家电": "WRONG", "数码": "WRONG"},
+                )
+
+            saved = load_workbook(output_file, read_only=True, data_only=True)
+            try:
+                self.assertEqual(saved.active["A1"].value, "old")
+            finally:
+                saved.close()
+
+    def test_validator_rejects_summary_that_disagrees_with_details(self) -> None:
+        with TemporaryDirectory(dir=".") as temporary_dir:
+            temporary_path = Path(temporary_dir).resolve()
+            self._prepare_data_dir(temporary_path)
+            output_file = self._run(
+                temporary_path,
+                {"家电": "ABC123", "数码": "ABC123"},
+            )
+
+            saved = load_workbook(output_file)
+            expected_summary = payment._summary_snapshot(saved["汇总"])
+            saved["汇总"].cell(saved["汇总"].max_row, 3).value = 999
+            saved.save(output_file)
+            saved.close()
+
+            expectations = {
+                "家电明细": payment.PaymentOutputExpectation(
+                    payment.PROFILES["家电"],
+                    1,
+                    "ABC123",
+                ),
+                "数码明细": payment.PaymentOutputExpectation(
+                    payment.PROFILES["数码"],
+                    1,
+                    "ABC123",
+                ),
+            }
+            with self.assertRaisesRegex(ValueError, "汇总.*内容校验失败"):
+                payment.validate_output(
+                    output_file,
+                    expectations,
+                    expected_summary,
+                )
 
     def test_same_stem_sources_keep_separate_working_copies(self) -> None:
         # 补贴明细.xls and 补贴明细.xlsx used to share one working copy: the

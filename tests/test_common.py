@@ -14,9 +14,11 @@ from processors.common.dates import (
 )
 from processors.common.excel import (
     format_sheet,
+    pixels_to_excel_width,
     read_rows,
     remove_stale_temporary_files,
     resolve_font,
+    run_with_output_rollback,
     save_workbook_atomically,
 )
 
@@ -130,7 +132,76 @@ class AtomicSaveTest(unittest.TestCase):
                 saved.close()
 
 
+class OutputRollbackTest(unittest.TestCase):
+    def test_restores_existing_outputs_and_removes_new_outputs(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            output_dir = Path(directory)
+            existing = output_dir / "existing.xlsx"
+            new = output_dir / "new.xlsx"
+            existing.write_bytes(b"old")
+
+            def fail_after_writes() -> None:
+                existing.write_bytes(b"new")
+                new.write_bytes(b"new")
+                raise ValueError("later step failed")
+
+            with self.assertRaisesRegex(ValueError, "later step failed"):
+                run_with_output_rollback((existing, new), fail_after_writes)
+
+            self.assertEqual(existing.read_bytes(), b"old")
+            self.assertFalse(new.exists())
+            self.assertEqual(
+                [path.name for path in output_dir.iterdir()],
+                ["existing.xlsx"],
+            )
+
+    def test_keeps_successful_outputs_and_removes_backups(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            output_dir = Path(directory)
+            first = output_dir / "first.xlsx"
+            second = output_dir / "second.xlsx"
+            first.write_bytes(b"old")
+
+            def succeed() -> str:
+                first.write_bytes(b"new")
+                second.write_bytes(b"new")
+                return "done"
+
+            self.assertEqual(
+                run_with_output_rollback((first, second), succeed),
+                "done",
+            )
+            self.assertEqual(first.read_bytes(), b"new")
+            self.assertEqual(second.read_bytes(), b"new")
+            self.assertEqual(
+                sorted(path.name for path in output_dir.iterdir()),
+                ["first.xlsx", "second.xlsx"],
+            )
+
+    def test_failed_backup_copy_does_not_leave_temporary_file(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            output_dir = Path(directory)
+            existing = output_dir / "existing.xlsx"
+            existing.write_bytes(b"old")
+
+            with patch(
+                "processors.common.excel.shutil.copy2",
+                side_effect=OSError("disk full"),
+            ):
+                with self.assertRaisesRegex(OSError, "disk full"):
+                    run_with_output_rollback((existing,), lambda: None)
+
+            self.assertEqual(existing.read_bytes(), b"old")
+            self.assertEqual(
+                [path.name for path in output_dir.iterdir()],
+                ["existing.xlsx"],
+            )
+
+
 class ExcelHelpersTest(unittest.TestCase):
+    def test_excel_column_width_is_capped_at_format_limit(self) -> None:
+        self.assertEqual(pixels_to_excel_width(100_000), 255)
+
     def test_resolve_font_uses_first_existing_candidate(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             missing = Path(directory) / "missing.ttf"

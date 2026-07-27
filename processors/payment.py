@@ -142,6 +142,13 @@ class ProcessingProfile:
     brand_model_aliases: dict[str, str]
 
 
+@dataclass(frozen=True)
+class PaymentOutputExpectation:
+    profile: ProcessingProfile
+    row_count: int
+    merchant_id: str
+
+
 PROFILES = {
     "家电": ProcessingProfile(
         name="家电",
@@ -616,21 +623,27 @@ def _sort_detail_sheet(worksheet, category_map: dict[str, str]) -> int:
 def _sum_detail_groups(detail_sheets) -> dict[tuple[str, str], list]:
     groups: dict[tuple[str, str], list] = {}
     for detail_sheet in detail_sheets:
+        rows = detail_sheet.iter_rows(values_only=True)
+        header = next(rows, None)
+        if header is None:
+            raise ValueError(f"{detail_sheet.title}缺少表头")
         header_positions = {
-            cell.value: cell.column
-            for cell in detail_sheet[1]
-            if cell.value not in (None, "")
+            value: index
+            for index, value in enumerate(header)
+            if value not in (None, "")
         }
         category_column = header_positions["财务大类"]
         brand_column = header_positions["品牌"]
         subsidy_column = header_positions["补贴金额"]
 
-        for row in range(2, detail_sheet.max_row + 1):
-            category = detail_sheet.cell(row, category_column).value
-            brand = detail_sheet.cell(row, brand_column).value
-            subsidy = detail_sheet.cell(row, subsidy_column).value
+        for row_number, row in enumerate(rows, start=2):
+            category = row[category_column]
+            brand = row[brand_column]
+            subsidy = row[subsidy_column]
             if category in (None, ""):
-                raise ValueError(f"{detail_sheet.title}第 {row} 行缺少财务大类")
+                raise ValueError(
+                    f"{detail_sheet.title}第 {row_number} 行缺少财务大类"
+                )
             key = (str(category), "" if brand in (None, "") else str(brand))
             if key not in groups:
                 groups[key] = [Decimal("0"), 0]
@@ -639,7 +652,7 @@ def _sum_detail_groups(detail_sheets) -> dict[tuple[str, str], list]:
                     subsidy_amount = Decimal(str(subsidy))
                 except (InvalidOperation, ValueError) as error:
                     raise ValueError(
-                        f"{detail_sheet.title}第 {row} 行补贴金额不是有效数值"
+                        f"{detail_sheet.title}第 {row_number} 行补贴金额不是有效数值"
                     ) from error
                 groups[key][0] += subsidy_amount
                 groups[key][1] += -1 if subsidy_amount < 0 else 1
@@ -780,6 +793,12 @@ def _process_sources(
 
     if not merged_header_written:
         raise ValueError(f"{profile.name}的原始数据中没有可整合的明细 Sheet")
+    if merged_rows == 0:
+        source_names = "、".join(path.name for path in sources)
+        raise ValueError(
+            f"{profile.name}来源文件中未找到商户 {merchant_id} 的数据："
+            f"{source_names}；请检查 config/merchants.yaml"
+        )
     inferred_brands = _infer_missing_brands_from_existing_rows(merged_sheet)
     unidentified_brands -= inferred_brands
     sorted_detail_rows = _sort_detail_sheet(merged_sheet, profile.category_map)
@@ -872,35 +891,110 @@ def build_workbook() -> tuple[Workbook, list[tuple[ProcessingProfile, object]], 
     return target_book, sections, summary_groups
 
 
-def validate_output(path: Path, expected_rows: dict[str, int]) -> None:
-    """Re-read the saved workbook and confirm every sheet survived the write."""
+def _summary_snapshot(worksheet) -> list[tuple[object, ...]]:
+    return [
+        tuple(row)
+        for row in worksheet.iter_rows(
+            min_row=1,
+            max_col=len(SUMMARY_HEADERS),
+            values_only=True,
+        )
+    ]
+
+
+def validate_output(
+    path: Path,
+    expectations: dict[str, PaymentOutputExpectation],
+    expected_summary: list[tuple[object, ...]],
+) -> None:
+    """Re-read the saved workbook and cross-check details against the summary."""
     workbook = load_workbook(path, read_only=True, data_only=True)
     try:
-        if SUMMARY_SHEET_NAME not in workbook.sheetnames:
-            raise ValueError(f"{path.name} 缺少“{SUMMARY_SHEET_NAME}”工作表")
-        for sheet_name, row_count in expected_rows.items():
-            if sheet_name not in workbook.sheetnames:
-                raise ValueError(f"{path.name} 缺少“{sheet_name}”工作表")
+        expected_sheet_names = [SUMMARY_SHEET_NAME, *expectations]
+        if workbook.sheetnames != expected_sheet_names:
+            raise ValueError(
+                f"{path.name} 工作表应为 {expected_sheet_names}，"
+                f"实际为 {workbook.sheetnames}"
+            )
+
+        detail_sheets = []
+        for sheet_name, expectation in expectations.items():
             sheet = workbook[sheet_name]
-            written = max(sheet.max_row - 1, 0)
-            if written != row_count:
+            expected_header = expectation.profile.detail_headers + DERIVED_HEADERS
+            actual_header = tuple(cell.value for cell in sheet[1])
+            if actual_header != expected_header:
                 raise ValueError(
-                    f"{path.name} 的“{sheet_name}”应有 {row_count} 行数据，"
+                    f"{path.name} 的“{sheet_name}”表头不符合要求："
+                    f"预期 {expected_header}，实际 {actual_header}"
+                )
+
+            written = max(sheet.max_row - 1, 0)
+            if written != expectation.row_count:
+                raise ValueError(
+                    f"{path.name} 的“{sheet_name}”应有 "
+                    f"{expectation.row_count} 行数据，"
                     f"实际 {written} 行"
                 )
+
+            merchant_column = expected_header.index("商户编号")
+            wrong_merchants = [
+                row_number
+                for row_number, row in enumerate(
+                    sheet.iter_rows(min_row=2, values_only=True),
+                    start=2,
+                )
+                if str(row[merchant_column]).strip() != expectation.merchant_id
+            ]
+            if wrong_merchants:
+                raise ValueError(
+                    f"{path.name} 的“{sheet_name}”存在非目标商户数据，"
+                    f"首个异常行：{wrong_merchants[0]}"
+                )
+            detail_sheets.append(sheet)
+
+        summary_sheet = workbook[SUMMARY_SHEET_NAME]
+        actual_summary = _summary_snapshot(summary_sheet)
+        if actual_summary != expected_summary:
+            raise ValueError(f"{path.name} 的“{SUMMARY_SHEET_NAME}”内容校验失败")
+
+        detail_groups = _sum_detail_groups(detail_sheets)
+        detail_total = sum(
+            (values[0] for values in detail_groups.values()),
+            Decimal("0"),
+        ).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+        detail_count = sum(values[1] for values in detail_groups.values())
+        grand_total = actual_summary[-1]
+        if (
+            grand_total[0] != "合计"
+            or Decimal(str(grand_total[2])).quantize(
+                Decimal("0.01"),
+                rounding=ROUND_HALF_UP,
+            )
+            != detail_total
+            or grand_total[3] != detail_count
+        ):
+            raise ValueError(
+                f"{path.name} 的汇总总计与明细不一致："
+                f"明细为 {detail_total} / {detail_count}"
+            )
     finally:
         workbook.close()
 
 
 def process_payment_files() -> None:
     target_book, sections, _ = build_workbook()
-    expected_rows = {
-        detail_sheet.title: max(detail_sheet.max_row - 1, 0)
-        for _, detail_sheet in sections
+    expectations = {
+        detail_sheet.title: PaymentOutputExpectation(
+            profile=profile,
+            row_count=max(detail_sheet.max_row - 1, 0),
+            merchant_id=merchant_id(profile.name),
+        )
+        for profile, detail_sheet in sections
     }
+    expected_summary = _summary_snapshot(target_book[SUMMARY_SHEET_NAME])
     save_workbook_atomically(
         target_book,
         OUTPUT_FILE,
-        lambda path: validate_output(path, expected_rows),
+        lambda path: validate_output(path, expectations, expected_summary),
     )
     print(f"处理完成：{OUTPUT_FILE}")

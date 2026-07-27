@@ -5,7 +5,10 @@ from collections.abc import Callable
 from pathlib import Path
 
 from processors import digital, large_appliances, payment
-from processors.common.excel import remove_stale_temporary_files
+from processors.common.excel import (
+    remove_stale_temporary_files,
+    run_with_output_rollback,
+)
 from processors.common.paths import resolve_data_dir
 
 
@@ -16,8 +19,29 @@ def process_submitted_files() -> None:
     filename marker) and writes its own output, but an operator has no
     reason to run one without the other, so a single menu entry covers both.
     """
-    large_appliances.process_submitted_files()
-    digital.process_submitted_files()
+    def process_both() -> None:
+        large_appliances.process_submitted_files()
+        digital.process_submitted_files()
+
+    run_with_output_rollback(
+        (
+            large_appliances.OUTPUT_FILE,
+            digital.OUTPUT_FILE,
+        ),
+        process_both,
+    )
+
+
+def all_output_files() -> tuple[Path, ...]:
+    from processors.coupon_report import OUTPUT_FILE as coupon_output_file
+
+    return (
+        large_appliances.OUTPUT_FILE,
+        digital.OUTPUT_FILE,
+        large_appliances.RECEIPTS_OUTPUT_FILE,
+        coupon_output_file,
+        payment.OUTPUT_FILE,
+    )
 
 
 def build_processors() -> tuple[tuple[str, Path, Callable[[], None]], ...]:
@@ -55,9 +79,17 @@ def build_processors() -> tuple[tuple[str, Path, Callable[[], None]], ...]:
 
 
 def process_all(processors: tuple[tuple[str, Path, Callable[[], None]], ...]) -> None:
-    for _, source_path, processor in processors:
-        print(f"Processing: {source_path}")
-        processor()
+    def process_everything() -> None:
+        print(
+            "Batch mode: step success messages are provisional; "
+            "a later failure rolls every output back."
+        )
+        for _, source_path, processor in processors:
+            print(f"Processing: {source_path}")
+            processor()
+        print("All processing modes completed; output transaction committed.")
+
+    run_with_output_rollback(all_output_files(), process_everything)
 
 
 def choose_data_processor() -> Callable[[], None] | None:
@@ -111,29 +143,28 @@ def report_failure(error: BaseException) -> None:
 
 
 def main() -> int:
-    data_dir = resolve_data_dir()
-    if data_dir is None:
-        return 0
-
-    # Both projects share this data directory, and several processing modes
-    # are no longer project-specific, so both need to be configured up
-    # front rather than only the one the operator picks.
-    digital.configure_data_dir(data_dir)
-    large_appliances.configure_data_dir(data_dir)
-    payment.configure_data_dir(data_dir)
-
-    # Every pipeline writes into the same output directory and cleans up after
-    # itself; anything dot-prefixed still sitting there is from a run that was
-    # interrupted before it could.
-    removed = remove_stale_temporary_files(large_appliances.OUTPUT_DIR)
-    if removed:
-        print(f"Removed {len(removed)} leftover file(s): {'、'.join(removed)}")
-
-    processor = choose_data_processor()
-    if processor is None:
-        return 0
-
     try:
+        data_dir = resolve_data_dir()
+        if data_dir is None:
+            return 0
+
+        # Both projects share this data directory, and several processing modes
+        # are no longer project-specific, so both need to be configured up
+        # front rather than only the one the operator picks.
+        digital.configure_data_dir(data_dir)
+        large_appliances.configure_data_dir(data_dir)
+        payment.configure_data_dir(data_dir)
+
+        # Every pipeline writes into the same output directory and cleans up
+        # after itself; anything dot-prefixed still sitting there is from a run
+        # that was interrupted before it could.
+        removed = remove_stale_temporary_files(large_appliances.OUTPUT_DIR)
+        if removed:
+            print(f"Removed {len(removed)} leftover file(s): {'、'.join(removed)}")
+
+        processor = choose_data_processor()
+        if processor is None:
+            return 0
         processor()
     except KeyboardInterrupt:
         print("\nProcessing cancelled", file=sys.stderr)

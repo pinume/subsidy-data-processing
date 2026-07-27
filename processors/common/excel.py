@@ -1,5 +1,6 @@
 import os
 import re
+import shutil
 import stat
 import time
 from collections.abc import Callable, Iterator
@@ -269,7 +270,7 @@ def width_measurer(value_font) -> Callable[[object], float]:
 
 
 def pixels_to_excel_width(pixels: float) -> float:
-    return round(((pixels * 1.1) + 16) / 7, 2)
+    return min(round(((pixels * 1.1) + 16) / 7, 2), 255)
 
 
 def create_sheet_styles(font_name: str):
@@ -402,6 +403,61 @@ def save_workbook_atomically(
         workbook.close()
         if temporary_path is not None:
             temporary_path.unlink(missing_ok=True)
+
+
+def run_with_output_rollback(
+    output_paths: tuple[Path, ...],
+    operation: Callable[[], object],
+) -> object:
+    """Restore every managed output if a multi-file operation fails.
+
+    Individual workbooks are already written atomically. This adds the missing
+    transaction boundary around commands that intentionally produce several
+    files: an error in a later step must not leave earlier outputs from the new
+    run beside older outputs from the previous run.
+    """
+    unique_paths = tuple(dict.fromkeys(output_paths))
+    backups: dict[Path, Path | None] = {}
+    temporary_backups: set[Path] = set()
+    try:
+        for output_path in unique_paths:
+            if not output_path.exists():
+                backups[output_path] = None
+                continue
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            with NamedTemporaryFile(
+                prefix=f".{output_path.stem}-rollback-",
+                suffix=output_path.suffix,
+                dir=output_path.parent,
+                delete=False,
+            ) as backup_file:
+                backup_path = Path(backup_file.name)
+            temporary_backups.add(backup_path)
+            shutil.copy2(output_path, backup_path)
+            backups[output_path] = backup_path
+
+        return operation()
+    except BaseException as operation_error:
+        rollback_errors: list[str] = []
+        for output_path, backup_path in backups.items():
+            try:
+                if backup_path is None:
+                    output_path.unlink(missing_ok=True)
+                else:
+                    os.replace(backup_path, output_path)
+                    backups[output_path] = None
+                    temporary_backups.discard(backup_path)
+            except OSError as rollback_error:
+                rollback_errors.append(f"{output_path.name}: {rollback_error}")
+        if rollback_errors:
+            raise RuntimeError(
+                "处理失败且输出回滚不完整："
+                + "；".join(rollback_errors)
+            ) from operation_error
+        raise
+    finally:
+        for backup_path in temporary_backups:
+            backup_path.unlink(missing_ok=True)
 
 
 def load_uploaded_subsidy_stats(source: Path) -> tuple[int, Decimal]:
