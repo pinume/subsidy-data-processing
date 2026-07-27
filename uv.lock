@@ -200,7 +200,7 @@ wheels = [
 ]
 
 [[package]]
-name = "upload-data-processing"
+name = "subsidy-data-processing"
 version = "0.1.0"
 source = { virtual = "." }
 dependencies = [
