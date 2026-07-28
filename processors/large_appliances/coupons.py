@@ -13,6 +13,7 @@ from openpyxl.styles import Alignment, Border, PatternFill, Side
 from processors.common.config import load_brand_mapping
 from processors.common.coupons import (
     as_currency,
+    classify_coupon_row,
     load_coupon_remark_lookup,
     load_uploaded_detail_lookup,
     reference_correction_candidates,
@@ -46,7 +47,15 @@ DIGITAL_DETAILS_SHEET_NAME = "数码-明细总表"
 REFERENCE_REPORT_SHEET_NAME = "Processing Report"
 
 
-COUPON_KEPT_SOURCE_COLUMNS = (3, 4, 6, 8, 15, 18, 26)
+COUPON_KEPT_SOURCE_COLUMNS = (
+    3,
+    4,
+    6,
+    8,
+    15,
+    18,
+    _shared.COUPON_FAMILY_SUBSIDY_COLUMN,
+)
 # Rows misclassified as digital are excluded from the Summary aggregation
 # and never get their own category-brand sheet, though they still appear
 # in the Details sheet.
@@ -192,17 +201,20 @@ def read_coupon_rows(source: Path) -> list[list[object]]:
                 row.append(value)
             if any(value not in (None, "") for value in row):
                 # The merged coupon export carries both projects' rows in one
-                # sheet; a genuine 数码 row has its own 国补 column populated
-                # here (family's own column above is then 0), so it is
-                # skipped rather than double-counted as 家电. Rows with
-                # neither column populated are bad source data, not digital
-                # sales, so they default to 家电 and surface later via the
-                # 未上传/零国补 warnings instead of being silently dropped.
+                # sheet; classify_coupon_row tells 家电 rows apart from 数码
+                # ones by which 国补 column is populated, and refuses to
+                # guess when both are (source data corruption).
                 digital_subsidy = source_sheet.cell(
                     row_index,
                     _shared.COUPON_DIGITAL_SUBSIDY_COLUMN - 1,
                 ).value
-                if digital_subsidy not in (None, "", 0):
+                classification = classify_coupon_row(
+                    appliance_subsidy=row[-1],
+                    digital_subsidy=digital_subsidy,
+                    row_number=row_index + 1,
+                    source_name=source.name,
+                )
+                if classification != "家电":
                     continue
                 document_number = (
                     ""

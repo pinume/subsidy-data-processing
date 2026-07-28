@@ -19,6 +19,32 @@ def as_currency(amount: Decimal) -> Decimal:
     return amount.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
 
 
+def classify_coupon_row(
+    *,
+    appliance_subsidy: object,
+    digital_subsidy: object,
+    row_number: int,
+    source_name: str,
+) -> str:
+    """Classify a merged 销售用券情况统计 row as "家电" or "数码".
+
+    The merged export is documented (README) to carry exactly one of the two
+    国补 columns populated per row. Both populated is source data corruption
+    serious enough to stop the run rather than silently pick a side; neither
+    populated defaults to 家电, where the existing zero-国补 warning already
+    surfaces it to the operator as bad data.
+    """
+    appliance_nonzero = appliance_subsidy not in (None, "", 0)
+    digital_nonzero = digital_subsidy not in (None, "", 0)
+    if appliance_nonzero and digital_nonzero:
+        raise ValueError(
+            f"{source_name} 第 {row_number} 行同时存在家电国补"
+            f"（{appliance_subsidy}）与数码国补（{digital_subsidy}），"
+            "无法确定该行所属项目"
+        )
+    return "数码" if digital_nonzero else "家电"
+
+
 def load_coupon_remark_lookup(source: Path) -> dict[tuple[str, date], str]:
     if not source.exists():
         raise FileNotFoundError(f"未找到备注匹配文件：{source}")

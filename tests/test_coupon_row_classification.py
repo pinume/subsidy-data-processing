@@ -1,0 +1,51 @@
+import unittest
+
+from processors.common.coupons import classify_coupon_row
+
+
+class CouponRowClassificationTest(unittest.TestCase):
+    def test_appliance_subsidy_only_classifies_as_family(self) -> None:
+        self.assertEqual(
+            classify_coupon_row(
+                appliance_subsidy=483.6,
+                digital_subsidy=0,
+                row_number=3,
+                source_name="销售用券情况统计.XLS",
+            ),
+            "家电",
+        )
+
+    def test_digital_subsidy_only_classifies_as_digital(self) -> None:
+        self.assertEqual(
+            classify_coupon_row(
+                appliance_subsidy=0,
+                digital_subsidy=299.85,
+                row_number=4,
+                source_name="销售用券情况统计.XLS",
+            ),
+            "数码",
+        )
+
+    def test_neither_subsidy_populated_defaults_to_family(self) -> None:
+        self.assertEqual(
+            classify_coupon_row(
+                appliance_subsidy=0,
+                digital_subsidy=None,
+                row_number=5,
+                source_name="销售用券情况统计.XLS",
+            ),
+            "家电",
+        )
+
+    def test_both_subsidies_populated_raises(self) -> None:
+        with self.assertRaisesRegex(ValueError, "第 7 行.*家电国补.*数码国补"):
+            classify_coupon_row(
+                appliance_subsidy=100,
+                digital_subsidy=50,
+                row_number=7,
+                source_name="销售用券情况统计.XLS",
+            )
+
+
+if __name__ == "__main__":
+    unittest.main()

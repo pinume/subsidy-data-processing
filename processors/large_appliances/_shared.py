@@ -43,10 +43,12 @@ COUPON_REFERENCE_SUPPLEMENT_KEYWORD = "新建 Microsoft Excel 工作表"
 # The coupon export's field header row (row 2) at its last kept column
 # (column 26); see COUPON_KEPT_SOURCE_COLUMNS in coupons.py.
 COUPON_SUBSIDY_HEADER = "2026家电国补（计入收入）"
+COUPON_FAMILY_SUBSIDY_COLUMN = 26
 # digital's 国补 column in the same merged file (column 27, right after
 # 家电's above); processors/digital.py uses it as its own header/kept
-# column, and processors/large_appliances/coupons.py reads it (without
-# keeping it) to exclude 数码 rows from 家电 processing.
+# column, and both projects' read_coupon_rows read the other side's column
+# (without keeping it) to classify each row via
+# processors.common.coupons.classify_coupon_row.
 COUPON_DIGITAL_SUBSIDY_COLUMN = 27
 
 
@@ -69,7 +71,9 @@ def configure_data_dir(data_dir: Path) -> None:
     COUPON_SOURCE_FILE = match_source_file_by_header(
         find_data_files(data_dir, COUPON_STATISTICS_KEYWORD, (".xls",)),
         COUPON_SUBSIDY_HEADER,
-        read_header=partial(read_xls_header, row=2, column=26),
+        read_header=partial(
+            read_xls_header, row=2, column=COUPON_FAMILY_SUBSIDY_COLUMN
+        ),
     )
     COUPON_REFERENCE_SUPPLEMENT_FILE = resolve_unique_file(
         find_data_files(

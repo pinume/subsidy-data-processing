@@ -15,6 +15,7 @@ from processors.common import submitted as common_submitted
 from processors.common.config import submitted_file_marker
 from processors.common.coupons import (
     as_currency,
+    classify_coupon_row,
     load_coupon_remark_lookup,
     load_uploaded_detail_lookup,
     reference_correction_candidates,
@@ -234,9 +235,20 @@ def read_coupon_rows(source: Path) -> list[list[object]]:
                 row.append(value)
             if any(value not in (None, "") for value in row):
                 # The merged coupon export carries both projects' rows in one
-                # sheet; a 家电 row has this project's 国补 column at 0, so it
-                # is skipped here rather than misread as a digital sale.
-                if row[-1] in (None, "", 0):
+                # sheet; classify_coupon_row tells 数码 rows apart from 家电
+                # ones by which 国补 column is populated, and refuses to
+                # guess when both are (source data corruption).
+                family_subsidy = source_sheet.cell(
+                    row_index,
+                    large_appliances_shared.COUPON_FAMILY_SUBSIDY_COLUMN - 1,
+                ).value
+                classification = classify_coupon_row(
+                    appliance_subsidy=family_subsidy,
+                    digital_subsidy=row[-1],
+                    row_number=row_index + 1,
+                    source_name=source.name,
+                )
+                if classification != "数码":
                     continue
                 document_number = (
                     ""
