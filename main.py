@@ -4,7 +4,7 @@ import traceback
 from collections.abc import Callable
 from pathlib import Path
 
-from processors import digital, large_appliances, payment
+from processors import digital, large_appliances, payment, store_report
 from processors.common.excel import (
     remove_stale_temporary_files,
     run_with_output_rollback,
@@ -41,6 +41,7 @@ def all_output_files() -> tuple[Path, ...]:
         large_appliances.RECEIPTS_OUTPUT_FILE,
         coupon_output_file,
         payment.OUTPUT_FILE,
+        store_report.OUTPUT_FILE,
     )
 
 
@@ -74,6 +75,11 @@ def build_processors() -> tuple[tuple[str, Path, Callable[[], None]], ...]:
             "回款明细（家电+数码）",
             payment.DATA_DIR,
             payment.process_payment_files,
+        ),
+        (
+            "门店国补上传及回款情况表",
+            store_report.DATA_DIR,
+            store_report.process_store_report,
         ),
     )
 
@@ -154,6 +160,7 @@ def main() -> int:
         digital.configure_data_dir(data_dir)
         large_appliances.configure_data_dir(data_dir)
         payment.configure_data_dir(data_dir)
+        store_report.configure_data_dir(data_dir)
 
         # Every pipeline writes into the same output directory and cleans up
         # after itself; anything dot-prefixed still sitting there is from a run
