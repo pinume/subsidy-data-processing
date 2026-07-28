@@ -147,10 +147,14 @@ def read_coupon_rows(source: Path) -> list[list[object]]:
         source_sheet = source_workbook.sheet_by_index(0)
         if source_sheet.nrows < 3:
             raise ValueError(f"{source.name} 缺少标题行、字段标题行或合计行")
-        if source_sheet.ncols < max(COUPON_KEPT_SOURCE_COLUMNS):
+        required_columns = max(
+            max(COUPON_KEPT_SOURCE_COLUMNS),
+            _shared.COUPON_DIGITAL_SUBSIDY_COLUMN,
+        )
+        if source_sheet.ncols < required_columns:
             raise ValueError(
                 f"{source.name} 列数不足：至少需要 "
-                f"{max(COUPON_KEPT_SOURCE_COLUMNS)} 列"
+                f"{required_columns} 列"
             )
         if str(source_sheet.cell_value(source_sheet.nrows - 1, 0)).strip() != "合计":
             raise ValueError(f"{source.name} 最后一行不是合计行")
@@ -166,8 +170,7 @@ def read_coupon_rows(source: Path) -> list[list[object]]:
             raise ValueError(
                 f"{source.name} 保留列字段标题不符合要求："
                 f"预期为 {expected_source_header}，实际为 {source_header}。"
-                f"如果实际字段包含“2026数码国补（计入收入）”，"
-                f"请选择 digital 数据类型，或更换为大家电销售用券文件。"
+                f"请检查该文件是否为正确的销售用券情况统计导出文件。"
             )
 
         rows: list[list[object]] = [list(COUPON_OUTPUT_HEADER)]
@@ -188,6 +191,19 @@ def read_coupon_rows(source: Path) -> list[list[object]]:
                     value = int(value)
                 row.append(value)
             if any(value not in (None, "") for value in row):
+                # The merged coupon export carries both projects' rows in one
+                # sheet; a genuine 数码 row has its own 国补 column populated
+                # here (family's own column above is then 0), so it is
+                # skipped rather than double-counted as 家电. Rows with
+                # neither column populated are bad source data, not digital
+                # sales, so they default to 家电 and surface later via the
+                # 未上传/零国补 warnings instead of being silently dropped.
+                digital_subsidy = source_sheet.cell(
+                    row_index,
+                    _shared.COUPON_DIGITAL_SUBSIDY_COLUMN - 1,
+                ).value
+                if digital_subsidy not in (None, "", 0):
+                    continue
                 document_number = (
                     ""
                     if row[0] is None

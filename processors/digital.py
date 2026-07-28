@@ -58,16 +58,21 @@ COUPON_UPLOADED_SOURCE_FILE = OUTPUT_FILE
 
 DATA_TYPE = "数码"
 # Files live directly in the flat data directory; the digital submitted
-# export is told apart from the large appliances one by filename keyword,
-# and the coupon export (whose filename keyword both projects happen to
-# share) by header content.
+# export is told apart from the large appliances one by filename keyword.
+# The coupon export is a single file shared with large appliances: 家电 and
+# 数码 rows sit in the same sheet, distinguished per row by which of the two
+# 国补 columns is populated (see large_appliances_shared.
+# COUPON_DIGITAL_SUBSIDY_COLUMN and read_coupon_rows below), so both
+# projects resolve to the same file, matched here by this project's own
+# header column.
 # The submitted marker is derived from config/merchants.yaml in
 # configure_data_dir rather than at import time, so a missing or malformed
 # config fails the run with a readable error instead of breaking the import.
 SUBMITTED_FILE_MARKER: str
 COUPON_STATISTICS_KEYWORD = "销售用券情况统计"
 # The coupon export's field header row (row 2) at its last kept column
-# (column 26); see COUPON_KEPT_SOURCE_COLUMNS below.
+# (column 27, right after 家电's own 国补 column); see
+# COUPON_KEPT_SOURCE_COLUMNS below.
 COUPON_SUBSIDY_HEADER = "2026数码国补（计入收入）"
 
 
@@ -85,7 +90,11 @@ def configure_data_dir(data_dir: Path) -> None:
     COUPON_SOURCE_FILE = match_source_file_by_header(
         find_data_files(data_dir, COUPON_STATISTICS_KEYWORD, (".xls",)),
         COUPON_SUBSIDY_HEADER,
-        read_header=partial(read_xls_header, row=2, column=26),
+        read_header=partial(
+            read_xls_header,
+            row=2,
+            column=large_appliances_shared.COUPON_DIGITAL_SUBSIDY_COLUMN,
+        ),
     )
 
 # Digital: 15% of the transaction, capped at 500 per order. Household
@@ -93,7 +102,15 @@ def configure_data_dir(data_dir: Path) -> None:
 # processors/large_appliances/submitted.py.
 SUBSIDY_RATE = Decimal("0.15")
 SUBSIDY_CAP = Decimal("500")
-COUPON_KEPT_SOURCE_COLUMNS = (3, 4, 6, 8, 15, 18, 26)
+COUPON_KEPT_SOURCE_COLUMNS = (
+    3,
+    4,
+    6,
+    8,
+    15,
+    18,
+    large_appliances_shared.COUPON_DIGITAL_SUBSIDY_COLUMN,
+)
 COUPON_OUTPUT_HEADER = (
     "单据号",
     "单据日期",
@@ -195,8 +212,7 @@ def read_coupon_rows(source: Path) -> list[list[object]]:
             raise ValueError(
                 f"{source.name} 保留列字段标题不符合要求："
                 f"预期为 {expected_source_header}，实际为 {source_header}。"
-                f"如果实际字段包含“2026家电国补（计入收入）”，"
-                f"请选择 large appliances 数据类型，或更换为数码销售用券文件。"
+                f"请检查该文件是否为正确的销售用券情况统计导出文件。"
             )
 
         rows: list[list[object]] = [list(COUPON_OUTPUT_HEADER)]
@@ -217,6 +233,11 @@ def read_coupon_rows(source: Path) -> list[list[object]]:
                     value = int(value)
                 row.append(value)
             if any(value not in (None, "") for value in row):
+                # The merged coupon export carries both projects' rows in one
+                # sheet; a 家电 row has this project's 国补 column at 0, so it
+                # is skipped here rather than misread as a digital sale.
+                if row[-1] in (None, "", 0):
+                    continue
                 document_number = (
                     ""
                     if row[0] is None

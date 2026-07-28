@@ -26,8 +26,13 @@ COUPON_UPLOADED_SOURCE_FILE = OUTPUT_FILE
 
 DATA_TYPE = "家电"
 # Files live directly in the flat data directory; each project tells its own
-# files apart by filename keyword, and (for the coupon export, which both
-# projects' files happen to share a keyword for) by header content.
+# files apart by filename keyword. The submitted files for the two projects
+# are genuinely separate files, told apart that way; the coupon export is a
+# single merged file shared by both projects (家电 and 数码 rows sit in the
+# same sheet, one column of the 国补 pair populated per row — see
+# COUPON_DIGITAL_SUBSIDY_COLUMN below and read_coupon_rows in coupons.py /
+# processors/digital.py), so both projects resolve to the same file, matched
+# by each project's own header column.
 # The submitted marker is derived from config/merchants.yaml in
 # configure_data_dir rather than at import time, so a missing or malformed
 # config fails the run with a readable error instead of breaking the import.
@@ -38,6 +43,11 @@ COUPON_REFERENCE_SUPPLEMENT_KEYWORD = "新建 Microsoft Excel 工作表"
 # The coupon export's field header row (row 2) at its last kept column
 # (column 26); see COUPON_KEPT_SOURCE_COLUMNS in coupons.py.
 COUPON_SUBSIDY_HEADER = "2026家电国补（计入收入）"
+# digital's 国补 column in the same merged file (column 27, right after
+# 家电's above); processors/digital.py uses it as its own header/kept
+# column, and processors/large_appliances/coupons.py reads it (without
+# keeping it) to exclude 数码 rows from 家电 processing.
+COUPON_DIGITAL_SUBSIDY_COLUMN = 27
 
 
 def configure_data_dir(data_dir: Path) -> None:
