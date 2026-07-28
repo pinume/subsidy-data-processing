@@ -539,7 +539,7 @@ def write_metrics_row(
     uploaded_value = decimal_to_cell_value(uploaded)
     paid_value = decimal_to_cell_value(paid)
     upload_ratio_value = safe_ratio(uploaded, occurred)
-    payment_ratio_value = safe_ratio(paid, uploaded)
+    payment_ratio_value = safe_ratio(paid, occurred)
 
     sheet[f"{occurred_col}{row}"] = occurred_value
     sheet[f"{uploaded_col}{row}"] = uploaded_value
@@ -637,7 +637,7 @@ def update_totals(sheet, font: Font, expected_cells: dict[str, object]) -> None:
     update_totals_row(
         sheet,
         amount_columns=("D", "E", "F", "G", "J", "K"),
-        ratio_columns={"H": ("F", "D"), "I": ("G", "E"), "L": ("J", "F"), "M": ("K", "G")},
+        ratio_columns={"H": ("F", "D"), "I": ("G", "E"), "L": ("J", "D"), "M": ("K", "E")},
         source_rows=DETAIL_ROWS,
         total_row=TOTAL_ROW,
         font=font,
@@ -684,7 +684,7 @@ def update_brand_group_totals(sheet, font: Font, expected_cells: dict[str, objec
     update_totals_row(
         sheet,
         amount_columns=("D", "E", "F"),
-        ratio_columns={"G": ("E", "D"), "H": ("F", "E")},
+        ratio_columns={"G": ("E", "D"), "H": ("F", "D")},
         source_rows=BRAND_GROUP_DETAIL_ROWS,
         total_row=BRAND_GROUP_TOTAL_ROW,
         font=font,
@@ -745,8 +745,8 @@ def _validate_ratios_match_totals(sheet, path_name: str) -> None:
     denominator mixup that expected-cell comparison alone would miss, since
     that comparison reuses the same safe_ratio() call that wrote the cell."""
     checks = (
-        (TOTAL_ROW, {"H": ("F", "D"), "I": ("G", "E"), "L": ("J", "F"), "M": ("K", "G")}),
-        (BRAND_GROUP_TOTAL_ROW, {"G": ("E", "D"), "H": ("F", "E")}),
+        (TOTAL_ROW, {"H": ("F", "D"), "I": ("G", "E"), "L": ("J", "D"), "M": ("K", "E")}),
+        (BRAND_GROUP_TOTAL_ROW, {"G": ("E", "D"), "H": ("F", "D")}),
     )
     for total_row, ratio_columns in checks:
         for ratio_column, (numerator_column, denominator_column) in ratio_columns.items():

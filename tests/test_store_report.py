@@ -105,7 +105,7 @@ class ReportRatioTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "电脑"):
                 store_report.load_payment_data(payment_file)
 
-    def test_household_row_ratio_uses_uploaded_amount(self) -> None:
+    def test_household_row_ratio_uses_occurred_amount(self) -> None:
         sheet = Workbook().active
         rule = store_report.RowRule(8, "冰箱", ("西门子",), "冰箱", ("西门子",))
         upload_data = {("冰箱", "西门子"): {"已上传": Decimal("100"), "未上传": Decimal("50")}}
@@ -116,7 +116,7 @@ class ReportRatioTests(unittest.TestCase):
             {"发生额": Decimal("0"), "上传额": Decimal("0")}, Decimal("0"), FONT, {},
         )
 
-        self.assertAlmostEqual(sheet["L8"].value, 0.4)
+        self.assertAlmostEqual(sheet["L8"].value, 40 / 150)
         self.assertIsNone(sheet["I8"].value)
 
     def test_digital_row_fills_amount_and_both_ratios(self) -> None:
@@ -130,7 +130,7 @@ class ReportRatioTests(unittest.TestCase):
         self.assertEqual(sheet["G33"].value, 800)
         self.assertEqual(sheet["K33"].value, 300)
         self.assertAlmostEqual(sheet["I33"].value, 0.8)
-        self.assertAlmostEqual(sheet["M33"].value, 0.375)
+        self.assertAlmostEqual(sheet["M33"].value, 0.3)
         self.assertIsNone(sheet["D33"].value)
         self.assertIsNone(sheet["F33"].value)
         self.assertIsNone(sheet["J33"].value)
@@ -153,7 +153,7 @@ class ReportRatioTests(unittest.TestCase):
         self.assertEqual(sheet["D34"].value, 200)
         self.assertEqual(sheet["F34"].value, 100)
         self.assertAlmostEqual(sheet["H34"].value, 0.5)
-        self.assertAlmostEqual(sheet["L34"].value, 0.5)
+        self.assertAlmostEqual(sheet["L34"].value, 0.25)
 
 
 class SourceHeaderValidationTests(unittest.TestCase):
