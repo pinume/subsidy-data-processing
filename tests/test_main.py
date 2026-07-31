@@ -53,8 +53,7 @@ class ProcessorOrderTest(unittest.TestCase):
             data_dir = Path(directory)
             app_main.submitted.configure_data_dir(data_dir)
             app_main.receipts.configure_data_dir(data_dir)
-            app_main.digital.configure_data_dir(data_dir)
-            app_main.large_appliances.configure_data_dir(data_dir)
+            app_main.coupon_sources.configure_data_dir(data_dir)
             app_main.payment.configure_data_dir(data_dir)
             app_main.store_report.configure_data_dir(data_dir)
 
@@ -121,7 +120,7 @@ class MainErrorHandlingTest(unittest.TestCase):
             with (
                 patch.object(app_main, "resolve_data_dir", return_value=data_dir),
                 patch.object(
-                    app_main.digital,
+                    app_main.coupon_sources,
                     "configure_data_dir",
                     side_effect=ValueError("bad config"),
                 ),

@@ -4,12 +4,13 @@ import traceback
 from collections.abc import Callable
 from pathlib import Path
 
-from processors import digital, large_appliances, payment, receipts, store_report, submitted
+from processors import payment, receipts, store_report, submitted
 from processors.common.excel import (
     remove_stale_temporary_files,
     run_with_output_rollback,
 )
 from processors.common.paths import resolve_data_dir
+from processors.coupons import sources as coupon_sources
 
 
 def all_output_files() -> tuple[Path, ...]:
@@ -47,7 +48,7 @@ def build_processors() -> tuple[tuple[str, Path, Callable[[], None]], ...]:
         ),
         (
             "审核明细（销售用券情况统计）",
-            large_appliances.COUPON_SOURCE_FILE or large_appliances.DATA_DIR,
+            coupon_sources.COUPON_SOURCE_FILE or coupon_sources.DATA_DIR,
             process_coupon_report,
         ),
         (
@@ -138,15 +139,14 @@ def main() -> int:
         # front rather than only the one the operator picks.
         submitted.configure_data_dir(data_dir)
         receipts.configure_data_dir(data_dir)
-        digital.configure_data_dir(data_dir)
-        large_appliances.configure_data_dir(data_dir)
+        coupon_sources.configure_data_dir(data_dir)
         payment.configure_data_dir(data_dir)
         store_report.configure_data_dir(data_dir)
 
         # Every pipeline writes into the same output directory and cleans up
         # after itself; anything dot-prefixed still sitting there is from a run
         # that was interrupted before it could.
-        removed = remove_stale_temporary_files(large_appliances.OUTPUT_DIR)
+        removed = remove_stale_temporary_files(submitted.OUTPUT_DIR)
         if removed:
             print(f"Removed {len(removed)} leftover file(s): {'、'.join(removed)}")
 
