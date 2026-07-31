@@ -5,15 +5,21 @@ from decimal import Decimal
 from pathlib import Path
 
 from openpyxl import Workbook, load_workbook
+from openpyxl.styles import Font, PatternFill
 from openpyxl.utils import column_index_from_string
 
 from processors import digital, large_appliances
 from processors.common.config import load_merchants, submitted_file_marker
 from processors.common.excel import (
+    capture_style,
+    format_sheet,
     load_measurement_font,
     resolve_font,
+    reuse_style,
+    style_snapshot,
     text_pixel_width,
     width_measurer,
+    widths_are_additive,
 )
 
 
@@ -118,26 +124,186 @@ class WidthMeasurerTest(unittest.TestCase):
             with self.subTest(value=value):
                 self.assertEqual(measure(value), text_pixel_width(value, font))
 
-    def test_repeated_values_are_measured_once(self) -> None:
+    def test_repeated_values_cost_nothing_on_the_installed_font(self) -> None:
+        """Whichever path the installed font takes, repeats must be free."""
         _, font_path = resolve_font()
-        font = load_measurement_font(font_path)
-        calls = 0
-        original = font.getlength
+        counter = CallCountingFont(load_measurement_font(font_path))
+        measure = width_measurer(counter)
 
-        def counting_getlength(text):
-            nonlocal calls
-            calls += 1
-            return original(text)
+        measure("同一个值")
+        after_first = counter.calls
+        for _ in range(49):
+            measure("同一个值")
 
-        font.getlength = counting_getlength
-        try:
-            measure = width_measurer(font)
-            for _ in range(50):
-                measure("同一个值")
-        finally:
-            font.getlength = original
+        self.assertEqual(counter.calls, after_first)
 
-        self.assertEqual(calls, 1)
+
+class CallCountingFont:
+    """Wraps a font object and counts getlength calls."""
+
+    def __init__(self, font) -> None:
+        self._font = font
+        self.calls = 0
+
+    def getlength(self, text: str) -> float:
+        self.calls += 1
+        return self._font.getlength(text)
+
+
+class FakeMonospaceFont:
+    """Every glyph advances the same width, so widths sum exactly."""
+
+    def __init__(self, width: float = 10.0) -> None:
+        self.width = width
+        self.calls = 0
+
+    def getlength(self, text: str) -> float:
+        self.calls += 1
+        return self.width * len(text)
+
+
+class FakeProportionalFont:
+    """Kerns the pairs real proportional fonts kern, so widths do not sum."""
+
+    KERNED_PAIRS = {"AV": -2.0, "To": -1.5, "Ta": -1.0}
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def getlength(self, text: str) -> float:
+        self.calls += 1
+        total = sum(7.0 if character.isascii() else 14.0 for character in text)
+        for pair, adjustment in self.KERNED_PAIRS.items():
+            total += adjustment * (len(text) - len(text.replace(pair, "")) ) / len(pair)
+        return total
+
+
+class WidthMeasurerFontPathsTest(unittest.TestCase):
+    """Both measuring strategies, on fonts the test itself controls.
+
+    Using fake fonts rather than whatever is installed keeps the assertions
+    about call counts meaningful on any machine.
+    """
+
+    SAMPLE = "同一个值"
+
+    def test_additive_font_takes_the_per_character_path(self) -> None:
+        self.assertTrue(widths_are_additive(FakeMonospaceFont()))
+
+    def test_kerning_font_is_rejected_by_detection(self) -> None:
+        self.assertFalse(widths_are_additive(FakeProportionalFont()))
+
+    def test_additive_font_measures_each_distinct_character_once(self) -> None:
+        font = FakeMonospaceFont()
+        measure = width_measurer(font)
+        font.calls = 0
+
+        measure(self.SAMPLE)
+        self.assertLessEqual(font.calls, len(set(self.SAMPLE)))
+        after_first = font.calls
+
+        for _ in range(49):
+            measure(self.SAMPLE)
+        self.assertEqual(font.calls, after_first)
+
+    def test_additive_font_result_equals_the_direct_measurement(self) -> None:
+        font = FakeMonospaceFont()
+        measure = width_measurer(font)
+        for value in ("SN2026ABCD", "商品名称示例", "中文A1，混排", "0123456789"):
+            with self.subTest(value=value):
+                self.assertEqual(measure(value), font.getlength(value))
+
+    def test_kerning_font_keeps_whole_string_measurement(self) -> None:
+        font = FakeProportionalFont()
+        measure = width_measurer(font)
+        font.calls = 0
+
+        for _ in range(50):
+            measure(self.SAMPLE)
+        self.assertEqual(font.calls, 1)
+
+        # A kerned string must keep the font's own answer, not a summed one.
+        self.assertEqual(measure("AV"), font.getlength("AV"))
+        self.assertNotEqual(
+            font.getlength("AV"),
+            font.getlength("A") + font.getlength("V"),
+        )
+
+
+class StyleReuseTest(unittest.TestCase):
+    """format_sheet reuses computed styles through openpyxl's private _style.
+
+    These pin the two properties that make that safe, so an openpyxl upgrade
+    that changes the attribute fails here rather than in a report nobody
+    re-checks.
+    """
+
+    def build_sheet(self):
+        workbook = Workbook()
+        sheet = workbook.active
+        sheet.append(["描述", "补贴金额"])
+        for index in range(5):
+            sheet.append([f"说明{index}", 100 + index])
+        return workbook, sheet
+
+    def test_snapshot_is_immutable_and_survives_later_edits(self) -> None:
+        _, sheet = self.build_sheet()
+        cell = sheet.cell(row=2, column=1)
+        before = style_snapshot(cell)
+        cell.number_format = "0.00"
+        self.assertIsInstance(before, (tuple, type(None)))
+        self.assertNotEqual(before, style_snapshot(cell))
+
+    def test_reused_style_does_not_link_cells_together(self) -> None:
+        _, sheet = self.build_sheet()
+        source = sheet.cell(row=2, column=1)
+        source.font = Font(name="X", size=11)
+        captured = capture_style(source)
+
+        first = sheet.cell(row=3, column=1)
+        second = sheet.cell(row=4, column=1)
+        reuse_style(first, captured)
+        reuse_style(second, captured)
+
+        second.number_format = "0.00"
+        self.assertEqual(second.number_format, "0.00")
+        self.assertEqual(first.number_format, "General")
+        self.assertEqual(source.number_format, "General")
+
+    def test_format_sheet_keeps_a_number_format_set_beforehand(self) -> None:
+        """payment's 汇总 sets #,##0.00 before formatting; it must survive.
+
+        Only outside the 补贴金额 column, which format_sheet has always
+        rewritten to 0.00 whatever it held before.
+        """
+        font_name, font_path = resolve_font()
+        measurement_font = load_measurement_font(font_path)
+        _, sheet = self.build_sheet()
+        preserved = sheet.cell(row=2, column=1)
+        preserved.number_format = "#,##0.00"
+        overwritten = sheet.cell(row=3, column=2)
+        overwritten.number_format = "#,##0.00"
+
+        format_sheet(sheet, font_name, measurement_font)
+
+        self.assertEqual(preserved.number_format, "#,##0.00")
+        self.assertEqual(overwritten.number_format, "0.00")
+
+    def test_format_sheet_leaves_later_fills_isolated(self) -> None:
+        font_name, font_path = resolve_font()
+        measurement_font = load_measurement_font(font_path)
+        _, sheet = self.build_sheet()
+
+        format_sheet(sheet, font_name, measurement_font)
+
+        filled = sheet.cell(row=3, column=1)
+        filled.fill = PatternFill("solid", fgColor="FFC7CE")
+
+        self.assertEqual(filled.fill.fgColor.rgb, "00FFC7CE")
+        for row_number in (2, 4, 5, 6):
+            with self.subTest(row=row_number):
+                other = sheet.cell(row=row_number, column=1)
+                self.assertIsNone(other.fill.fill_type)
 
 
 class SubmittedFileMarkerTest(unittest.TestCase):
