@@ -4,7 +4,7 @@ import traceback
 from collections.abc import Callable
 from pathlib import Path
 
-from processors import digital, large_appliances, payment, store_report
+from processors import digital, large_appliances, payment, store_report, submitted
 from processors.common.excel import (
     remove_stale_temporary_files,
     run_with_output_rollback,
@@ -12,32 +12,11 @@ from processors.common.excel import (
 from processors.common.paths import resolve_data_dir
 
 
-def process_submitted_files() -> None:
-    """Process both projects' submitted data together.
-
-    Each project reads a different set of source files (told apart by
-    filename marker) and writes its own output, but an operator has no
-    reason to run one without the other, so a single menu entry covers both.
-    """
-    def process_both() -> None:
-        large_appliances.process_submitted_files()
-        digital.process_submitted_files()
-
-    run_with_output_rollback(
-        (
-            large_appliances.OUTPUT_FILE,
-            digital.OUTPUT_FILE,
-        ),
-        process_both,
-    )
-
-
 def all_output_files() -> tuple[Path, ...]:
     from processors.coupon_report import OUTPUT_FILE as coupon_output_file
 
     return (
-        large_appliances.OUTPUT_FILE,
-        digital.OUTPUT_FILE,
+        *submitted.OUTPUT_FILES,
         large_appliances.RECEIPTS_OUTPUT_FILE,
         coupon_output_file,
         payment.OUTPUT_FILE,
@@ -58,8 +37,8 @@ def build_processors() -> tuple[tuple[str, Path, Callable[[], None]], ...]:
     return (
         (
             "已上传数据（家电+数码）",
-            large_appliances.DATA_DIR,
-            process_submitted_files,
+            submitted.DATA_DIR,
+            submitted.process_all,
         ),
         (
             "收款单统计",
@@ -157,6 +136,7 @@ def main() -> int:
         # Both projects share this data directory, and several processing modes
         # are no longer project-specific, so both need to be configured up
         # front rather than only the one the operator picks.
+        submitted.configure_data_dir(data_dir)
         digital.configure_data_dir(data_dir)
         large_appliances.configure_data_dir(data_dir)
         payment.configure_data_dir(data_dir)

@@ -10,8 +10,6 @@ import xlrd
 from openpyxl import Workbook
 from openpyxl.styles import PatternFill
 
-from processors.common import submitted as common_submitted
-from processors.common.config import submitted_file_marker
 from processors.common.coupons import (
     COUPON_REFERENCE_RE,
     as_currency,
@@ -37,19 +35,15 @@ from processors.common.paths import (
     match_source_file_by_header,
     read_xls_header,
 )
-from processors.common.submitted import (
-    KEPT_SOURCE_COLUMNS,
-    KEPT_COLUMN_INDEXES,
-    REQUIRED_SUBMITTED_HEADERS,
-    STATUS_ORDER,
-)
 from processors.large_appliances import _shared as large_appliances_shared
 
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 OUTPUT_DIR = BASE_DIR / "output"
 DATA_DIR: Path
-SUBMITTED_FILES: tuple[Path, ...]
+# The digital submitted-data output file; processing itself lives in
+# processors/submitted.py (PROFILES["数码"]), this constant is kept here
+# because the coupon pipeline below reads it as COUPON_UPLOADED_SOURCE_FILE.
 OUTPUT_FILE = OUTPUT_DIR / "数码_已上传.xlsx"
 COUPON_SOURCE_FILE: Path | None
 # Receipt statistics are shared with large appliances: same source file,
@@ -58,19 +52,12 @@ COUPON_SOURCE_FILE: Path | None
 COUPON_REMARK_SOURCE_FILE = large_appliances_shared.RECEIPTS_OUTPUT_FILE
 COUPON_UPLOADED_SOURCE_FILE = OUTPUT_FILE
 
-DATA_TYPE = "数码"
-# Files live directly in the flat data directory; the digital submitted
-# export is told apart from the large appliances one by filename keyword.
-# The coupon export is a single file shared with large appliances: 家电 and
-# 数码 rows sit in the same sheet, distinguished per row by which of the two
-# 国补 columns is populated (see large_appliances_shared.
-# COUPON_DIGITAL_SUBSIDY_COLUMN and read_coupon_rows below), so both
-# projects resolve to the same file, matched here by this project's own
-# header column.
-# The submitted marker is derived from config/merchants.yaml in
-# configure_data_dir rather than at import time, so a missing or malformed
-# config fails the run with a readable error instead of breaking the import.
-SUBMITTED_FILE_MARKER: str
+# Files live directly in the flat data directory. The coupon export is a
+# single file shared with large appliances: 家电 and 数码 rows sit in the
+# same sheet, distinguished per row by which of the two 国补 columns is
+# populated (see large_appliances_shared.COUPON_DIGITAL_SUBSIDY_COLUMN and
+# read_coupon_rows below), so both projects resolve to the same file, matched
+# here by this project's own header column.
 COUPON_STATISTICS_KEYWORD = "销售用券情况统计"
 # The coupon export's field header row (row 2) at its last kept column
 # (column 27, right after 家电's own 国补 column); see
@@ -80,15 +67,9 @@ COUPON_SUBSIDY_HEADER = "2026数码国补（计入收入）"
 
 def configure_data_dir(data_dir: Path) -> None:
     global DATA_DIR
-    global SUBMITTED_FILES
     global COUPON_SOURCE_FILE
-    global SUBMITTED_FILE_MARKER
 
     DATA_DIR = data_dir
-    SUBMITTED_FILE_MARKER = submitted_file_marker(DATA_TYPE)
-    SUBMITTED_FILES = tuple(
-        find_data_files(data_dir, SUBMITTED_FILE_MARKER, (".xlsx",))
-    )
     COUPON_SOURCE_FILE = match_source_file_by_header(
         find_data_files(data_dir, COUPON_STATISTICS_KEYWORD, (".xls",)),
         COUPON_SUBSIDY_HEADER,
@@ -99,11 +80,6 @@ def configure_data_dir(data_dir: Path) -> None:
         ),
     )
 
-# Digital: 15% of the transaction, capped at 500 per order. Household
-# appliances use the same rate but a 1500 cap — see
-# processors/large_appliances/submitted.py.
-SUBSIDY_RATE = Decimal("0.15")
-SUBSIDY_CAP = Decimal("500")
 COUPON_KEPT_SOURCE_COLUMNS = (
     3,
     4,
@@ -139,53 +115,6 @@ COUPON_SUMMARY_HEADER = (
     f"{COUPON_SUBSIDY_HEADER}合计",
 )
 DETAILS_SHEET_NAME = "数码-明细总表"
-
-
-def select_columns(row: list[object]) -> list[object]:
-    return common_submitted.select_columns(row, KEPT_COLUMN_INDEXES)
-
-
-def _config() -> common_submitted.SubmittedConfig:
-    return common_submitted.SubmittedConfig(
-        input_files=SUBMITTED_FILES,
-        data_dir=DATA_DIR,
-        source_marker=SUBMITTED_FILE_MARKER,
-        output_file=OUTPUT_FILE,
-        subsidy_rate=SUBSIDY_RATE,
-        subsidy_cap=SUBSIDY_CAP,
-        kept_columns=KEPT_SOURCE_COLUMNS,
-        required_headers=REQUIRED_SUBMITTED_HEADERS,
-        status_order=STATUS_ORDER,
-    )
-
-
-def add_subsidy_column(
-    row: list[object],
-    *,
-    is_header: bool = False,
-    source_name: str | None = None,
-    source_row: int | None = None,
-) -> list[object]:
-    return common_submitted.add_subsidy_column(
-        row,
-        subsidy_rate=SUBSIDY_RATE,
-        subsidy_cap=SUBSIDY_CAP,
-        is_header=is_header,
-        source_name=source_name,
-        source_row=source_row,
-    )
-
-
-def build_workbook() -> tuple[Workbook, int, int]:
-    return common_submitted.build_workbook(_config())
-
-
-def validate_output(path: Path, expected_data_rows: int) -> None:
-    common_submitted.validate_output(path, expected_data_rows, _config())
-
-
-def process_submitted_files() -> None:
-    common_submitted.process_submitted_files(_config())
 
 
 def read_coupon_rows(
