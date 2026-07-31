@@ -7,8 +7,8 @@ from pathlib import Path
 
 from openpyxl import Workbook
 
-from processors import large_appliances
-from processors.large_appliances import (
+from processors.coupons import sources as coupon_sources
+from processors.coupons.appliance import (
     COUPON_OUTPUT_HEADER,
     fill_coupon_reference_supplement,
     load_coupon_reference_supplement,
@@ -50,10 +50,10 @@ class CouponReferenceSupplementTest(unittest.TestCase):
             supplement_file = data_dir / "新建 Microsoft Excel 工作表.xlsx"
             supplement_file.touch()
 
-            large_appliances.configure_data_dir(data_dir)
+            coupon_sources.configure_data_dir(data_dir)
 
             self.assertEqual(
-                large_appliances.COUPON_REFERENCE_SUPPLEMENT_FILE,
+                coupon_sources.COUPON_REFERENCE_SUPPLEMENT_FILE,
                 supplement_file,
             )
 
@@ -61,10 +61,10 @@ class CouponReferenceSupplementTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             data_dir = Path(directory)
 
-            large_appliances.configure_data_dir(data_dir)
+            coupon_sources.configure_data_dir(data_dir)
 
             self.assertEqual(
-                large_appliances.COUPON_REFERENCE_SUPPLEMENT_FILE,
+                coupon_sources.COUPON_REFERENCE_SUPPLEMENT_FILE,
                 data_dir / "新建 Microsoft Excel 工作表.xlsx",
             )
 

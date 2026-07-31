@@ -8,8 +8,9 @@ from openpyxl import Workbook, load_workbook
 from openpyxl.styles import Font, PatternFill
 from openpyxl.utils import column_index_from_string
 
-from processors import digital, large_appliances
+from processors import submitted
 from processors.common.config import load_merchants, submitted_file_marker
+from processors.submitted import STATUS_ORDER
 from processors.common.excel import (
     capture_style,
     format_sheet,
@@ -72,32 +73,34 @@ class SubsidyCapTest(unittest.TestCase):
     the caps are pinned here rather than left to a shared default.
     """
 
-    def subsidy_for(self, module, amount: object) -> object:
-        row = module.add_subsidy_column([None, None, amount])
+    def subsidy_for(self, profile_name: str, amount: object) -> object:
+        row = submitted.add_subsidy_column(
+            [None, None, amount], profile_name=profile_name
+        )
         return row[3]
 
     def test_rate_is_15_percent_below_either_cap(self) -> None:
-        for module in (digital, large_appliances):
-            with self.subTest(module=module.__name__):
-                self.assertEqual(self.subsidy_for(module, 1000), 150.00)
+        for profile_name in ("家电", "数码"):
+            with self.subTest(profile_name=profile_name):
+                self.assertEqual(self.subsidy_for(profile_name, 1000), 150.00)
 
     def test_caps_differ_between_projects(self) -> None:
-        self.assertEqual(large_appliances.SUBSIDY_CAP, Decimal("1500"))
-        self.assertEqual(digital.SUBSIDY_CAP, Decimal("500"))
+        self.assertEqual(submitted.PROFILES["家电"].subsidy_cap, Decimal("1500"))
+        self.assertEqual(submitted.PROFILES["数码"].subsidy_cap, Decimal("500"))
 
     def test_appliance_cap_applies_at_1500_not_500(self) -> None:
         # 6000 * 0.15 = 900: above digital's cap, still below the appliance one.
-        self.assertEqual(self.subsidy_for(large_appliances, 6000), 900.00)
-        self.assertEqual(self.subsidy_for(digital, 6000), 500.00)
+        self.assertEqual(self.subsidy_for("家电", 6000), 900.00)
+        self.assertEqual(self.subsidy_for("数码", 6000), 500.00)
         # 20000 * 0.15 = 3000: both capped, but at different values.
-        self.assertEqual(self.subsidy_for(large_appliances, 20000), 1500.00)
-        self.assertEqual(self.subsidy_for(digital, 20000), 500.00)
+        self.assertEqual(self.subsidy_for("家电", 20000), 1500.00)
+        self.assertEqual(self.subsidy_for("数码", 20000), 500.00)
 
     def test_blank_amount_yields_no_subsidy(self) -> None:
-        for module in (digital, large_appliances):
-            with self.subTest(module=module.__name__):
-                self.assertIsNone(self.subsidy_for(module, None))
-                self.assertIsNone(self.subsidy_for(module, ""))
+        for profile_name in ("家电", "数码"):
+            with self.subTest(profile_name=profile_name):
+                self.assertIsNone(self.subsidy_for(profile_name, None))
+                self.assertIsNone(self.subsidy_for(profile_name, ""))
 
 
 class WidthMeasurerTest(unittest.TestCase):
@@ -323,19 +326,18 @@ class SubmittedFileMarkerTest(unittest.TestCase):
                     f"MER_{merchants[data_type]}",
                 )
 
-    def test_each_module_uses_its_own_data_type(self) -> None:
-        self.assertEqual(digital.DATA_TYPE, "数码")
-        self.assertEqual(large_appliances.DATA_TYPE, "家电")
+    def test_each_profile_uses_its_own_data_type(self) -> None:
+        self.assertEqual(submitted.PROFILES["数码"].data_type, "数码")
+        self.assertEqual(submitted.PROFILES["家电"].data_type, "家电")
         with tempfile.TemporaryDirectory() as directory:
             data_dir = Path(directory)
-            digital.configure_data_dir(data_dir)
-            large_appliances.configure_data_dir(data_dir)
+            submitted.configure_data_dir(data_dir)
             self.assertEqual(
-                digital.SUBMITTED_FILE_MARKER,
+                submitted.SUBMITTED_FILE_MARKERS["数码"],
                 submitted_file_marker("数码"),
             )
             self.assertEqual(
-                large_appliances.SUBMITTED_FILE_MARKER,
+                submitted.SUBMITTED_FILE_MARKERS["家电"],
                 submitted_file_marker("家电"),
             )
 
@@ -347,22 +349,22 @@ class SubmittedFileMarkerTest(unittest.TestCase):
 class SubmittedHeaderValidationTest(unittest.TestCase):
     """A wrong export format must name the file and the missing fields."""
 
-    def run_build(self, module, header: tuple[str, ...]):
+    def run_build(self, profile_name: str, header: tuple[str, ...]):
         with tempfile.TemporaryDirectory() as directory:
             data_dir = Path(directory)
             write_submitted_source(
-                data_dir / f"{submitted_file_marker(module.DATA_TYPE)}_export.xlsx",
+                data_dir / f"{submitted_file_marker(profile_name)}_export.xlsx",
                 header,
             )
-            module.configure_data_dir(data_dir)
-            return module.build_workbook()
+            submitted.configure_data_dir(data_dir)
+            return submitted.build_workbook(profile_name)
 
     def test_missing_required_fields_are_reported_by_name(self) -> None:
-        for module in (digital, large_appliances):
-            with self.subTest(module=module.__name__):
+        for profile_name in ("家电", "数码"):
+            with self.subTest(profile_name=profile_name):
                 header = build_header(**{STATUS_COLUMN: "占位一", DESCRIPTION_COLUMN: "占位二"})
                 with self.assertRaises(ValueError) as raised:
-                    self.run_build(module, header)
+                    self.run_build(profile_name, header)
 
                 message = str(raised.exception)
                 self.assertIn("export.xlsx", message)
@@ -370,10 +372,10 @@ class SubmittedHeaderValidationTest(unittest.TestCase):
                 self.assertIn("描述", message)
 
     def test_valid_header_is_accepted(self) -> None:
-        for module in (digital, large_appliances):
-            with self.subTest(module=module.__name__):
+        for profile_name in ("家电", "数码"):
+            with self.subTest(profile_name=profile_name):
                 workbook, file_count, data_rows = self.run_build(
-                    module,
+                    profile_name,
                     SUBMITTED_HEADER,
                 )
                 try:
@@ -389,15 +391,15 @@ class ValidatorRejectsBadOutputTest(unittest.TestCase):
     Each case writes a deliberately wrong workbook and asserts it is refused.
     """
 
-    def build_valid_output(self, module, path: Path) -> int:
+    def build_valid_output(self, profile_name: str, path: Path) -> int:
         with tempfile.TemporaryDirectory() as directory:
             data_dir = Path(directory)
             write_submitted_source(
-                data_dir / f"{submitted_file_marker(module.DATA_TYPE)}_export.xlsx",
+                data_dir / f"{submitted_file_marker(profile_name)}_export.xlsx",
                 SUBMITTED_HEADER,
             )
-            module.configure_data_dir(data_dir)
-            workbook, _, data_rows = module.build_workbook()
+            submitted.configure_data_dir(data_dir)
+            workbook, _, data_rows = submitted.build_workbook(profile_name)
             try:
                 workbook.save(path)
             finally:
@@ -405,38 +407,40 @@ class ValidatorRejectsBadOutputTest(unittest.TestCase):
             return data_rows
 
     def test_accepts_the_workbook_it_just_built(self) -> None:
-        for module in (digital, large_appliances):
-            with self.subTest(module=module.__name__):
+        for profile_name in ("家电", "数码"):
+            with self.subTest(profile_name=profile_name):
                 with tempfile.TemporaryDirectory() as directory:
                     output = Path(directory) / "已上传.xlsx"
-                    data_rows = self.build_valid_output(module, output)
-                    module.validate_output(output, data_rows)
+                    data_rows = self.build_valid_output(profile_name, output)
+                    submitted.validate_output(output, data_rows, profile_name)
 
     def test_rejects_wrong_row_count(self) -> None:
-        for module in (digital, large_appliances):
-            with self.subTest(module=module.__name__):
+        for profile_name in ("家电", "数码"):
+            with self.subTest(profile_name=profile_name):
                 with tempfile.TemporaryDirectory() as directory:
                     output = Path(directory) / "已上传.xlsx"
-                    data_rows = self.build_valid_output(module, output)
+                    data_rows = self.build_valid_output(profile_name, output)
                     with self.assertRaises(RuntimeError):
-                        module.validate_output(output, data_rows + 1)
+                        submitted.validate_output(
+                            output, data_rows + 1, profile_name
+                        )
 
     def test_rejects_missing_status_worksheet(self) -> None:
-        for module in (digital, large_appliances):
-            with self.subTest(module=module.__name__):
+        for profile_name in ("家电", "数码"):
+            with self.subTest(profile_name=profile_name):
                 with tempfile.TemporaryDirectory() as directory:
                     output = Path(directory) / "已上传.xlsx"
-                    data_rows = self.build_valid_output(module, output)
+                    data_rows = self.build_valid_output(profile_name, output)
 
                     workbook = load_workbook(output)
                     try:
-                        del workbook[module.STATUS_ORDER[0]]
+                        del workbook[STATUS_ORDER[0]]
                         workbook.save(output)
                     finally:
                         workbook.close()
 
                     with self.assertRaises(RuntimeError):
-                        module.validate_output(output, data_rows)
+                        submitted.validate_output(output, data_rows, profile_name)
 
 
 if __name__ == "__main__":

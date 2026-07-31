@@ -16,37 +16,27 @@ class CombinedOutputRollbackTest(unittest.TestCase):
             appliance_output.write_bytes(b"old appliance")
             digital_output.write_bytes(b"old digital")
 
-            def write_appliance() -> None:
-                appliance_output.write_bytes(b"new appliance")
-
-            def fail_digital() -> None:
-                digital_output.write_bytes(b"new digital")
-                raise ValueError("digital failed")
+            def fake_process(profile_name: str) -> None:
+                if profile_name == "家电":
+                    appliance_output.write_bytes(b"new appliance")
+                else:
+                    digital_output.write_bytes(b"new digital")
+                    raise ValueError("digital failed")
 
             with (
                 patch.object(
-                    app_main.large_appliances,
-                    "OUTPUT_FILE",
-                    appliance_output,
+                    app_main.submitted,
+                    "OUTPUT_FILES",
+                    (appliance_output, digital_output),
                 ),
                 patch.object(
-                    app_main.digital,
-                    "OUTPUT_FILE",
-                    digital_output,
-                ),
-                patch.object(
-                    app_main.large_appliances,
+                    app_main.submitted,
                     "process_submitted_files",
-                    write_appliance,
-                ),
-                patch.object(
-                    app_main.digital,
-                    "process_submitted_files",
-                    fail_digital,
+                    fake_process,
                 ),
             ):
                 with self.assertRaisesRegex(ValueError, "digital failed"):
-                    app_main.process_submitted_files()
+                    app_main.submitted.process_all()
 
             self.assertEqual(appliance_output.read_bytes(), b"old appliance")
             self.assertEqual(digital_output.read_bytes(), b"old digital")
@@ -61,8 +51,9 @@ class ProcessorOrderTest(unittest.TestCase):
     def test_store_report_runs_after_its_two_upstream_processing_modes(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             data_dir = Path(directory)
-            app_main.digital.configure_data_dir(data_dir)
-            app_main.large_appliances.configure_data_dir(data_dir)
+            app_main.submitted.configure_data_dir(data_dir)
+            app_main.receipts.configure_data_dir(data_dir)
+            app_main.coupon_sources.configure_data_dir(data_dir)
             app_main.payment.configure_data_dir(data_dir)
             app_main.store_report.configure_data_dir(data_dir)
 
@@ -105,9 +96,12 @@ class AllModeRollbackTest(unittest.TestCase):
             )
 
             with (
-                patch.object(app_main.large_appliances, "OUTPUT_FILE", paths["large_appliances"]),
-                patch.object(app_main.digital, "OUTPUT_FILE", paths["digital"]),
-                patch.object(app_main.large_appliances, "RECEIPTS_OUTPUT_FILE", paths["receipts"]),
+                patch.object(
+                    app_main.submitted,
+                    "OUTPUT_FILES",
+                    (paths["large_appliances"], paths["digital"]),
+                ),
+                patch.object(app_main.receipts, "OUTPUT_FILE", paths["receipts"]),
                 patch.object(coupon_report, "OUTPUT_FILE", paths["coupon_report"]),
                 patch.object(app_main.payment, "OUTPUT_FILE", paths["payment"]),
                 patch.object(app_main.store_report, "OUTPUT_FILE", paths["store_report"]),
@@ -126,7 +120,7 @@ class MainErrorHandlingTest(unittest.TestCase):
             with (
                 patch.object(app_main, "resolve_data_dir", return_value=data_dir),
                 patch.object(
-                    app_main.digital,
+                    app_main.coupon_sources,
                     "configure_data_dir",
                     side_effect=ValueError("bad config"),
                 ),

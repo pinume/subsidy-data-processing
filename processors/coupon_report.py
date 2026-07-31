@@ -2,34 +2,39 @@
 
 Kept as its own module (rather than living inside either project) because
 each project's package needs to refer to the other's output file or menu
-entry, and importing across processors.digital <-> processors.large_appliances
-at module load time would be circular. This module imports both at the top
-level; processors/digital.py and processors/large_appliances/__init__.py only
-ever reach it through a function-local import inside data_processors(), which
-runs long after both packages have finished loading.
+entry, and importing across processors.coupons.digital <->
+processors.coupons.appliance at module load time would be circular. This
+module imports both at the top level; main.py only ever reaches it through a
+function-local import inside build_processors(), which runs long after both
+packages have finished loading.
+
+Re-exports SUMMARY_SHEET_NAME/SUMMARY_HEADER from
+processors.coupons.report_contract so store_report.py can depend on this
+module's public surface instead of reaching into
+processors.coupons.appliance's internals.
 """
 
 from datetime import datetime
 from decimal import Decimal
 from pathlib import Path
 
-import xlrd
 from openpyxl import Workbook, load_workbook
 
-from processors.common.coupons import load_coupon_remark_lookup
 from processors.common.excel import format_sheet, save_workbook_atomically
-from processors.large_appliances import _shared as large_appliances_shared
-from processors.large_appliances import coupons as large_appliances_coupons
+from processors.coupons import appliance, digital, matching, sources
+# Not unused despite the lack of a local reference: re-exported for
+# store_report.py, which imports SUMMARY_SHEET_NAME/SUMMARY_HEADER from this
+# module rather than reaching into processors.coupons.report_contract itself.
+from processors.coupons.report_contract import SUMMARY_HEADER, SUMMARY_SHEET_NAME
+from processors.coupons.sources import load_coupon_remark_lookup
 
-from processors import digital
 
-
-BASE_DIR = large_appliances_shared.BASE_DIR
+BASE_DIR = Path(__file__).resolve().parent.parent
 OUTPUT_FILE = BASE_DIR / "output" / "审核明细.xlsx"
 
-# Defined in coupons.py because its group-sheet titles must avoid colliding
+# Defined in appliance.py because its group-sheet titles must avoid colliding
 # with it; this module owns what actually goes into the sheet.
-REFERENCE_REPORT_SHEET = large_appliances_coupons.REFERENCE_REPORT_SHEET_NAME
+REFERENCE_REPORT_SHEET = appliance.REFERENCE_REPORT_SHEET_NAME
 REFERENCE_REPORT_HEADER = (
     "项目",
     "处理结果",
@@ -40,14 +45,14 @@ REFERENCE_REPORT_HEADER = (
 )
 # Corrections first: they are the rows that were actually rewritten and most
 # need a human to confirm. Conflicts next, then the leftovers.
-REFERENCE_REPORT_ORDER = large_appliances_coupons.REFERENCE_REPORT_ORDER
+REFERENCE_REPORT_ORDER = matching.REFERENCE_REPORT_ORDER
 REPORT_PROJECT_ORDER = ("家电", "数码")
 # 财务大类 for digital's 已上传/未上传/合计 block at the foot of 数据汇总.
 DIGITAL_SUMMARY_PROJECT_LABEL = "数码"
 
 
 def merged_reference_decisions(
-    large_appliances_computation: large_appliances_coupons.CouponComputation,
+    appliance_computation: appliance.CouponComputation,
     digital_computation: digital.CouponComputation,
 ) -> list[tuple[object, ...]]:
     """Label each project's decisions and interleave them into one report.
@@ -57,7 +62,7 @@ def merged_reference_decisions(
     """
     decisions = [
         ("家电", *decision)
-        for decision in large_appliances_computation.reference_decisions
+        for decision in appliance_computation.reference_decisions
     ] + [
         ("数码", *decision)
         for decision in digital_computation.reference_decisions
@@ -121,7 +126,7 @@ def digital_extra_summary_rows(
     """Recast digital's 3-column summary rows (备注, 数量, 合计) as rows in
     家电's 5-column 数据汇总 table, labeling every row (including digital's
     own "合计" row) with 财务大类="数码" and no 品牌, so the block mirrors the
-    家电 one that precedes it (see COUPON_SUMMARY_PROJECT_LABEL)."""
+    家电 one that precedes it (see appliance.COUPON_SUMMARY_PROJECT_LABEL)."""
     return [
         (DIGITAL_SUMMARY_PROJECT_LABEL, None, remark, count, total)
         for remark, count, total in digital_computation.summary_rows
@@ -129,72 +134,56 @@ def digital_extra_summary_rows(
 
 
 def process_coupon_sales() -> None:
-    appliance_source = large_appliances_shared.COUPON_SOURCE_FILE
-    digital_source = digital.COUPON_SOURCE_FILE
-    if appliance_source is None or digital_source is None:
-        large_appliances_computation = (
-            large_appliances_coupons.compute_coupon_data()
+    coupon_source = sources.COUPON_SOURCE_FILE
+    if coupon_source is None:
+        # compute_coupon_data() raises the same FileNotFoundError once it
+        # sees sources.COUPON_SOURCE_FILE is None; raising it here directly
+        # names the file operators are missing without pretending a second
+        # (unreachable) code path could still succeed after the first raises.
+        raise FileNotFoundError(
+            f"未在 {sources.DATA_DIR} 中找到文件名包含"
+            f"“{sources.COUPON_STATISTICS_KEYWORD}”且表头符合"
+            "家电、数码用券导出格式的 .XLSX 文件"
         )
-        digital_computation = digital.compute_coupon_data()
-    elif appliance_source != digital_source:
-        raise ValueError(
-            "家电与数码应使用同一个销售用券情况统计源文件，"
-            f"实际分别为 {appliance_source} 和 {digital_source}"
-        )
-    else:
-        source_workbook = xlrd.open_workbook(appliance_source)
-        try:
-            appliance_rows = large_appliances_coupons.read_coupon_rows(
-                appliance_source,
-                source_workbook,
-            )
-            digital_rows = digital.read_coupon_rows(
-                digital_source,
-                source_workbook,
-            )
-            source_total = large_appliances_coupons.read_coupon_source_total(
-                appliance_source,
-                source_workbook,
-            )
-        finally:
-            source_workbook.release_resources()
 
-        remark_lookup = load_coupon_remark_lookup(
-            large_appliances_coupons.COUPON_REMARK_SOURCE_FILE
-        )
-        large_appliances_computation = (
-            large_appliances_coupons.compute_coupon_data(
-                rows=appliance_rows,
-                remark_lookup=remark_lookup,
-                source_total=source_total,
-            )
-        )
-        digital_computation = digital.compute_coupon_data(
-            rows=digital_rows,
-            remark_lookup=remark_lookup,
-        )
+    source_workbook = load_workbook(coupon_source, read_only=True, data_only=True)
+    try:
+        export = sources.read_coupon_export(coupon_source, source_workbook)
+    finally:
+        source_workbook.close()
+
+    remark_lookup = load_coupon_remark_lookup(appliance.COUPON_REMARK_SOURCE_FILE)
+    appliance_computation = appliance.compute_coupon_data(
+        rows=export.appliance_rows,
+        remark_lookup=remark_lookup,
+        source_total=export.source_total,
+    )
+    digital_computation = digital.compute_coupon_data(
+        rows=export.digital_rows,
+        remark_lookup=remark_lookup,
+    )
     extra_summary_rows = digital_extra_summary_rows(digital_computation)
 
     workbook = Workbook()
     workbook.remove(workbook.active)
 
     font_name, measurement_font, matched_fill = (
-        large_appliances_coupons.build_summary_and_details_sheets(
+        appliance.build_summary_and_details_sheets(
             workbook,
-            large_appliances_computation,
+            appliance_computation,
             extra_summary_rows,
         )
     )
     digital.build_detail_sheet(workbook, digital_computation)
-    large_appliances_coupons.build_group_sheets(
+    appliance.build_group_sheets(
         workbook,
-        large_appliances_computation,
+        appliance_computation,
         font_name,
         measurement_font,
         matched_fill,
     )
     decisions = merged_reference_decisions(
-        large_appliances_computation,
+        appliance_computation,
         digital_computation,
     )
     build_reference_report_sheet(
@@ -209,14 +198,14 @@ def process_coupon_sales() -> None:
         OUTPUT_FILE,
         lambda path: validate_merged_coupon_output(
             path,
-            large_appliances_computation,
+            appliance_computation,
             digital_computation,
             extra_summary_rows,
             decisions,
         ),
     )
 
-    la = large_appliances_computation
+    la = appliance_computation
     print(
         "[家电] Subsidy coupon statistics complete: "
         f"{la.data_row_count} rows"
@@ -325,7 +314,7 @@ def validate_reference_report_sheet(
 
 def validate_merged_coupon_output(
     path: Path,
-    large_appliances_computation: large_appliances_coupons.CouponComputation,
+    appliance_computation: appliance.CouponComputation,
     digital_computation: digital.CouponComputation,
     extra_summary_rows: list[tuple[object, ...]],
     decisions: list[tuple[object, ...]],
@@ -333,12 +322,12 @@ def validate_merged_coupon_output(
     workbook = load_workbook(path, data_only=True)
     try:
         expected_sheet_names = [
-            large_appliances_coupons.SUMMARY_SHEET_NAME,
-            large_appliances_coupons.DETAILS_SHEET_NAME,
+            appliance.SUMMARY_SHEET_NAME,
+            appliance.DETAILS_SHEET_NAME,
             digital.DETAILS_SHEET_NAME,
             *(
                 group[0]
-                for group in large_appliances_computation.group_sheets
+                for group in appliance_computation.group_sheets
             ),
             REFERENCE_REPORT_SHEET,
         ]
@@ -347,15 +336,15 @@ def validate_merged_coupon_output(
                 "审核明细工作表校验失败："
                 f"预期 {expected_sheet_names}，实际 {workbook.sheetnames}"
             )
-        large_appliances_coupons.validate_summary_and_details_sheets(
+        appliance.validate_summary_and_details_sheets(
             workbook,
-            large_appliances_computation,
+            appliance_computation,
             extra_summary_rows,
         )
         digital.validate_detail_sheet(workbook, digital_computation)
-        large_appliances_coupons.validate_group_sheets(
+        appliance.validate_group_sheets(
             workbook,
-            large_appliances_computation,
+            appliance_computation,
         )
         validate_reference_report_sheet(workbook, decisions)
     finally:

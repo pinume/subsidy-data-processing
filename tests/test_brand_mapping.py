@@ -1,7 +1,7 @@
 import unittest
 
 from processors.common.config import load_brand_mapping
-from processors.large_appliances import COUPON_BRAND_REPLACEMENTS
+from processors.coupons.sources import COUPON_BRAND_REPLACEMENTS
 
 
 class BrandMappingTest(unittest.TestCase):
@@ -13,7 +13,7 @@ class BrandMappingTest(unittest.TestCase):
         self.assertEqual(mapping["COLMO"], "美的")
         self.assertEqual(mapping["华凌"], "美的")
 
-    def test_large_appliances_uses_configured_brand_mapping(self):
+    def test_coupon_sources_uses_configured_brand_mapping(self):
         self.assertIs(COUPON_BRAND_REPLACEMENTS, load_brand_mapping())
 
 

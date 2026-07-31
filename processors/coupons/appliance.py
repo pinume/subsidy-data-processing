@@ -1,3 +1,14 @@
+"""家电 side of 销售用券情况统计 processing: the superset report.
+
+家电 is a strict superset of 数码's report: it additionally reads an optional
+reference-supplement file, builds 财务大类/品牌 group sheets, and closes
+数据汇总 with a five-column (财务大类, 品牌, 备注, 数量, 合计) summary instead
+of 数码's three-column one. Those are real differences in what gets built,
+not just different constants, so 数码 keeps its own module
+(processors/coupons/digital.py) rather than being forced through this one
+with a bundle of feature flags.
+"""
+
 import re
 from collections import Counter
 from dataclasses import dataclass
@@ -5,74 +16,49 @@ from datetime import date, datetime
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
-import xlrd
 from openpyxl import Workbook, load_workbook
 from openpyxl.cell.cell import MergedCell
 from openpyxl.styles import Alignment, Border, PatternFill, Side
 
-from processors.common.config import load_brand_mapping
-from processors.common.coupons import (
-    COUPON_REFERENCE_RE,
-    as_currency,
-    build_reference_correction_index,
-    classify_coupon_row,
-    load_coupon_remark_lookup,
-    load_uploaded_detail_lookup,
-    reference_correction_candidates,
-)
 from processors.common.excel import (
     format_sheet,
     load_measurement_font,
-    load_uploaded_subsidy_stats,
     resolve_font,
 )
 from processors.common.dates import (
-    normalize_coupon_date,
     normalize_document_number,
+    normalize_coupon_date,
     normalize_receipt_identifier,
 )
+from processors.receipts import OUTPUT_FILE as RECEIPTS_OUTPUT_FILE
+from processors.receipts import RECEIPTS_REMARK_SAME_MODEL_REPLACEMENT
+from processors.submitted import PROFILES as SUBMITTED_PROFILES
 
-from . import _shared
-from ._shared import (
-    COUPON_REMARK_SOURCE_FILE,
-    COUPON_SUBSIDY_HEADER,
-    COUPON_UPLOADED_SOURCE_FILE,
+from . import matching, sources
+from .matching import (
+    COUPON_REFERENCE_RE,
+    as_currency,
+    coupon_data_rows,
 )
-from .receipts import RECEIPTS_REMARK_SAME_MODEL_REPLACEMENT
+from .report_contract import SUMMARY_HEADER, SUMMARY_SHEET_NAME
+from .sources import load_coupon_remark_lookup, load_uploaded_summary
 
 
 DETAILS_SHEET_NAME = "家电-明细总表"
-SUMMARY_SHEET_NAME = "数据汇总"
-# Owned by processors.digital / processors.coupon_report, named here only to
-# keep this module's own group-sheet titles from colliding with them.
+# Owned here only to keep this module's own group-sheet titles from
+# colliding with processors.coupons.digital's / coupon_report.py's sheets.
 DIGITAL_DETAILS_SHEET_NAME = "数码-明细总表"
 REFERENCE_REPORT_SHEET_NAME = "Processing Report"
 
+COUPON_SUBSIDY_HEADER = sources.COUPON_FAMILY_SUBSIDY_HEADER
+COUPON_REMARK_SOURCE_FILE = RECEIPTS_OUTPUT_FILE
+COUPON_UPLOADED_SOURCE_FILE = SUBMITTED_PROFILES["家电"].output_file
 
-COUPON_KEPT_SOURCE_COLUMNS = (
-    3,
-    4,
-    6,
-    8,
-    15,
-    18,
-    _shared.COUPON_FAMILY_SUBSIDY_COLUMN,
-)
 # Rows misclassified as digital are excluded from the Summary aggregation
 # and never get their own category-brand sheet, though they still appear
 # in the Details sheet.
 COUPON_EXCLUDED_CATEGORY = "数码"
-COUPON_OUTPUT_HEADER = (
-    "单据号",
-    "单据日期",
-    "商品名称",
-    "品牌",
-    "财务大类",
-    "明细摘要",
-    COUPON_SUBSIDY_HEADER,
-    "备注",
-    "详细情况",
-)
+COUPON_OUTPUT_HEADER = sources.APPLIANCE_PROFILE.output_header
 COUPON_GROUP_HEADER = (
     "单据号",
     "单据日期",
@@ -84,7 +70,6 @@ COUPON_GROUP_HEADER = (
 COUPON_GROUP_COLUMN_INDEXES = tuple(
     COUPON_OUTPUT_HEADER.index(header) for header in COUPON_GROUP_HEADER
 )
-COUPON_DOCUMENT_INDEX = COUPON_OUTPUT_HEADER.index("单据号")
 COUPON_DATE_INDEX = COUPON_OUTPUT_HEADER.index("单据日期")
 COUPON_PRODUCT_NAME_INDEX = COUPON_OUTPUT_HEADER.index("商品名称")
 COUPON_BRAND_INDEX = COUPON_OUTPUT_HEADER.index("品牌")
@@ -93,23 +78,13 @@ COUPON_SUMMARY_COLUMN_INDEX = COUPON_OUTPUT_HEADER.index("明细摘要")
 COUPON_SUBSIDY_INDEX = COUPON_OUTPUT_HEADER.index(COUPON_SUBSIDY_HEADER)
 COUPON_REMARK_INDEX = COUPON_OUTPUT_HEADER.index("备注")
 COUPON_DETAIL_INDEX = COUPON_OUTPUT_HEADER.index("详细情况")
-REFERENCE_REPORT_CORRECTED = "已自动纠正"
-REFERENCE_REPORT_UNRESOLVED = "无唯一候选"
-REFERENCE_REPORT_COLLISION = "目标冲突"
-REFERENCE_REPORT_ORDER = {
-    REFERENCE_REPORT_CORRECTED: 0,
-    REFERENCE_REPORT_COLLISION: 1,
-    REFERENCE_REPORT_UNRESOLVED: 2,
-}
 COUPON_MATCH_FILL_COLOR = "FFC7CE"
-COUPON_BRAND_REPLACEMENTS = load_brand_mapping()
-COUPON_SUMMARY_HEADER = (
-    "财务大类",
-    "品牌",
-    "备注",
-    "数量",
-    f"{COUPON_SUBSIDY_HEADER}合计",
-)
+COUPON_BRAND_REPLACEMENTS = sources.COUPON_BRAND_REPLACEMENTS
+# report_contract.py hardcodes this header's text rather than deriving it
+# from COUPON_SUBSIDY_HEADER, so this assertion is what actually keeps the
+# two in sync — see report_contract.py's module docstring.
+assert SUMMARY_HEADER[-1] == f"{COUPON_SUBSIDY_HEADER}合计"
+COUPON_SUMMARY_HEADER = SUMMARY_HEADER
 # 财务大类 for this project's 已上传/未上传/合计 block at the foot of 数据汇总.
 COUPON_SUMMARY_PROJECT_LABEL = "家电"
 COUPON_REMARK_SORT_PRIORITY = {
@@ -124,155 +99,6 @@ COUPON_SUMMARY_BORDER = Border(
 )
 INVALID_SHEET_TITLE_RE = re.compile(r"[\[\]:*?/\\]")
 COUPON_REFERENCE_SUPPLEMENT_HEADER = ("参考号", "单据号", "单据日期")
-
-
-def read_coupon_source_total(
-    source: Path,
-    source_workbook=None,
-) -> Decimal | None:
-    """Read the 国补 value the source file states in its own 合计 row.
-
-    The export writes it as display text (e.g. "￥2,866,331.40"), and it has
-    been seen to disagree with the sum of the file's own detail rows. Reading
-    it lets the program report that gap instead of silently absorbing it;
-    returns None when the cell cannot be parsed.
-    """
-    owns_workbook = source_workbook is None
-    workbook = source_workbook or xlrd.open_workbook(source)
-    try:
-        sheet = workbook.sheet_by_index(0)
-        if sheet.nrows < 1:
-            return None
-        raw = str(
-            sheet.cell_value(sheet.nrows - 1, max(COUPON_KEPT_SOURCE_COLUMNS) - 1)
-        )
-        cleaned = re.sub(r"[^0-9.\-]", "", raw)
-        try:
-            return Decimal(cleaned) if cleaned else None
-        except InvalidOperation:
-            return None
-    finally:
-        if owns_workbook:
-            workbook.release_resources()
-
-
-def read_coupon_rows(
-    source: Path,
-    source_workbook=None,
-) -> list[list[object]]:
-    owns_workbook = source_workbook is None
-    source_workbook = source_workbook or xlrd.open_workbook(source)
-    try:
-        source_sheet = source_workbook.sheet_by_index(0)
-        if source_sheet.nrows < 3:
-            raise ValueError(f"{source.name} 缺少标题行、字段标题行或合计行")
-        required_columns = max(
-            max(COUPON_KEPT_SOURCE_COLUMNS),
-            _shared.COUPON_DIGITAL_SUBSIDY_COLUMN,
-        )
-        if source_sheet.ncols < required_columns:
-            raise ValueError(
-                f"{source.name} 列数不足：至少需要 "
-                f"{required_columns} 列"
-            )
-        if str(source_sheet.cell_value(source_sheet.nrows - 1, 0)).strip() != "合计":
-            raise ValueError(f"{source.name} 最后一行不是合计行")
-
-        source_header = tuple(
-            source_sheet.cell_value(1, column - 1)
-            for column in COUPON_KEPT_SOURCE_COLUMNS
-        )
-        expected_source_header = COUPON_OUTPUT_HEADER[
-            :len(COUPON_KEPT_SOURCE_COLUMNS)
-        ]
-        if source_header != expected_source_header:
-            raise ValueError(
-                f"{source.name} 保留列字段标题不符合要求："
-                f"预期为 {expected_source_header}，实际为 {source_header}。"
-                f"请检查该文件是否为正确的销售用券情况统计导出文件。"
-            )
-
-        rows: list[list[object]] = [list(COUPON_OUTPUT_HEADER)]
-        for row_index in range(2, source_sheet.nrows - 1):
-            row: list[object] = []
-            for column_index in COUPON_KEPT_SOURCE_COLUMNS:
-                cell = source_sheet.cell(row_index, column_index - 1)
-                value = cell.value
-                if cell.ctype == xlrd.XL_CELL_DATE:
-                    value = xlrd.xldate.xldate_as_datetime(
-                        value,
-                        source_workbook.datemode,
-                    )
-                elif (
-                    cell.ctype == xlrd.XL_CELL_NUMBER
-                    and value == int(value)
-                ):
-                    value = int(value)
-                row.append(value)
-            if any(value not in (None, "") for value in row):
-                # The merged coupon export carries both projects' rows in one
-                # sheet; classify_coupon_row tells 家电 rows apart from 数码
-                # ones by which 国补 column is populated, and refuses to
-                # guess when both are (source data corruption).
-                digital_subsidy = source_sheet.cell(
-                    row_index,
-                    _shared.COUPON_DIGITAL_SUBSIDY_COLUMN - 1,
-                ).value
-                classification = classify_coupon_row(
-                    appliance_subsidy=row[-1],
-                    digital_subsidy=digital_subsidy,
-                    row_number=row_index + 1,
-                    source_name=source.name,
-                )
-                if classification != "家电":
-                    continue
-                document_number = (
-                    ""
-                    if row[0] is None
-                    else str(row[0]).replace("收款", "")
-                )
-                document_date = normalize_coupon_date(row[1], row_index + 1)
-                brand = str(row[3] or "").strip()
-                row[3] = COUPON_BRAND_REPLACEMENTS.get(brand, row[3])
-                rows.append(
-                    [document_number, document_date, *row[2:], None, None]
-                )
-        return rows
-    finally:
-        if owns_workbook:
-            source_workbook.release_resources()
-
-
-def fill_coupon_remarks(
-    rows: list[list[object]],
-    remark_lookup: dict[tuple[str, date], str],
-) -> tuple[int, Decimal, int]:
-    matched_rows: list[list[object]] = []
-    unmatched_rows: list[list[object]] = []
-    subsidy_index = COUPON_SUBSIDY_INDEX
-    matched_subsidy_total = Decimal("0")
-    remark_index = COUPON_REMARK_INDEX
-    receipt_remark_count = 0
-    for row in rows[1:]:
-        key = (normalize_document_number(row[0]), row[1])
-        remark = remark_lookup.get(key, "")
-        row[remark_index] = remark
-        if remark:
-            receipt_remark_count += 1
-        if remark and remark != RECEIPTS_REMARK_SAME_MODEL_REPLACEMENT:
-            matched_rows.append(row)
-            subsidy = row[subsidy_index]
-            if subsidy not in (None, ""):
-                try:
-                    matched_subsidy_total += Decimal(str(subsidy))
-                except InvalidOperation as error:
-                    raise ValueError(
-                        f"组合键 {key} 的2026家电国补金额无效：{subsidy!r}"
-                    ) from error
-        else:
-            unmatched_rows.append(row)
-    rows[1:] = [*unmatched_rows, *matched_rows]
-    return len(matched_rows), matched_subsidy_total, receipt_remark_count
 
 
 def normalize_coupon_reference_supplement_header(value: object) -> str:
@@ -333,15 +159,6 @@ def load_coupon_reference_supplement(
         workbook.close()
 
 
-def coupon_data_rows(
-    rows: list[list[object]],
-    excluded_bottom_rows: int,
-) -> list[list[object]]:
-    """Return the coupon detail rows, excluding the header and any trailing
-    rows already matched (and pinned to the bottom) by an earlier pass."""
-    return rows[1:-excluded_bottom_rows] if excluded_bottom_rows > 0 else rows[1:]
-
-
 def fill_coupon_reference_supplement(
     rows: list[list[object]],
     reference_lookup: dict[tuple[str, date], frozenset[str]],
@@ -381,159 +198,6 @@ def fill_coupon_reference_supplement(
         matched_row_ids,
         matched_values,
     )
-
-
-def fill_uploaded_details(
-    rows: list[list[object]],
-    detail_lookup: dict[str, str],
-    excluded_bottom_rows: int,
-) -> int:
-    summary_index = COUPON_SUMMARY_COLUMN_INDEX
-    remark_index = COUPON_REMARK_INDEX
-    detail_index = COUPON_DETAIL_INDEX
-    matched_count = 0
-    included_rows = coupon_data_rows(rows, excluded_bottom_rows)
-    for row in included_rows:
-        reference = normalize_receipt_identifier(
-            row[summary_index]
-        ).upper()
-        detail = detail_lookup.get(reference, "")
-        row[detail_index] = detail
-        if detail:
-            row[remark_index] = "已上传"
-            matched_count += 1
-    return matched_count
-
-
-def reference_decision(
-    outcome: str,
-    row: list[object],
-    raw_reference: str,
-    note: str,
-) -> tuple[str, str, object, str, str]:
-    """Identify a decision by 单据号 + 单据日期, not by row position.
-
-    The detail rows get re-sorted after corrections are applied, so a row
-    number recorded here would point at the wrong row in the saved sheet.
-    """
-    return (
-        outcome,
-        normalize_document_number(row[COUPON_DOCUMENT_INDEX]),
-        row[COUPON_DATE_INDEX],
-        raw_reference,
-        note,
-    )
-
-
-def correct_coupon_references(
-    rows: list[list[object]],
-    reference_universe: set[str],
-    excluded_bottom_rows: int,
-    protected_row_ids: set[int] | None = None,
-) -> tuple[int, int, int, list[tuple[str, str, object, str, str]]]:
-    """Correct references and record every decision for the processing report.
-
-    The universe is built from submitted data only, so an operator has to be
-    able to review each applied correction, not just the counts.
-
-    A well-formed reference with no candidate at all is simply absent from the
-    submitted data — the detail row already carries a 未上传 remark, so it is
-    counted but kept out of the report. Only malformed references and genuine
-    ambiguities are reported, which is what an operator can actually act on.
-    """
-    summary_index = COUPON_SUMMARY_COLUMN_INDEX
-    included_end = len(rows) - excluded_bottom_rows
-    included_rows = rows[1:included_end]
-    existing_counts = Counter(
-        normalize_receipt_identifier(row[summary_index]).upper()
-        for row in included_rows
-        if normalize_receipt_identifier(row[summary_index])
-    )
-    proposed: dict[int, str] = {}
-    target_counts: Counter[str] = Counter()
-    unresolved_count = 0
-    decisions: list[tuple[str, str, object, str, str]] = []
-    correction_index = build_reference_correction_index(reference_universe)
-
-    for row_index, row in enumerate(included_rows, start=1):
-        if protected_row_ids is not None and id(row) in protected_row_ids:
-            continue
-        raw_reference = normalize_receipt_identifier(
-            row[summary_index]
-        ).upper()
-        if not raw_reference or raw_reference in reference_universe:
-            continue
-        candidates = reference_correction_candidates(
-            raw_reference,
-            correction_index,
-        )
-        if len(candidates) != 1:
-            unresolved_count += 1
-            if candidates or not COUPON_REFERENCE_RE.fullmatch(raw_reference):
-                decisions.append(
-                    reference_decision(
-                        REFERENCE_REPORT_UNRESOLVED,
-                        row,
-                        raw_reference,
-                        f"候选数量 {len(candidates)}，"
-                        f"未在已上传数据中找到唯一匹配，保留原值",
-                    )
-                )
-            continue
-        target = next(iter(candidates))
-        proposed[row_index] = target
-        target_counts[target] += 1
-
-    corrected_count = 0
-    collision_count = 0
-    for row_index, target in proposed.items():
-        row = rows[row_index]
-        raw_reference = normalize_receipt_identifier(
-            row[summary_index]
-        ).upper()
-        if existing_counts[target] > 0 or target_counts[target] > 1:
-            collision_count += 1
-            decisions.append(
-                reference_decision(
-                    REFERENCE_REPORT_COLLISION,
-                    row,
-                    raw_reference,
-                    f"目标参考号 {target} 已被其他行占用，未纠正",
-                )
-            )
-            continue
-        row[summary_index] = target
-        corrected_count += 1
-        decisions.append(
-            reference_decision(
-                REFERENCE_REPORT_CORRECTED,
-                row,
-                raw_reference,
-                f"已自动纠正为 {target}，请人工复核",
-            )
-        )
-
-    decisions.sort(key=lambda decision: REFERENCE_REPORT_ORDER[decision[0]])
-    return corrected_count, unresolved_count, collision_count, decisions
-
-
-def fill_unmatched_remarks(
-    rows: list[list[object]],
-    reference_universe: set[str],
-    excluded_bottom_rows: int,
-) -> int:
-    summary_index = COUPON_SUMMARY_COLUMN_INDEX
-    remark_index = COUPON_REMARK_INDEX
-    unmatched_count = 0
-    included_rows = coupon_data_rows(rows, excluded_bottom_rows)
-    for row in included_rows:
-        reference = normalize_receipt_identifier(
-            row[summary_index]
-        ).upper()
-        if reference not in reference_universe:
-            row[remark_index] = "未上传"
-            unmatched_count += 1
-    return unmatched_count
 
 
 def coupon_text_sort_value(value: object) -> str:
@@ -627,7 +291,7 @@ def build_coupon_summary(
 
     The table lists 财务大类 / 品牌 / 备注 groups, then closes with 已上传 /
     未上传 / 合计: 已上传 comes from the generated 已上传 workbook's 补贴金额,
-    合计 is this coupon file's own 国补 total, and 未上传 is the difference —
+    合计 is this coupon file's own 国补 总, and 未上传 is the difference —
     the same three-way split digital already reports.
 
     Also returns how many rows carried a zero 国补, which is invalid source
@@ -636,7 +300,6 @@ def build_coupon_summary(
     category_index = COUPON_CATEGORY_INDEX
     brand_index = COUPON_BRAND_INDEX
     remark_index = COUPON_REMARK_INDEX
-    detail_index = COUPON_DETAIL_INDEX
     subsidy_index = COUPON_SUBSIDY_INDEX
     included_rows = coupon_data_rows(rows, excluded_bottom_rows)
     grouped_counts: Counter[tuple[str, str, str]] = Counter()
@@ -745,12 +408,8 @@ def build_coupon_group_sheets(
         )
 
     for grouped_rows in groups.values():
-        regular_rows = [
-            item for item in grouped_rows if not item[1]
-        ]
-        pink_rows = [
-            item for item in grouped_rows if item[1]
-        ]
+        regular_rows = [item for item in grouped_rows if not item[1]]
+        pink_rows = [item for item in grouped_rows if item[1]]
         regular_rows.sort(key=lambda item: coupon_group_regular_sort_key(item[0]))
         pink_rows.sort(key=lambda item: coupon_pink_sort_key(item[0]))
         grouped_rows[:] = [*regular_rows, *pink_rows]
@@ -942,29 +601,35 @@ def compute_coupon_data(
     remark_lookup: dict[tuple[str, date], str] | None = None,
     source_total: Decimal | None | object = _SOURCE_TOTAL_UNSET,
 ) -> CouponComputation:
-    if _shared.COUPON_SOURCE_FILE is None:
+    if sources.COUPON_SOURCE_FILE is None:
         raise FileNotFoundError(
-            f"未在 {_shared.DATA_DIR} 中找到文件名包含"
-            f"“{_shared.COUPON_STATISTICS_KEYWORD}”且表头为"
-            f"“{COUPON_SUBSIDY_HEADER}”的 .XLS 文件"
+            f"未在 {sources.DATA_DIR} 中找到文件名包含"
+            f"“{sources.COUPON_STATISTICS_KEYWORD}”且表头为"
+            f"“{COUPON_SUBSIDY_HEADER}”的 .XLSX 文件"
         )
 
     if rows is None:
-        rows = read_coupon_rows(_shared.COUPON_SOURCE_FILE)
+        rows = sources.read_coupon_rows(
+            sources.COUPON_SOURCE_FILE, sources.APPLIANCE_PROFILE
+        )
     if remark_lookup is None:
         remark_lookup = load_coupon_remark_lookup(COUPON_REMARK_SOURCE_FILE)
     matched_count, matched_subsidy_total, receipt_remark_count = (
-        fill_coupon_remarks(
-        rows,
-        remark_lookup,
+        matching.fill_coupon_remarks(
+            rows,
+            remark_lookup,
+            "2026家电国补",
+            excluded_remark=RECEIPTS_REMARK_SAME_MODEL_REPLACEMENT,
         )
     )
-    detail_lookup = load_uploaded_detail_lookup(COUPON_UPLOADED_SOURCE_FILE)
+    detail_lookup, uploaded_subsidy_count, uploaded_subsidy_total = (
+        load_uploaded_summary(COUPON_UPLOADED_SOURCE_FILE)
+    )
     # Unsubmitted data is no longer supplied, so submitted data is the only
     # source of valid references.
     reference_universe = set(detail_lookup)
     reference_supplement_lookup = load_coupon_reference_supplement(
-        _shared.COUPON_REFERENCE_SUPPLEMENT_FILE
+        sources.COUPON_REFERENCE_SUPPLEMENT_FILE
     )
     (
         reference_supplement_count,
@@ -982,7 +647,7 @@ def compute_coupon_data(
         unresolved_count,
         correction_collision_count,
         reference_decisions,
-    ) = correct_coupon_references(
+    ) = matching.correct_coupon_references(
         rows,
         reference_universe,
         matched_count,
@@ -998,12 +663,12 @@ def compute_coupon_data(
         )
         if reference
     )
-    uploaded_count = fill_uploaded_details(
+    uploaded_count = matching.fill_uploaded_details(
         rows,
         detail_lookup,
         matched_count,
     )
-    unmatched_count = fill_unmatched_remarks(
+    unmatched_count = matching.fill_unmatched_remarks(
         rows,
         reference_universe,
         matched_count,
@@ -1015,9 +680,6 @@ def compute_coupon_data(
         if str(row[COUPON_CATEGORY_INDEX] or "").strip()
         == COUPON_EXCLUDED_CATEGORY
     )
-    uploaded_subsidy_count, uploaded_subsidy_total = (
-        load_uploaded_subsidy_stats(COUPON_UPLOADED_SOURCE_FILE)
-    )
     summary_rows, zero_subsidy_count = build_coupon_summary(
         rows,
         matched_count,
@@ -1026,7 +688,7 @@ def compute_coupon_data(
     )
     group_sheets = build_coupon_group_sheets(rows, matched_count)
     if source_total is _SOURCE_TOTAL_UNSET:
-        source_total = read_coupon_source_total(_shared.COUPON_SOURCE_FILE)
+        source_total = sources.read_coupon_source_total(sources.COUPON_SOURCE_FILE)
     computed_total = Decimal(str(summary_rows[-1][4]))
 
     return CouponComputation(

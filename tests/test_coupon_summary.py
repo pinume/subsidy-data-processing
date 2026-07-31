@@ -8,11 +8,12 @@ from pathlib import Path
 
 from openpyxl import Workbook
 
-from processors import digital, large_appliances
+from processors.coupons import appliance, sources
+from processors.coupons import digital as coupons_digital
 
 
 def summary_row(
-    processor: object,
+    module: object,
     *,
     category: str,
     brand: str,
@@ -20,13 +21,13 @@ def summary_row(
     detail: str,
     subsidy: object,
 ) -> list[object]:
-    header = processor.COUPON_OUTPUT_HEADER
+    header = module.COUPON_OUTPUT_HEADER
     values = {
         "财务大类": category,
         "品牌": brand,
         "备注": remark,
         "详细情况": detail,
-        processor.COUPON_OUTPUT_HEADER[6]: subsidy,
+        module.COUPON_OUTPUT_HEADER[6]: subsidy,
     }
     return [values.get(column) for column in header]
 
@@ -38,15 +39,15 @@ class CouponSummaryTest(unittest.TestCase):
             workbook = Workbook()
             sheet = workbook.active
             sheet.title = "Summary"
-            sheet.append(["检索参考号", "补贴金额"])
-            sheet.append(["12345678901N", 10.1])
-            sheet.append(["12345678902N", None])
-            sheet.append(["12345678903N", 20])
+            sheet.append(["检索参考号", "状态", "描述", "补贴金额"])
+            sheet.append(["12345678901N", "已完成", "匹配成功", 10.1])
+            sheet.append(["12345678902N", "已完成", "匹配成功", None])
+            sheet.append(["12345678903N", "已完成", "匹配成功", 20])
             workbook.save(source)
             workbook.close()
 
             self.assertEqual(
-                digital.load_uploaded_subsidy_stats(source),
+                sources.load_uploaded_subsidy_stats(source),
                 (2, Decimal("30.1")),
             )
 
@@ -54,9 +55,9 @@ class CouponSummaryTest(unittest.TestCase):
         self,
     ) -> None:
         rows = [
-            list(digital.COUPON_OUTPUT_HEADER),
+            list(coupons_digital.COUPON_OUTPUT_HEADER),
             summary_row(
-                digital,
+                coupons_digital,
                 category="数码",
                 brand="A",
                 remark="已上传",
@@ -64,7 +65,7 @@ class CouponSummaryTest(unittest.TestCase):
                 subsidy="10.10",
             ),
             summary_row(
-                digital,
+                coupons_digital,
                 category="数码",
                 brand="B",
                 remark="未上传",
@@ -72,7 +73,7 @@ class CouponSummaryTest(unittest.TestCase):
                 subsidy=20,
             ),
             summary_row(
-                digital,
+                coupons_digital,
                 category="数码",
                 brand="C",
                 remark="已上传",
@@ -80,7 +81,7 @@ class CouponSummaryTest(unittest.TestCase):
                 subsidy=0,
             ),
             summary_row(
-                digital,
+                coupons_digital,
                 category="数码",
                 brand="D",
                 remark="未上传",
@@ -89,7 +90,7 @@ class CouponSummaryTest(unittest.TestCase):
             ),
         ]
 
-        result = digital.build_coupon_summary(
+        result = coupons_digital.build_coupon_summary(
             rows,
             uploaded_count=1,
             uploaded_subsidy_total=Decimal("20.10"),
@@ -106,9 +107,9 @@ class CouponSummaryTest(unittest.TestCase):
 
     def test_large_appliance_summaries_have_independent_expectations(self) -> None:
         rows = [
-            list(large_appliances.COUPON_OUTPUT_HEADER),
+            list(appliance.COUPON_OUTPUT_HEADER),
             summary_row(
-                large_appliances,
+                appliance,
                 category="冰箱",
                 brand="海尔",
                 remark="已上传",
@@ -116,7 +117,7 @@ class CouponSummaryTest(unittest.TestCase):
                 subsidy="10.11",
             ),
             summary_row(
-                large_appliances,
+                appliance,
                 category="冰箱",
                 brand="海尔",
                 remark="已上传",
@@ -124,7 +125,7 @@ class CouponSummaryTest(unittest.TestCase):
                 subsidy="20.20",
             ),
             summary_row(
-                large_appliances,
+                appliance,
                 category="空调",
                 brand="格力",
                 remark="未上传",
@@ -132,7 +133,7 @@ class CouponSummaryTest(unittest.TestCase):
                 subsidy=None,
             ),
             summary_row(
-                large_appliances,
+                appliance,
                 category="底部",
                 brand="排除",
                 remark="已上传",
@@ -142,7 +143,7 @@ class CouponSummaryTest(unittest.TestCase):
         ]
 
         summary, zero_subsidy_count = (
-            large_appliances.build_coupon_summary(
+            appliance.build_coupon_summary(
                 rows,
                 excluded_bottom_rows=1,
                 uploaded_subsidy_count=1,
@@ -173,9 +174,9 @@ class CouponSummaryTest(unittest.TestCase):
         reported so the operator can go fix the source row.
         """
         rows = [
-            list(large_appliances.COUPON_OUTPUT_HEADER),
+            list(appliance.COUPON_OUTPUT_HEADER),
             summary_row(
-                large_appliances,
+                appliance,
                 category="冰箱",
                 brand="海尔",
                 remark="",
@@ -183,7 +184,7 @@ class CouponSummaryTest(unittest.TestCase):
                 subsidy="100.00",
             ),
             summary_row(
-                large_appliances,
+                appliance,
                 category="冰箱",
                 brand="海尔",
                 remark="",
@@ -191,7 +192,7 @@ class CouponSummaryTest(unittest.TestCase):
                 subsidy="-100.00",
             ),
             summary_row(
-                large_appliances,
+                appliance,
                 category="冰箱",
                 brand="海尔",
                 remark="",
@@ -201,7 +202,7 @@ class CouponSummaryTest(unittest.TestCase):
         ]
 
         summary, zero_subsidy_count = (
-            large_appliances.build_coupon_summary(
+            appliance.build_coupon_summary(
                 rows,
                 excluded_bottom_rows=0,
                 uploaded_subsidy_count=0,
@@ -213,12 +214,12 @@ class CouponSummaryTest(unittest.TestCase):
         self.assertEqual(summary[-1], ("家电", None, "合计", 0, 0.0))
 
     def test_invalid_subsidy_is_rejected(self) -> None:
-        for processor in (digital, large_appliances):
-            with self.subTest(processor=processor.__name__):
+        for module in (coupons_digital, appliance):
+            with self.subTest(module=module.__name__):
                 rows = [
-                    list(processor.COUPON_OUTPUT_HEADER),
+                    list(module.COUPON_OUTPUT_HEADER),
                     summary_row(
-                        processor,
+                        module,
                         category="冰箱",
                         brand="海尔",
                         remark="已上传",
@@ -228,14 +229,14 @@ class CouponSummaryTest(unittest.TestCase):
                 ]
 
                 with self.assertRaisesRegex(ValueError, "国补金额无效"):
-                    if processor is digital:
-                        processor.build_coupon_summary(
+                    if module is coupons_digital:
+                        module.build_coupon_summary(
                             rows,
                             uploaded_count=0,
                             uploaded_subsidy_total=Decimal("0"),
                         )
                     else:
-                        processor.build_coupon_summary(
+                        module.build_coupon_summary(
                             rows,
                             excluded_bottom_rows=0,
                             uploaded_subsidy_count=0,
@@ -253,9 +254,9 @@ class SummarySheetLayoutTest(unittest.TestCase):
 
     def build_computation(self, **overrides) -> object:
         rows = [
-            list(large_appliances.COUPON_OUTPUT_HEADER),
+            list(appliance.COUPON_OUTPUT_HEADER),
             summary_row(
-                large_appliances,
+                appliance,
                 category="冰箱",
                 brand="海尔",
                 remark="已上传",
@@ -263,7 +264,7 @@ class SummarySheetLayoutTest(unittest.TestCase):
                 subsidy="10.11",
             ),
         ]
-        summary, zero = large_appliances.build_coupon_summary(
+        summary, zero = appliance.build_coupon_summary(
             rows,
             excluded_bottom_rows=0,
             uploaded_subsidy_count=1,
@@ -298,17 +299,17 @@ class SummarySheetLayoutTest(unittest.TestCase):
             group_sheets=[],
         )
         fields.update(overrides)
-        return large_appliances.CouponComputation(**fields)
+        return appliance.CouponComputation(**fields)
 
     def build_sheet(self):
         workbook = Workbook()
         workbook.remove(workbook.active)
         computation = self.build_computation()
-        large_appliances.build_summary_and_details_sheets(workbook, computation)
+        appliance.build_summary_and_details_sheets(workbook, computation)
         return workbook, computation
 
     def test_summary_sheet_drops_the_side_panels(self) -> None:
-        """数据汇总 is the 财务大类/品牌/备注 table and nothing else.
+        """数据汇总 is the 财务大类/品牌/备注 表 and nothing else.
 
         The 备注汇总 and 审核通过明细 panels that once sat beside it were
         removed; both left dangling row-number references behind when they
@@ -316,7 +317,7 @@ class SummarySheetLayoutTest(unittest.TestCase):
         """
         workbook, _ = self.build_sheet()
         try:
-            sheet = workbook[large_appliances.SUMMARY_SHEET_NAME]
+            sheet = workbook[appliance.SUMMARY_SHEET_NAME]
             values = {
                 str(cell.value)
                 for row in sheet.iter_rows()
@@ -327,7 +328,7 @@ class SummarySheetLayoutTest(unittest.TestCase):
             self.assertNotIn("备注汇总", values)
             self.assertEqual(
                 sheet.max_column,
-                len(large_appliances.COUPON_SUMMARY_HEADER),
+                len(appliance.COUPON_SUMMARY_HEADER),
             )
         finally:
             workbook.close()
@@ -341,9 +342,9 @@ class SummarySheetLayoutTest(unittest.TestCase):
         """
         workbook, computation = self.build_sheet()
         try:
-            sheet = workbook[large_appliances.SUMMARY_SHEET_NAME]
+            sheet = workbook[appliance.SUMMARY_SHEET_NAME]
             tail_start = 1 + len(computation.summary_rows) - 3
-            remark_column = large_appliances.COUPON_SUMMARY_HEADER.index(
+            remark_column = appliance.COUPON_SUMMARY_HEADER.index(
                 "备注"
             ) + 1
             labels = [
@@ -358,7 +359,7 @@ class SummarySheetLayoutTest(unittest.TestCase):
             # Merged vertically, so only the first row keeps the label.
             self.assertEqual(
                 categories,
-                [large_appliances.COUPON_SUMMARY_PROJECT_LABEL, None, None],
+                [appliance.COUPON_SUMMARY_PROJECT_LABEL, None, None],
             )
         finally:
             workbook.close()
@@ -371,7 +372,7 @@ class SummarySheetLayoutTest(unittest.TestCase):
         """
         workbook, computation = self.build_sheet()
         try:
-            sheet = workbook[large_appliances.SUMMARY_SHEET_NAME]
+            sheet = workbook[appliance.SUMMARY_SHEET_NAME]
             tail_start = 1 + len(computation.summary_rows) - 3
             merges = {str(r) for r in sheet.merged_cells.ranges}
             self.assertIn(
@@ -398,7 +399,7 @@ class ProjectSummaryBlocksTest(unittest.TestCase):
         ]
 
         self.assertEqual(
-            large_appliances.project_summary_blocks(rows),
+            appliance.project_summary_blocks(rows),
             [(2, 4), (5, 6)],
         )
 
@@ -408,7 +409,7 @@ class ProjectSummaryBlocksTest(unittest.TestCase):
             ("空调", "格力", "未上传", 1, 2.0),
         ]
 
-        self.assertEqual(large_appliances.project_summary_blocks(rows), [])
+        self.assertEqual(appliance.project_summary_blocks(rows), [])
 
 
 class SourceTotalGapTest(unittest.TestCase):

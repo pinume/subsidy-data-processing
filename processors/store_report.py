@@ -29,8 +29,8 @@ from openpyxl.workbook.workbook import Workbook
 from processors.common.excel import save_workbook_atomically
 from processors.common.paths import find_data_files, resolve_unique_file
 from processors.coupon_report import OUTPUT_FILE as UPLOAD_FILE
-from processors.large_appliances.coupons import COUPON_SUMMARY_HEADER as UPLOAD_HEADER
-from processors.large_appliances.coupons import SUMMARY_SHEET_NAME as UPLOAD_SHEET_NAME
+from processors.coupon_report import SUMMARY_HEADER as UPLOAD_HEADER
+from processors.coupon_report import SUMMARY_SHEET_NAME as UPLOAD_SHEET_NAME
 from processors.payment import OUTPUT_FILE as PAYMENT_FILE
 from processors.payment import SUMMARY_HEADERS as PAYMENT_HEADER
 from processors.payment import SUMMARY_SHEET_NAME as PAYMENT_SHEET_NAME

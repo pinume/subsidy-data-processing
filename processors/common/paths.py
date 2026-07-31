@@ -1,7 +1,4 @@
-from collections.abc import Callable
 from pathlib import Path
-
-import xlrd
 
 
 def resolve_data_dir() -> Path | None:
@@ -60,41 +57,3 @@ def resolve_unique_file(candidates: list[Path]) -> Path | None:
             f"找到多个符合条件的文件，无法确定使用哪一个：{candidates}"
         )
     return candidates[0]
-
-
-def read_xls_header(path: Path, *, row: int, column: int) -> str:
-    """Read a single header cell from a legacy .xls workbook (1-based row/column)."""
-    workbook = xlrd.open_workbook(path)
-    try:
-        sheet = workbook.sheet_by_index(0)
-        if sheet.nrows < row or sheet.ncols < column:
-            return ""
-        return str(sheet.cell_value(row - 1, column - 1)).strip()
-    finally:
-        workbook.release_resources()
-
-
-def match_source_file_by_header(
-    candidates: list[Path],
-    expected_header: str,
-    *,
-    read_header: Callable[[Path], str],
-) -> Path | None:
-    """Pick the candidate whose header cell equals expected_header.
-
-    Two files can share the same filename keyword (e.g. the digital and large
-    appliances coupon exports both contain "销售用券情况统计"), so content is
-    what actually distinguishes them.
-    """
-    matches = [
-        candidate
-        for candidate in candidates
-        if read_header(candidate) == expected_header
-    ]
-    if not matches:
-        return None
-    if len(matches) > 1:
-        raise ValueError(
-            f"找到多个表头为“{expected_header}”的文件，无法确定使用哪一个：{matches}"
-        )
-    return matches[0]

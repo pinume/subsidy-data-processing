@@ -5,7 +5,6 @@ from decimal import Decimal
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
-from zipfile import ZIP_DEFLATED, ZipFile
 
 from openpyxl import Workbook, load_workbook
 
@@ -148,36 +147,6 @@ class DetailProcessingTests(unittest.TestCase):
 
 
 class WorkbookLoadingTests(unittest.TestCase):
-    def test_xlsm_conversion_preserves_cached_formula_values(self) -> None:
-        with TemporaryDirectory(dir=".") as temporary_dir:
-            temporary_path = Path(temporary_dir).resolve()
-            seed = temporary_path / "seed.xlsm"
-            source = temporary_path / "source.xlsm"
-            destination = temporary_path / "destination.xlsx"
-
-            workbook = Workbook()
-            workbook.active["A1"] = "=1+1"
-            workbook.save(seed)
-
-            with ZipFile(seed) as source_archive, ZipFile(
-                source, "w", ZIP_DEFLATED
-            ) as target_archive:
-                for item in source_archive.infolist():
-                    data = source_archive.read(item.filename)
-                    if item.filename == "xl/worksheets/sheet1.xml":
-                        data = data.replace(b"<v />", b"<v>2</v>")
-                    target_archive.writestr(item, data)
-
-            before = load_workbook(source, data_only=True)
-            self.assertEqual(before.active["A1"].value, 2)
-            before.close()
-
-            payment._convert_xlsm(source, destination)
-
-            converted = load_workbook(destination, data_only=True)
-            self.assertEqual(converted.active["A1"].value, 2)
-            converted.close()
-
     def test_process_sources_reads_cached_formula_values(self) -> None:
         # This checks the loader contract without requiring Excel to calculate a file.
         source = Path("source.xlsx")
@@ -361,7 +330,7 @@ class PaymentPipelineTests(unittest.TestCase):
             finally:
                 result.close()
 
-    def test_working_copies_are_removed_and_sources_kept(self) -> None:
+    def test_sources_are_kept_and_only_the_output_file_is_written(self) -> None:
         with TemporaryDirectory(dir=".") as temporary_dir:
             temporary_path = Path(temporary_dir).resolve()
             data_dir = self._prepare_data_dir(temporary_path)
@@ -451,41 +420,7 @@ class PaymentPipelineTests(unittest.TestCase):
                     expected_summary,
                 )
 
-    def test_same_stem_sources_keep_separate_working_copies(self) -> None:
-        # 补贴明细.xls and 补贴明细.xlsx used to share one working copy: the
-        # second conversion overwrote the first, so one file's rows were
-        # processed twice and the other file's rows disappeared silently.
-        with TemporaryDirectory(dir=".") as temporary_dir:
-            temporary_path = Path(temporary_dir).resolve()
-            data_dir = temporary_path / "data"
-            data_dir.mkdir()
-            profile = payment.PROFILES["家电"]
-            _write_source(
-                data_dir / "以旧换新补贴明细.xlsx",
-                profile,
-                "A04-空调",
-                "格力空调",
-                "10.00",
-            )
-            _write_source(
-                data_dir / "以旧换新补贴明细.xlsm",
-                profile,
-                "A04-空调",
-                "海尔空调",
-                "20.00",
-            )
-
-            output_file = self._run(temporary_path, {"家电": "ABC123"})
-
-            sheet = load_workbook(output_file, data_only=True)["家电明细"]
-            product_index = profile.detail_headers.index("商品名称")
-            products = sorted(
-                row[product_index]
-                for row in sheet.iter_rows(min_row=2, values_only=True)
-            )
-            self.assertEqual(products, ["格力空调", "海尔空调"])
-
-    def test_working_copies_are_removed_when_a_later_file_fails(self) -> None:
+    def test_output_not_created_when_a_later_file_is_unrecognized(self) -> None:
         with TemporaryDirectory(dir=".") as temporary_dir:
             temporary_path = Path(temporary_dir).resolve()
             data_dir = temporary_path / "data"

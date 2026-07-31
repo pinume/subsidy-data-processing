@@ -1,13 +1,10 @@
-"""Shared "submitted data" pipeline for both projects.
+"""已上传数据 (submitted export) processing for household appliances and digital.
 
-Household appliances and digital read the same source column layout, apply
-the same 15% subsidy rate, and validate the same shape of output; the caps,
-source files, and output file differ. Everything that varies is carried in a
-SubmittedConfig built by each project's own module (see
-processors/large_appliances/submitted.py and processors/digital.py), which
-also keeps its own SUBSIDY_RATE / SUBSIDY_CAP constants rather than reading a
-shared default — see README.md's Subsidy Rules section for why the two caps
-are pinned separately instead of merged.
+Both projects read the same source column layout, apply the same 15%
+subsidy rate, and validate the same shape of output; only the subsidy cap,
+source marker, and output file differ, so they are captured as two
+SubmittedProfile instances sharing one pipeline rather than two
+near-identical modules.
 """
 
 from dataclasses import dataclass
@@ -17,14 +14,20 @@ from pathlib import Path
 from openpyxl import Workbook, load_workbook
 from openpyxl.utils import column_index_from_string
 
+from processors.common.config import submitted_file_marker
 from processors.common.excel import (
     format_sheet,
     load_measurement_font,
     read_rows,
     resolve_font,
+    run_with_output_rollback,
     save_workbook_atomically,
 )
+from processors.common.paths import find_data_files
 
+
+BASE_DIR = Path(__file__).resolve().parent.parent
+OUTPUT_DIR = BASE_DIR / "output"
 
 # Keep the required source columns in their original order.
 KEPT_SOURCE_COLUMNS = ("D", "E", "F", "G", "I", "J", "Q", "S", "U", "W", "X")
@@ -44,54 +47,65 @@ STATUS_ORDER = (
 
 
 @dataclass(frozen=True)
-class SubmittedConfig:
-    """Everything one project's submitted-data run needs.
-
-    kept_columns/required_headers/status_order default to the layout both
-    projects currently share; they are still per-config, not hardcoded into
-    build_workbook/validate_output, so a project whose export layout diverges
-    later doesn't have to fork the whole pipeline to change them.
-
-    This only covers *which* source columns are kept and *what order* the
-    output sheets/statuses appear in — the roles those columns play once
-    selected are still fixed: the 3rd kept column is always 交易金额 (read
-    positionally in add_subsidy_column), 补贴金额 is always inserted as the
-    4th output column, and 状态/描述/交易金额/补贴金额 are looked up by those
-    exact header names in build_workbook/validate_output. Supporting a source
-    layout where those roles move would mean passing header names for each
-    role instead of relying on fixed positions/names.
-    """
-
-    input_files: tuple[Path, ...]
-    data_dir: Path
-    source_marker: str
+class SubmittedProfile:
+    data_type: str
     output_file: Path
     subsidy_rate: Decimal
     subsidy_cap: Decimal
-    kept_columns: tuple[str, ...] = KEPT_SOURCE_COLUMNS
-    required_headers: tuple[str, ...] = REQUIRED_SUBMITTED_HEADERS
-    status_order: tuple[str, ...] = STATUS_ORDER
 
 
-def select_columns(
-    row: list[object],
-    kept_column_indexes: tuple[int, ...],
-) -> list[object]:
+# Household appliances and digital both take 15% of the transaction; the two
+# caps were once both written as 500, which silently understated 43% of the
+# appliance rows, so they stay pinned separately rather than sharing a
+# default.
+PROFILES: dict[str, SubmittedProfile] = {
+    "家电": SubmittedProfile(
+        data_type="家电",
+        output_file=OUTPUT_DIR / "家电_已上传.xlsx",
+        subsidy_rate=Decimal("0.15"),
+        subsidy_cap=Decimal("1500"),
+    ),
+    "数码": SubmittedProfile(
+        data_type="数码",
+        output_file=OUTPUT_DIR / "数码_已上传.xlsx",
+        subsidy_rate=Decimal("0.15"),
+        subsidy_cap=Decimal("500"),
+    ),
+}
+PROFILE_ORDER = ("家电", "数码")
+OUTPUT_FILES = tuple(PROFILES[name].output_file for name in PROFILE_ORDER)
+
+DATA_DIR: Path
+SUBMITTED_FILE_MARKERS: dict[str, str] = {}
+INPUT_FILES: dict[str, tuple[Path, ...]] = {}
+
+
+def configure_data_dir(data_dir: Path) -> None:
+    global DATA_DIR
+
+    DATA_DIR = data_dir
+    for name in PROFILE_ORDER:
+        marker = submitted_file_marker(name)
+        SUBMITTED_FILE_MARKERS[name] = marker
+        INPUT_FILES[name] = tuple(find_data_files(data_dir, marker, (".xlsx",)))
+
+
+def select_columns(row: list[object]) -> list[object]:
     return [
         row[column - 1] if column <= len(row) else None
-        for column in kept_column_indexes
+        for column in KEPT_COLUMN_INDEXES
     ]
 
 
 def add_subsidy_column(
     row: list[object],
     *,
-    subsidy_rate: Decimal,
-    subsidy_cap: Decimal,
+    profile_name: str,
     is_header: bool = False,
     source_name: str | None = None,
     source_row: int | None = None,
 ) -> list[object]:
+    profile = PROFILES[profile_name]
     result = list(row)
     if is_header:
         result.insert(3, "补贴金额")
@@ -102,9 +116,9 @@ def add_subsidy_column(
         subsidy = None
     else:
         try:
-            calculated = Decimal(str(amount)) * subsidy_rate
+            calculated = Decimal(str(amount)) * profile.subsidy_rate
             subsidy = float(
-                min(calculated, subsidy_cap).quantize(
+                min(calculated, profile.subsidy_cap).quantize(
                     Decimal("0.01"),
                     rounding=ROUND_HALF_UP,
                 )
@@ -121,19 +135,16 @@ def add_subsidy_column(
     return result
 
 
-def build_workbook(config: SubmittedConfig) -> tuple[Workbook, int, int]:
-    files = list(config.input_files)
+def build_workbook(profile_name: str) -> tuple[Workbook, int, int]:
+    files = list(INPUT_FILES[profile_name])
     if not files:
         raise FileNotFoundError(
-            f"未在 {config.data_dir} 中找到文件名包含"
-            f"“{config.source_marker}”的 .xlsx 文件"
+            f"未在 {DATA_DIR} 中找到文件名包含"
+            f"“{SUBMITTED_FILE_MARKERS[profile_name]}”的 .xlsx 文件"
         )
 
-    kept_column_indexes = tuple(
-        column_index_from_string(column) for column in config.kept_columns
-    )
     status_priority = {
-        status: index for index, status in enumerate(config.status_order)
+        status: index for index, status in enumerate(STATUS_ORDER)
     }
 
     workbook = Workbook(write_only=False)
@@ -156,16 +167,15 @@ def build_workbook(config: SubmittedConfig) -> tuple[Workbook, int, int]:
             expected_header = header
             # Drop the source title row and use the selected headers as row 1.
             output_header = add_subsidy_column(
-                select_columns(header, kept_column_indexes),
-                subsidy_rate=config.subsidy_rate,
-                subsidy_cap=config.subsidy_cap,
+                select_columns(header),
+                profile_name=profile_name,
                 is_header=True,
             )
             # Reject a wrong export before parsing any rows, so the operator sees
             # the missing fields instead of a downstream value error.
             missing_headers = [
                 required
-                for required in config.required_headers
+                for required in REQUIRED_SUBMITTED_HEADERS
                 if required not in output_header
             ]
             if missing_headers:
@@ -182,9 +192,8 @@ def build_workbook(config: SubmittedConfig) -> tuple[Workbook, int, int]:
             if any(value not in (None, "") for value in row):
                 data_rows.append(
                     add_subsidy_column(
-                        select_columns(row, kept_column_indexes),
-                        subsidy_rate=config.subsidy_rate,
-                        subsidy_cap=config.subsidy_cap,
+                        select_columns(row),
+                        profile_name=profile_name,
                         source_name=path.name,
                         source_row=source_row,
                     )
@@ -198,7 +207,7 @@ def build_workbook(config: SubmittedConfig) -> tuple[Workbook, int, int]:
     data_rows.sort(
         key=lambda row: status_priority.get(
             str(row[status_column_index]) if row[status_column_index] is not None else "",
-            len(config.status_order),
+            len(STATUS_ORDER),
         )
     )
     for row in data_rows:
@@ -206,7 +215,7 @@ def build_workbook(config: SubmittedConfig) -> tuple[Workbook, int, int]:
 
     description_column_index = output_header.index("描述")
     rows_by_status: dict[str, list[list[object]]] = {
-        status: [] for status in config.status_order
+        status: [] for status in STATUS_ORDER
     }
     for row in data_rows:
         status = str(row[status_column_index] or "")
@@ -216,7 +225,7 @@ def build_workbook(config: SubmittedConfig) -> tuple[Workbook, int, int]:
     font_name, font_path = resolve_font()
     measurement_font = load_measurement_font(font_path)
     format_sheet(sheet, font_name, measurement_font)
-    for status in config.status_order:
+    for status in STATUS_ORDER:
         status_sheet = workbook.create_sheet(title=status)
         status_sheet.append(output_header)
         status_rows = rows_by_status[status]
@@ -234,14 +243,11 @@ def build_workbook(config: SubmittedConfig) -> tuple[Workbook, int, int]:
     return workbook, len(files), data_row_count
 
 
-def validate_output(
-    path: Path,
-    expected_data_rows: int,
-    config: SubmittedConfig,
-) -> None:
+def validate_output(path: Path, expected_data_rows: int, profile_name: str) -> None:
+    profile = PROFILES[profile_name]
     workbook = load_workbook(path, read_only=True, data_only=True)
     try:
-        expected_sheet_names = ["Summary", *config.status_order]
+        expected_sheet_names = ["Summary", *STATUS_ORDER]
         if workbook.sheetnames != expected_sheet_names:
             raise RuntimeError(
                 f"工作表校验失败：预期 {expected_sheet_names}，"
@@ -254,7 +260,7 @@ def validate_output(
             raise RuntimeError(
                 f"输出校验失败：预期 {expected_data_rows} 条，实际 {actual_data_rows} 条"
             )
-        expected_columns = len(config.kept_columns) + 1
+        expected_columns = len(KEPT_SOURCE_COLUMNS) + 1
         if sheet.max_column != expected_columns:
             raise RuntimeError(
                 f"输出校验失败：预期 {expected_columns} 列，"
@@ -269,12 +275,12 @@ def validate_output(
 
         status_total = sum(
             max(workbook[status].max_row - 1, 0)
-            for status in config.status_order
+            for status in STATUS_ORDER
         )
         known_status_total = sum(
             1
             for row in sheet.iter_rows(min_row=2, values_only=True)
-            if row[status_column] in config.status_order
+            if row[status_column] in STATUS_ORDER
         )
         if status_total != known_status_total:
             raise RuntimeError(
@@ -282,7 +288,7 @@ def validate_output(
                 f"实际共 {status_total} 条"
             )
 
-        for status in config.status_order:
+        for status in STATUS_ORDER:
             status_sheet = workbook[status]
             status_header = tuple(
                 cell.value for cell in next(status_sheet.iter_rows(max_row=1))
@@ -310,8 +316,8 @@ def validate_output(
                 subsidy = row[subsidy_column]
                 if amount not in (None, ""):
                     expected_subsidy = min(
-                        Decimal(str(amount)) * config.subsidy_rate,
-                        config.subsidy_cap,
+                        Decimal(str(amount)) * profile.subsidy_rate,
+                        profile.subsidy_cap,
                     ).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
                     if Decimal(str(subsidy)) != expected_subsidy:
                         raise RuntimeError(
@@ -324,13 +330,27 @@ def validate_output(
         workbook.close()
 
 
-def process_submitted_files(config: SubmittedConfig) -> None:
-    workbook, file_count, data_row_count = build_workbook(config)
+def process_submitted_files(profile_name: str) -> None:
+    workbook, file_count, data_row_count = build_workbook(profile_name)
+    output_file = PROFILES[profile_name].output_file
     save_workbook_atomically(
         workbook,
-        config.output_file,
-        lambda path: validate_output(path, data_row_count, config),
+        output_file,
+        lambda path: validate_output(path, data_row_count, profile_name),
     )
 
     print(f"Submitted data complete: merged {file_count} files, {data_row_count} rows")
-    print(f"Output file: {config.output_file}")
+    print(f"Output file: {output_file}")
+
+
+def process_all() -> None:
+    """Process both projects' submitted data as one all-or-nothing unit.
+
+    An operator has no reason to run one project without the other, so the
+    two outputs are rolled back together if either one fails.
+    """
+    def process_both() -> None:
+        for name in PROFILE_ORDER:
+            process_submitted_files(name)
+
+    run_with_output_rollback(OUTPUT_FILES, process_both)
