@@ -8,16 +8,12 @@ the two programs never have to be selected by hand.
 
 from __future__ import annotations
 
-import csv
-import shutil
-import stat
 from collections import Counter, defaultdict
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from pathlib import Path
 
 import re
-import xlrd
 from openpyxl import Workbook, load_workbook
 from openpyxl.styles import Alignment, Font
 
@@ -41,7 +37,7 @@ OUTPUT_FILE = OUTPUT_DIR / "回款明细.xlsx"
 # Both programs name their export "...补贴明细"; which program a file belongs
 # to is decided per file by detect_profile, not by the search keyword.
 SOURCE_FILE_KEYWORD = "补贴明细"
-SUPPORTED_SUFFIXES = (".xlsx", ".xls", ".xlsm", ".csv", ".tsv")
+SUPPORTED_SUFFIXES = (".xlsx",)
 
 HEADER_ALIASES = {
     "交易完成时间": "交易时间",
@@ -181,101 +177,6 @@ def configure_data_dir(data_dir: Path) -> None:
     SOURCE_FILES = tuple(
         find_data_files(data_dir, SOURCE_FILE_KEYWORD, SUPPORTED_SUFFIXES)
     )
-
-
-def _convert_delimited(source: Path, destination: Path) -> None:
-    raw = source.read_bytes()
-    for encoding in ("utf-8-sig", "gb18030"):
-        try:
-            text = raw.decode(encoding)
-            break
-        except UnicodeDecodeError:
-            continue
-    else:
-        raise ValueError(f"无法识别文本编码：{source}")
-
-    delimiter = "\t" if source.suffix.lower() == ".tsv" else ","
-    if source.suffix.lower() == ".csv":
-        try:
-            delimiter = csv.Sniffer().sniff(text[:8192]).delimiter
-        except csv.Error:
-            pass
-
-    workbook = Workbook(write_only=True)
-    worksheet = workbook.create_sheet("Sheet1")
-    for row in csv.reader(text.splitlines(), delimiter=delimiter):
-        worksheet.append(row)
-    workbook.save(destination)
-
-
-def _convert_xls(source: Path, destination: Path) -> None:
-    source_book = xlrd.open_workbook(source)
-    target_book = Workbook()
-    target_book.remove(target_book.active)
-
-    for source_sheet in source_book.sheets():
-        target_sheet = target_book.create_sheet(source_sheet.name[:31])
-        for row_index in range(source_sheet.nrows):
-            values = []
-            for cell in source_sheet.row(row_index):
-                value = cell.value
-                if cell.ctype == xlrd.XL_CELL_DATE:
-                    value = xlrd.xldate_as_datetime(value, source_book.datemode)
-                elif cell.ctype == xlrd.XL_CELL_ERROR:
-                    value = xlrd.error_text_from_code.get(value, f"错误代码 {value}")
-                values.append(value)
-            target_sheet.append(values)
-    target_book.save(destination)
-
-
-def _convert_xlsm(source: Path, destination: Path) -> None:
-    # The source is read-only later. Copying the OOXML package preserves cached
-    # formula results; loading and re-saving with openpyxl would discard them.
-    shutil.copyfile(source, destination)
-
-
-def convert_source_to_xlsx(source: Path) -> Path:
-    """Return an xlsx path for the source, making a working copy only when
-    the source itself isn't already one.
-
-    An .xlsx source is read (read_only, never written) directly — copying it
-    first only spent disk I/O and added a file that could be left behind by
-    an interrupted run for no benefit. The other formats still need an actual
-    conversion, so they still get a working copy.
-    """
-    if not source.is_file():
-        raise FileNotFoundError(f"原始数据文件不存在：{source}")
-    if source.name.startswith("~$"):
-        raise ValueError("不能选择 Excel 临时文件")
-    suffix = source.suffix.lower()
-    if suffix not in SUPPORTED_SUFFIXES:
-        raise ValueError(f"不支持的数据文件格式：{source.suffix or '无扩展名'}")
-
-    if suffix == ".xlsx":
-        return source
-
-    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-    # Named after the full file name, not the stem: the data directory is flat,
-    # so 补贴明细.xls and 补贴明细.xlsm would otherwise share one working copy —
-    # the second conversion would overwrite the first, and that file's rows
-    # would be processed twice while the other file's rows vanished silently.
-    destination = OUTPUT_DIR / f".{source.name}.working.xlsx"
-    _remove_working_copy(destination)
-    if suffix == ".xls":
-        _convert_xls(source, destination)
-    elif suffix == ".xlsm":
-        _convert_xlsm(source, destination)
-    else:
-        _convert_delimited(source, destination)
-    print(f"已生成工作副本：{destination.name}")
-    return destination
-
-
-def _remove_working_copy(path: Path) -> None:
-    if not path.exists():
-        return
-    path.chmod(path.stat().st_mode | stat.S_IWRITE)
-    path.unlink()
 
 
 def _iter_actual_rows_with_numbers(worksheet):
@@ -804,16 +705,8 @@ def _process_sources(
     return merged_sheet
 
 
-def _classify_sources(working_copies: list[Path]) -> dict[str, list[Path]]:
-    """Group the data directory's subsidy exports by data type.
-
-    Working copies are made here rather than in _process_sources because the
-    data type is read from the copy, and the same copy is then parsed again.
-    Every copy actually created (i.e. convert_source_to_xlsx did not just
-    hand back the .xlsx source itself) is appended to working_copies before
-    anything else can fail, so the caller can delete them all even on a
-    partial run.
-    """
+def _classify_sources() -> dict[str, list[Path]]:
+    """Group the data directory's subsidy exports by data type."""
     if not SOURCE_FILES:
         raise FileNotFoundError(
             f"未在 {DATA_DIR} 找到包含“{SOURCE_FILE_KEYWORD}”的回款原始数据文件"
@@ -821,40 +714,32 @@ def _classify_sources(working_copies: list[Path]) -> dict[str, list[Path]]:
 
     classified: dict[str, list[Path]] = {}
     for source in SOURCE_FILES:
-        working_copy = convert_source_to_xlsx(source)
-        if working_copy != source:
-            working_copies.append(working_copy)
-        profile = detect_profile(working_copy, source.name)
-        classified.setdefault(profile.name, []).append(working_copy)
+        profile = detect_profile(source, source.name)
+        classified.setdefault(profile.name, []).append(source)
     return classified
 
 
 def build_workbook() -> tuple[Workbook, list[tuple[ProcessingProfile, object]], int]:
     """Build the payment workbook in memory and return it with its 汇总 stats."""
-    working_copies: list[Path] = []
     target_book = Workbook()
     target_book.remove(target_book.active)
-    try:
-        classified = _classify_sources(working_copies)
-        sections: list[tuple[ProcessingProfile, object]] = []
-        for profile_name in PROFILE_ORDER:
-            sources = classified.get(profile_name)
-            if not sources:
-                continue
-            sections.append(
-                (
+    classified = _classify_sources()
+    sections: list[tuple[ProcessingProfile, object]] = []
+    for profile_name in PROFILE_ORDER:
+        sources = classified.get(profile_name)
+        if not sources:
+            continue
+        sections.append(
+            (
+                PROFILES[profile_name],
+                _process_sources(
+                    sources,
                     PROFILES[profile_name],
-                    _process_sources(
-                        sources,
-                        PROFILES[profile_name],
-                        merchant_id(profile_name),
-                        target_book,
-                    ),
-                )
+                    merchant_id(profile_name),
+                    target_book,
+                ),
             )
-    finally:
-        for working_copy in working_copies:
-            _remove_working_copy(working_copy)
+        )
 
     if not sections:
         raise ValueError("没有任何明细数据可输出")
