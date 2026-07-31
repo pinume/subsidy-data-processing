@@ -42,6 +42,16 @@ from .matching import (
 )
 from .report_contract import SUMMARY_HEADER, SUMMARY_SHEET_NAME
 from .sources import load_coupon_remark_lookup, load_uploaded_summary
+from .validation import (
+    is_pink_row,
+    validate_detail_sheet_shape,
+    validate_document_and_date_cells,
+    validate_left_aligned_column,
+    validate_matched_subsidy_total,
+    validate_pink_position,
+    validate_remark_and_detail,
+    validate_uploaded_and_unmatched_counts,
+)
 
 
 DETAILS_SHEET_NAME = "家电-明细总表"
@@ -843,43 +853,10 @@ def validate_summary_and_details_sheets(
     combined_summary_rows = [*expected_summary_rows, *extra_summary_rows]
 
     sheet = workbook[DETAILS_SHEET_NAME]
-    header = tuple(cell.value for cell in sheet[1])
-    if header != COUPON_OUTPUT_HEADER:
-        raise RuntimeError(
-            f"销售用券字段标题校验失败：实际为 {header}"
-        )
-    if sheet.max_column != len(COUPON_OUTPUT_HEADER):
-        raise RuntimeError(
-            f"销售用券列数校验失败：实际为 {sheet.max_column}"
-        )
-    actual_data_rows = max(sheet.max_row - 1, 0)
-    if actual_data_rows != expected_data_rows:
-        raise RuntimeError(
-            f"销售用券行数校验失败：预期 {expected_data_rows} 条，"
-            f"实际 {actual_data_rows} 条"
-        )
-    detail_column = COUPON_OUTPUT_HEADER.index("详细情况") + 1
-    actual_uploaded_rows = sum(
-        sheet.cell(row_number, detail_column).value not in (None, "")
-        for row_number in range(2, sheet.max_row + 1)
+    validate_detail_sheet_shape(sheet, COUPON_OUTPUT_HEADER, expected_data_rows)
+    detail_column, remark_column = validate_uploaded_and_unmatched_counts(
+        sheet, COUPON_OUTPUT_HEADER, expected_uploaded_rows, expected_unmatched_rows
     )
-    if actual_uploaded_rows != expected_uploaded_rows:
-        raise RuntimeError(
-            f"销售用券已上传匹配数校验失败：预期 "
-            f"{expected_uploaded_rows} 条，实际 {actual_uploaded_rows} 条"
-        )
-    remark_column = COUPON_OUTPUT_HEADER.index("备注") + 1
-    actual_unuploaded_remark_rows = sum(
-        sheet.cell(row_number, remark_column).value == "未上传"
-        for row_number in range(2, sheet.max_row + 1)
-    )
-    expected_unuploaded_remark_rows = expected_unmatched_rows
-    if actual_unuploaded_remark_rows != expected_unuploaded_remark_rows:
-        raise RuntimeError(
-            f"销售用券“未上传”备注数量校验失败：预期 "
-            f"{expected_unuploaded_remark_rows} 条，"
-            f"实际 {actual_unuploaded_remark_rows} 条"
-        )
     matched_start_row = sheet.max_row - expected_matched_rows + 1
     summary_column = COUPON_OUTPUT_HEADER.index("明细摘要") + 1
     actual_unresolved_rows = sum(
@@ -933,14 +910,7 @@ def validate_summary_and_details_sheets(
         ("商品名称", product_name_column),
         ("详细情况", detail_column),
     ):
-        if any(
-            sheet.cell(row_number, column_number).alignment.horizontal
-            != "left"
-            for row_number in range(2, sheet.max_row + 1)
-        ):
-            raise RuntimeError(
-                f"销售用券{column_name}列左对齐校验失败"
-            )
+        validate_left_aligned_column(sheet, column_number, column_name)
     brand_column = COUPON_OUTPUT_HEADER.index("品牌") + 1
     remaining_source_brands = {
         str(sheet.cell(row_number, brand_column).value or "").strip()
@@ -961,32 +931,8 @@ def validate_summary_and_details_sheets(
         date_cell = sheet.cell(row_number, 2)
         remark_cell = sheet.cell(row_number, remark_column)
         detail_cell = sheet.cell(row_number, detail_column)
-        if "收款" in str(document_cell.value or ""):
-            raise RuntimeError(
-                f"销售用券第 {row_number} 行单据号仍包含“收款”"
-            )
-        if document_cell.number_format != "@":
-            raise RuntimeError(
-                f"销售用券第 {row_number} 行单据号不是文本格式"
-            )
-        if (
-            date_cell.value not in (None, "")
-            and date_cell.number_format != "yyyy-mm-dd"
-        ):
-            raise RuntimeError(
-                f"销售用券第 {row_number} 行单据日期格式错误"
-            )
-        if date_cell.value not in (None, "") and not isinstance(
-            date_cell.value,
-            (date, datetime),
-        ):
-            raise RuntimeError(
-                f"销售用券第 {row_number} 行单据日期不是日期值"
-            )
-        document_date = (
-            date_cell.value.date()
-            if isinstance(date_cell.value, datetime)
-            else date_cell.value
+        document_date = validate_document_and_date_cells(
+            document_cell, date_cell, row_number
         )
         receipt_remark = remark_lookup.get(
             (
@@ -1024,29 +970,13 @@ def validate_summary_and_details_sheets(
                 expected_remark = "未上传"
             else:
                 expected_remark = receipt_remark
-        actual_remark = str(remark_cell.value or "")
-        if actual_remark != expected_remark:
-            raise RuntimeError(
-                f"销售用券第 {row_number} 行备注匹配校验失败"
-            )
-        if str(detail_cell.value or "") != expected_detail:
-            raise RuntimeError(
-                f"销售用券第 {row_number} 行详细情况匹配校验失败"
-            )
-        is_pink = all(
-            sheet.cell(row_number, column).fill.fill_type == "solid"
-            and sheet.cell(row_number, column).fill.fgColor.rgb
-            in {
-                COUPON_MATCH_FILL_COLOR,
-                f"00{COUPON_MATCH_FILL_COLOR}",
-                f"FF{COUPON_MATCH_FILL_COLOR}",
-            }
-            for column in range(1, len(COUPON_OUTPUT_HEADER) + 1)
+        validate_remark_and_detail(
+            remark_cell, detail_cell, expected_remark, expected_detail, row_number
         )
-        if is_pink != expected_pink:
-            raise RuntimeError(
-                f"销售用券第 {row_number} 行粉色填充或位置校验失败"
-            )
+        is_pink = is_pink_row(
+            sheet, row_number, len(COUPON_OUTPUT_HEADER), COUPON_MATCH_FILL_COLOR
+        )
+        validate_pink_position(is_pink, expected_pink, row_number)
         if expected_pink:
             subsidy = sheet.cell(row_number, subsidy_column).value
             if subsidy not in (None, ""):
@@ -1060,14 +990,9 @@ def validate_summary_and_details_sheets(
         raise RuntimeError(
             "销售用券补充参考号逐行匹配结果校验失败"
         )
-    if as_currency(actual_matched_subsidy_total) != as_currency(
-        expected_matched_subsidy_total
-    ):
-        raise RuntimeError(
-            "销售用券匹配行国补合计校验失败："
-            f"预期 {expected_matched_subsidy_total}，"
-            f"实际 {actual_matched_subsidy_total}"
-        )
+    validate_matched_subsidy_total(
+        actual_matched_subsidy_total, expected_matched_subsidy_total
+    )
     summary_sheet = workbook[SUMMARY_SHEET_NAME]
     summary_header = tuple(
         summary_sheet.cell(1, column).value

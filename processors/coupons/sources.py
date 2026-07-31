@@ -51,7 +51,6 @@ COUPON_REFERENCE_SUPPLEMENT_KEYWORD = "新建 Microsoft Excel 工作表"
 class CouponSourceProfile:
     name: str
     subsidy_header: str
-    other_subsidy_column: int
     normalize_brand: bool
 
     @property
@@ -81,13 +80,11 @@ class CouponSourceProfile:
 APPLIANCE_PROFILE = CouponSourceProfile(
     name="家电",
     subsidy_header=COUPON_FAMILY_SUBSIDY_HEADER,
-    other_subsidy_column=COUPON_DIGITAL_SUBSIDY_COLUMN,
     normalize_brand=True,
 )
 DIGITAL_PROFILE = CouponSourceProfile(
     name="数码",
     subsidy_header=COUPON_DIGITAL_SUBSIDY_HEADER,
-    other_subsidy_column=COUPON_FAMILY_SUBSIDY_COLUMN,
     normalize_brand=False,
 )
 
@@ -168,22 +165,10 @@ def load_coupon_remark_lookup(source: Path) -> dict[tuple[str, date], str]:
         workbook.close()
 
 
-def load_uploaded_detail_lookup(source: Path) -> dict[str, str]:
-    return load_uploaded_summary(source)[0]
-
-
-def load_uploaded_subsidy_stats(source: Path) -> tuple[int, Decimal]:
-    _detail_lookup, subsidy_count, subsidy_total = load_uploaded_summary(source)
-    return subsidy_count, subsidy_total
-
-
 def load_uploaded_summary(source: Path) -> tuple[dict[str, str], int, Decimal]:
     """Read a generated 已上传 workbook's Summary sheet once for everything
     both appliance.py and digital.py need from it: the per-reference detail
-    lookup and the 补贴金额 count/total. The two used to be two separate
-    functions (load_uploaded_detail_lookup here, load_uploaded_subsidy_stats
-    in common/excel.py) each doing their own full pass over the same sheet.
-    """
+    lookup and the 补贴金额 count/total, in a single pass over the sheet."""
     if not source.exists():
         raise FileNotFoundError(f"未找到已上传匹配文件：{source}")
 

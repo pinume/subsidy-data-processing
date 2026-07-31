@@ -233,19 +233,6 @@ def measurement_text(value: object) -> str:
     return value.strftime("%Y%m%d") if isinstance(value, (date, datetime)) else str(value)
 
 
-def text_pixel_width(value: object, font) -> float:
-    text = measurement_text(value)
-    if not text:
-        return 0
-    # getlength (the rendered advance width) rather than getbbox (the ink
-    # extent) — about 3x faster per call, and it is what Excel's own
-    # character-width metric approximates anyway. On a proportional font the
-    # two differ by a fraction of a pixel per string, well inside the ±10%
-    # slack pixels_to_excel_width already adds; on the monospace font this
-    # project prefers (Maple Mono NF CN) they are identical.
-    return font.getlength(text)
-
-
 # Strings whose width would stop being the sum of their characters' widths the
 # moment a font kerned, ligated, or shaped them: classic kerning pairs, an "ffi"
 # ligature candidate, and the character classes this program actually writes

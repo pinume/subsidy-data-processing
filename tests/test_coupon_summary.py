@@ -46,10 +46,10 @@ class CouponSummaryTest(unittest.TestCase):
             workbook.save(source)
             workbook.close()
 
-            self.assertEqual(
-                sources.load_uploaded_subsidy_stats(source),
-                (2, Decimal("30.1")),
+            _lookup, subsidy_count, subsidy_total = sources.load_uploaded_summary(
+                source
             )
+            self.assertEqual((subsidy_count, subsidy_total), (2, Decimal("30.1")))
 
     def test_digital_summary_subtracts_uploaded_stats_from_coupon_totals(
         self,

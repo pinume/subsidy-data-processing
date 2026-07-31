@@ -15,13 +15,19 @@ from processors.common.excel import (
     capture_style,
     format_sheet,
     load_measurement_font,
+    measurement_text,
     resolve_font,
     reuse_style,
     style_snapshot,
-    text_pixel_width,
     width_measurer,
     widths_are_additive,
 )
+
+
+def text_pixel_width(value: object, font) -> float:
+    """Test oracle mirroring width_measurer's uncached, unoptimized path."""
+    text = measurement_text(value)
+    return font.getlength(text) if text else 0
 
 
 SOURCE_COLUMN_COUNT = 24

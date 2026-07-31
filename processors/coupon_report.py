@@ -22,11 +22,16 @@ from openpyxl import Workbook, load_workbook
 
 from processors.common.excel import format_sheet, save_workbook_atomically
 from processors.coupons import appliance, digital, matching, sources
+from processors.coupons.report_contract import SUMMARY_HEADER, SUMMARY_SHEET_NAME
+from processors.coupons.sources import load_coupon_remark_lookup
+
+
 # Not unused despite the lack of a local reference: re-exported for
 # store_report.py, which imports SUMMARY_SHEET_NAME/SUMMARY_HEADER from this
 # module rather than reaching into processors.coupons.report_contract itself.
-from processors.coupons.report_contract import SUMMARY_HEADER, SUMMARY_SHEET_NAME
-from processors.coupons.sources import load_coupon_remark_lookup
+# Listing them in __all__ (rather than an "as"-aliased import) tells pyflakes
+# the same thing without tripping pylint's redundant-alias rule.
+__all__ = ["SUMMARY_HEADER", "SUMMARY_SHEET_NAME"]
 
 
 BASE_DIR = Path(__file__).resolve().parent.parent
