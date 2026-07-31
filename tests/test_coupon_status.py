@@ -34,7 +34,7 @@ class CouponStatusLookupTest(unittest.TestCase):
             sheet = workbook.active
             sheet.title = "Summary"
             sheet.append(["检索参考号", "状态", "描述"])
-            sheet.append([" 12345678901a ", " 已完成 ", " 匹配成功 "])
+            sheet.append([" 12345678901a ", " 已完成 ", "匹配成功 "])
             workbook.save(source)
             workbook.close()
 
@@ -45,6 +45,25 @@ class CouponStatusLookupTest(unittest.TestCase):
                         {"12345678901A": "已完成：匹配成功"},
                     )
 
+    def test_uploaded_lookup_rejects_malformed_reference(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "uploaded.xlsx"
+            workbook = Workbook()
+            sheet = workbook.active
+            sheet.title = "Summary"
+            sheet.append(["检索参考号", "状态", "描述"])
+            sheet.append(["1234567890A", "已完成", "匹配成功"])
+            workbook.save(source)
+            workbook.close()
+
+            for processor in PROCESSORS:
+                with self.subTest(processor=processor.__name__):
+                    with self.assertRaisesRegex(
+                        ValueError,
+                        "11位数字后跟一个大写字母",
+                    ):
+                        processor.load_uploaded_detail_lookup(source)
+
     def test_uploaded_lookup_rejects_conflicting_duplicate(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             source = Path(directory) / "uploaded.xlsx"
@@ -52,8 +71,8 @@ class CouponStatusLookupTest(unittest.TestCase):
             sheet = workbook.active
             sheet.title = "Summary"
             sheet.append(["检索参考号", "状态", "描述"])
-            sheet.append(["12345678901A", "已完成", "结果一"])
-            sheet.append(["12345678901A", "已完成", "结果二"])
+            sheet.append(["12345678901N", "已完成", "结果一"])
+            sheet.append(["12345678901N", "已完成", "结果二"])
             workbook.save(source)
             workbook.close()
 
@@ -68,10 +87,10 @@ class CouponStatusLookupTest(unittest.TestCase):
 
 class CouponStatusFillTest(unittest.TestCase):
     def test_uploaded_match_sets_detail_and_remark(self) -> None:
-        reference = "12345678901A"
+        reference = "12345678901N"
         for processor in PROCESSORS:
             with self.subTest(processor=processor.__name__):
-                row = coupon_row(processor, "12345678901a")
+                row = coupon_row(processor, "12345678901n")
                 rows = [list(processor.COUPON_OUTPUT_HEADER), row]
                 lookup = {reference: "已完成：匹配成功"}
 
@@ -100,13 +119,13 @@ class CouponStatusFillTest(unittest.TestCase):
                 if processor is large_appliances:
                     count = processor.fill_unmatched_remarks(
                         rows,
-                        {"12345678901A"},
+                        {"12345678901N"},
                         excluded_bottom_rows=0,
                     )
                 else:
                     count = processor.fill_unmatched_remarks(
                         rows,
-                        {"12345678901A"},
+                        {"12345678901N"},
                     )
 
                 remark_index = processor.COUPON_OUTPUT_HEADER.index("备注")
@@ -114,7 +133,7 @@ class CouponStatusFillTest(unittest.TestCase):
                 self.assertEqual(row[remark_index], "未上传")
 
     def test_large_appliances_leaves_submitted_and_bottom_rows_alone(self) -> None:
-        reference = "12345678901A"
+        reference = "12345678901N"
         uploaded_row = coupon_row(
             large_appliances,
             reference,

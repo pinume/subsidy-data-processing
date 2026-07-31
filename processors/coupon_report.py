@@ -13,8 +13,10 @@ from datetime import datetime
 from decimal import Decimal
 from pathlib import Path
 
+import xlrd
 from openpyxl import Workbook, load_workbook
 
+from processors.common.coupons import load_coupon_remark_lookup
 from processors.common.excel import format_sheet, save_workbook_atomically
 from processors.large_appliances import _shared as large_appliances_shared
 from processors.large_appliances import coupons as large_appliances_coupons
@@ -127,8 +129,50 @@ def digital_extra_summary_rows(
 
 
 def process_coupon_sales() -> None:
-    large_appliances_computation = large_appliances_coupons.compute_coupon_data()
-    digital_computation = digital.compute_coupon_data()
+    appliance_source = large_appliances_shared.COUPON_SOURCE_FILE
+    digital_source = digital.COUPON_SOURCE_FILE
+    if appliance_source is None or digital_source is None:
+        large_appliances_computation = (
+            large_appliances_coupons.compute_coupon_data()
+        )
+        digital_computation = digital.compute_coupon_data()
+    elif appliance_source != digital_source:
+        raise ValueError(
+            "家电与数码应使用同一个销售用券情况统计源文件，"
+            f"实际分别为 {appliance_source} 和 {digital_source}"
+        )
+    else:
+        source_workbook = xlrd.open_workbook(appliance_source)
+        try:
+            appliance_rows = large_appliances_coupons.read_coupon_rows(
+                appliance_source,
+                source_workbook,
+            )
+            digital_rows = digital.read_coupon_rows(
+                digital_source,
+                source_workbook,
+            )
+            source_total = large_appliances_coupons.read_coupon_source_total(
+                appliance_source,
+                source_workbook,
+            )
+        finally:
+            source_workbook.release_resources()
+
+        remark_lookup = load_coupon_remark_lookup(
+            large_appliances_coupons.COUPON_REMARK_SOURCE_FILE
+        )
+        large_appliances_computation = (
+            large_appliances_coupons.compute_coupon_data(
+                rows=appliance_rows,
+                remark_lookup=remark_lookup,
+                source_total=source_total,
+            )
+        )
+        digital_computation = digital.compute_coupon_data(
+            rows=digital_rows,
+            remark_lookup=remark_lookup,
+        )
     extra_summary_rows = digital_extra_summary_rows(digital_computation)
 
     workbook = Workbook()

@@ -41,14 +41,14 @@ def correct_references(
 
 class CouponReferenceCorrectionTest(unittest.TestCase):
     def test_extracts_reference_from_supported_input_variants(self) -> None:
-        reference = "12345678901A"
+        reference = "12345678901N"
         variants = (
-            "12345678901a",
-            "12345 678901 A",
-            "参考号：12345678901A",
+            "12345678901n",
+            "12345 678901 N",
+            "参考号：12345678901N",
             "12345678901",
-            "12345678901AB",
-            "12345678901B",
+            "12345678901NN",
+            "12345678901M",
         )
         for processor in PROCESSORS:
             for raw_reference in variants:
@@ -65,7 +65,19 @@ class CouponReferenceCorrectionTest(unittest.TestCase):
                     )
 
     def test_ambiguous_candidate_is_not_selected(self) -> None:
-        universe = {"12345678901A", "12345678901B"}
+        universe = {"12345678901N", "12345678902N"}
+        for processor in PROCESSORS:
+            with self.subTest(processor=processor.__name__):
+                self.assertEqual(
+                    processor.reference_correction_candidates(
+                        "1234567890N",
+                        universe,
+                    ),
+                    universe,
+                )
+
+    def test_suffix_letter_comes_from_uploaded_reference_universe(self) -> None:
+        universe = {"12345678901A", "12345678902Z"}
         for processor in PROCESSORS:
             with self.subTest(processor=processor.__name__):
                 self.assertEqual(
@@ -73,14 +85,21 @@ class CouponReferenceCorrectionTest(unittest.TestCase):
                         "12345678901",
                         universe,
                     ),
-                    universe,
+                    {"12345678901A"},
+                )
+                self.assertEqual(
+                    processor.reference_correction_candidates(
+                        "12345678902",
+                        universe,
+                    ),
+                    {"12345678902Z"},
                 )
 
     def test_unique_candidate_is_corrected(self) -> None:
-        target = "12345678901A"
+        target = "12345678901N"
         for processor in PROCESSORS:
             with self.subTest(processor=processor.__name__):
-                rows = coupon_rows(processor, "12345 678901 A")
+                rows = coupon_rows(processor, "12345 678901 N")
 
                 corrected, unresolved, collisions, decisions = (
                     correct_references(processor, rows, {target})
@@ -103,17 +122,17 @@ class CouponReferenceCorrectionTest(unittest.TestCase):
                 # re-sorted after this runs, so a row number would go stale.
                 self.assertEqual(document_number, "1000")
                 self.assertEqual(document_date, DOCUMENT_DATE)
-                self.assertEqual(original, "12345 678901 A")
+                self.assertEqual(original, "12345 678901 N")
                 self.assertIn(target, explanation)
 
     def test_duplicate_target_collision_is_not_corrected(self) -> None:
-        target = "12345678901A"
+        target = "12345678901N"
         for processor in PROCESSORS:
             with self.subTest(processor=processor.__name__):
                 rows = coupon_rows(
                     processor,
-                    "12345 678901 A",
-                    "12345678901-A",
+                    "12345 678901 N",
+                    "12345678901-N",
                 )
 
                 corrected, unresolved, collisions, decisions = (
@@ -122,8 +141,8 @@ class CouponReferenceCorrectionTest(unittest.TestCase):
 
                 summary_index = processor.COUPON_OUTPUT_HEADER.index("明细摘要")
                 self.assertEqual((corrected, unresolved, collisions), (0, 0, 2))
-                self.assertEqual(rows[1][summary_index], "12345 678901 A")
-                self.assertEqual(rows[2][summary_index], "12345678901-A")
+                self.assertEqual(rows[1][summary_index], "12345 678901 N")
+                self.assertEqual(rows[2][summary_index], "12345678901-N")
                 self.assertEqual(
                     [decision[0] for decision in decisions],
                     [processor.REFERENCE_REPORT_COLLISION] * 2,
@@ -140,15 +159,15 @@ class CouponReferenceCorrectionTest(unittest.TestCase):
         """
         for processor in PROCESSORS:
             with self.subTest(processor=processor.__name__):
-                rows = coupon_rows(processor, "99999999999Z")
+                rows = coupon_rows(processor, "99999999999N")
 
                 corrected, unresolved, collisions, decisions = (
-                    correct_references(processor, rows, {"12345678901A"})
+                    correct_references(processor, rows, {"12345678901N"})
                 )
 
                 summary_index = processor.COUPON_OUTPUT_HEADER.index("明细摘要")
                 self.assertEqual((corrected, unresolved, collisions), (0, 1, 0))
-                self.assertEqual(rows[1][summary_index], "99999999999Z")
+                self.assertEqual(rows[1][summary_index], "99999999999N")
                 self.assertEqual(decisions, [])
 
     def test_malformed_reference_is_reported(self) -> None:
@@ -157,7 +176,11 @@ class CouponReferenceCorrectionTest(unittest.TestCase):
         Real exports contained placeholder text such as 预售 here.
         """
         for processor in PROCESSORS:
-            for raw_reference in ("预售", "1234567890", "99999999999"):
+            for raw_reference in (
+                "预售",
+                "1234567890",
+                "99999999999",
+            ):
                 with self.subTest(
                     processor=processor.__name__,
                     raw_reference=raw_reference,
@@ -165,7 +188,7 @@ class CouponReferenceCorrectionTest(unittest.TestCase):
                     rows = coupon_rows(processor, raw_reference)
 
                     corrected, unresolved, collisions, decisions = (
-                        correct_references(processor, rows, {"12345678901A"})
+                        correct_references(processor, rows, {"12345678901N"})
                     )
 
                     self.assertEqual(

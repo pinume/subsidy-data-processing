@@ -12,7 +12,9 @@ from openpyxl.styles import Alignment, Border, PatternFill, Side
 
 from processors.common.config import load_brand_mapping
 from processors.common.coupons import (
+    COUPON_REFERENCE_RE,
     as_currency,
+    build_reference_correction_index,
     classify_coupon_row,
     load_coupon_remark_lookup,
     load_uploaded_detail_lookup,
@@ -121,11 +123,13 @@ COUPON_SUMMARY_BORDER = Border(
     bottom=Side(style="thin", color="000000"),
 )
 INVALID_SHEET_TITLE_RE = re.compile(r"[\[\]:*?/\\]")
-COUPON_REFERENCE_RE = re.compile(r"\d{11}[A-Z]")
 COUPON_REFERENCE_SUPPLEMENT_HEADER = ("参考号", "单据号", "单据日期")
 
 
-def read_coupon_source_total(source: Path) -> Decimal | None:
+def read_coupon_source_total(
+    source: Path,
+    source_workbook=None,
+) -> Decimal | None:
     """Read the 国补 value the source file states in its own 合计 row.
 
     The export writes it as display text (e.g. "￥2,866,331.40"), and it has
@@ -133,7 +137,8 @@ def read_coupon_source_total(source: Path) -> Decimal | None:
     it lets the program report that gap instead of silently absorbing it;
     returns None when the cell cannot be parsed.
     """
-    workbook = xlrd.open_workbook(source)
+    owns_workbook = source_workbook is None
+    workbook = source_workbook or xlrd.open_workbook(source)
     try:
         sheet = workbook.sheet_by_index(0)
         if sheet.nrows < 1:
@@ -147,11 +152,16 @@ def read_coupon_source_total(source: Path) -> Decimal | None:
         except InvalidOperation:
             return None
     finally:
-        workbook.release_resources()
+        if owns_workbook:
+            workbook.release_resources()
 
 
-def read_coupon_rows(source: Path) -> list[list[object]]:
-    source_workbook = xlrd.open_workbook(source)
+def read_coupon_rows(
+    source: Path,
+    source_workbook=None,
+) -> list[list[object]]:
+    owns_workbook = source_workbook is None
+    source_workbook = source_workbook or xlrd.open_workbook(source)
     try:
         source_sheet = source_workbook.sheet_by_index(0)
         if source_sheet.nrows < 3:
@@ -229,7 +239,8 @@ def read_coupon_rows(source: Path) -> list[list[object]]:
                 )
         return rows
     finally:
-        source_workbook.release_resources()
+        if owns_workbook:
+            source_workbook.release_resources()
 
 
 def fill_coupon_remarks(
@@ -442,6 +453,7 @@ def correct_coupon_references(
     target_counts: Counter[str] = Counter()
     unresolved_count = 0
     decisions: list[tuple[str, str, object, str, str]] = []
+    correction_index = build_reference_correction_index(reference_universe)
 
     for row_index, row in enumerate(included_rows, start=1):
         if protected_row_ids is not None and id(row) in protected_row_ids:
@@ -453,7 +465,7 @@ def correct_coupon_references(
             continue
         candidates = reference_correction_candidates(
             raw_reference,
-            reference_universe,
+            correction_index,
         )
         if len(candidates) != 1:
             unresolved_count += 1
@@ -921,7 +933,15 @@ class CouponComputation:
     group_sheets: list[tuple[str, str, str, list[tuple[list[object], bool]]]]
 
 
-def compute_coupon_data() -> CouponComputation:
+_SOURCE_TOTAL_UNSET = object()
+
+
+def compute_coupon_data(
+    *,
+    rows: list[list[object]] | None = None,
+    remark_lookup: dict[tuple[str, date], str] | None = None,
+    source_total: Decimal | None | object = _SOURCE_TOTAL_UNSET,
+) -> CouponComputation:
     if _shared.COUPON_SOURCE_FILE is None:
         raise FileNotFoundError(
             f"未在 {_shared.DATA_DIR} 中找到文件名包含"
@@ -929,8 +949,10 @@ def compute_coupon_data() -> CouponComputation:
             f"“{COUPON_SUBSIDY_HEADER}”的 .XLS 文件"
         )
 
-    rows = read_coupon_rows(_shared.COUPON_SOURCE_FILE)
-    remark_lookup = load_coupon_remark_lookup(COUPON_REMARK_SOURCE_FILE)
+    if rows is None:
+        rows = read_coupon_rows(_shared.COUPON_SOURCE_FILE)
+    if remark_lookup is None:
+        remark_lookup = load_coupon_remark_lookup(COUPON_REMARK_SOURCE_FILE)
     matched_count, matched_subsidy_total, receipt_remark_count = (
         fill_coupon_remarks(
         rows,
@@ -1003,7 +1025,8 @@ def compute_coupon_data() -> CouponComputation:
         uploaded_subsidy_total,
     )
     group_sheets = build_coupon_group_sheets(rows, matched_count)
-    source_total = read_coupon_source_total(_shared.COUPON_SOURCE_FILE)
+    if source_total is _SOURCE_TOTAL_UNSET:
+        source_total = read_coupon_source_total(_shared.COUPON_SOURCE_FILE)
     computed_total = Decimal(str(summary_rows[-1][4]))
 
     return CouponComputation(

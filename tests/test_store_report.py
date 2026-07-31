@@ -58,7 +58,7 @@ class ReportRatioTests(unittest.TestCase):
         with TemporaryDirectory() as directory:
             upload_file = Path(directory) / "审核明细.xlsx"
             workbook.save(upload_file)
-            upload_data, digital_totals = store_report.load_upload_data(upload_file)
+            upload_data, digital_totals, project_metrics = store_report.load_upload_data(upload_file)
 
         self.assertEqual(
             upload_data[("冰箱", "海尔")],
@@ -68,6 +68,21 @@ class ReportRatioTests(unittest.TestCase):
         self.assertEqual(
             digital_totals,
             {"发生额": Decimal("240"), "上传额": Decimal("200")},
+        )
+        self.assertEqual(
+            project_metrics,
+            {
+                "家电": {
+                    "已上传": store_report.CountAmount(2, Decimal("100")),
+                    "未上传": store_report.CountAmount(1, Decimal("50")),
+                    "合计": store_report.CountAmount(3, Decimal("150")),
+                },
+                "数码": {
+                    "已上传": store_report.CountAmount(4, Decimal("200")),
+                    "未上传": store_report.CountAmount(1, Decimal("40")),
+                    "合计": store_report.CountAmount(5, Decimal("240")),
+                },
+            },
         )
 
     def test_payment_data_sums_known_digital_categories(self) -> None:
@@ -87,10 +102,17 @@ class ReportRatioTests(unittest.TestCase):
         with TemporaryDirectory() as directory:
             payment_file = Path(directory) / "回款明细.xlsx"
             workbook.save(payment_file)
-            payment_data, digital_amount = store_report.load_payment_data(payment_file)
+            payment_data, digital_amount, project_metrics = store_report.load_payment_data(payment_file)
 
         self.assertEqual(payment_data, {("冰箱", "海尔"): Decimal("100")})
         self.assertEqual(digital_amount, Decimal("100"))
+        self.assertEqual(
+            project_metrics,
+            {
+                "家电": store_report.CountAmount(1, Decimal("100")),
+                "数码": store_report.CountAmount(3, Decimal("100")),
+            },
+        )
 
     def test_payment_data_rejects_an_unconfigured_category(self) -> None:
         workbook = Workbook()
@@ -131,6 +153,16 @@ class ReportRatioTests(unittest.TestCase):
         self.assertEqual(sheet["K33"].value, 300)
         self.assertAlmostEqual(sheet["I33"].value, 0.8)
         self.assertAlmostEqual(sheet["M33"].value, 0.3)
+        for coordinate in ("E33", "G33", "K33"):
+            self.assertEqual(
+                sheet[coordinate].number_format,
+                store_report.DATA_NUMBER_FORMAT,
+            )
+        for coordinate in ("I33", "M33"):
+            self.assertEqual(
+                sheet[coordinate].number_format,
+                store_report.PERCENT_NUMBER_FORMAT,
+            )
         self.assertIsNone(sheet["D33"].value)
         self.assertIsNone(sheet["F33"].value)
         self.assertIsNone(sheet["J33"].value)
@@ -154,6 +186,54 @@ class ReportRatioTests(unittest.TestCase):
         self.assertEqual(sheet["F34"].value, 100)
         self.assertAlmostEqual(sheet["H34"].value, 0.5)
         self.assertAlmostEqual(sheet["L34"].value, 0.25)
+        for coordinate in ("D34", "F34", "J34"):
+            self.assertEqual(
+                sheet[coordinate].number_format,
+                store_report.DATA_NUMBER_FORMAT,
+            )
+        for coordinate in ("H34", "L34"):
+            self.assertEqual(
+                sheet[coordinate].number_format,
+                store_report.PERCENT_NUMBER_FORMAT,
+            )
+
+    def test_table3_subtracts_payment_from_uploaded_metrics(self) -> None:
+        sheet = Workbook().active
+        upload_metrics = {
+            "家电": {
+                "已上传": store_report.CountAmount(10, Decimal("1000")),
+                "未上传": store_report.CountAmount(3, Decimal("300")),
+            },
+            "数码": {
+                "已上传": store_report.CountAmount(8, Decimal("800")),
+                "未上传": store_report.CountAmount(2, Decimal("200")),
+            },
+        }
+        payment_metrics = {
+            "家电": store_report.CountAmount(4, Decimal("400")),
+            "数码": store_report.CountAmount(3, Decimal("300")),
+        }
+
+        store_report.write_table3(sheet, upload_metrics, payment_metrics, FONT, {})
+
+        self.assertEqual(
+            [sheet[cell].value for cell in ("D49", "E49", "F49", "G49")],
+            [6, 600, 3, 300],
+        )
+        self.assertEqual(
+            [sheet[cell].value for cell in ("D50", "E50", "F50", "G50")],
+            [5, 500, 2, 200],
+        )
+        self.assertEqual(
+            [sheet[cell].value for cell in ("D51", "E51", "F51", "G51")],
+            [11, 1100, 5, 500],
+        )
+        for row in (49, 50, 51):
+            for column in ("D", "E", "F", "G"):
+                self.assertEqual(
+                    sheet[f"{column}{row}"].number_format,
+                    store_report.DATA_NUMBER_FORMAT,
+                )
 
 
 class SourceHeaderValidationTests(unittest.TestCase):
@@ -413,8 +493,12 @@ class ProcessStoreReportIntegrationTests(unittest.TestCase):
         sheet.append(store_report.UPLOAD_HEADER)
         sheet.append(("冰箱", "海尔", "已上传", 1, 100))
         sheet.append((None, None, "未上传", 1, 20))
+        sheet.append(("家电", None, "已上传", 1, 100))
+        sheet.append((None, None, "未上传", 1, 20))
+        sheet.append((None, None, "合计", 2, 120))
         sheet.append(("数码", None, "已上传", 1, 40))
         sheet.append((None, None, "未上传", 1, 10))
+        sheet.append((None, None, "合计", 2, 50))
         workbook.save(path)
 
     def _write_payment_file(self, path: Path) -> None:
@@ -459,7 +543,26 @@ class ProcessStoreReportIntegrationTests(unittest.TestCase):
             self.assertEqual(sheet["E33"].value, 50)
             self.assertEqual(sheet["G33"].value, 40)
             self.assertEqual(sheet["K33"].value, 15)
+            self.assertIsNone(sheet["D49"].value)
+            self.assertEqual(sheet["E49"].value, 40)
+            self.assertEqual(sheet["F49"].value, 1)
+            self.assertEqual(sheet["G49"].value, 20)
+            self.assertIsNone(sheet["D50"].value)
+            self.assertEqual(sheet["E50"].value, 25)
+            self.assertEqual(sheet["F50"].value, 1)
+            self.assertEqual(sheet["G50"].value, 10)
+            self.assertIsNone(sheet["D51"].value)
+            self.assertEqual(sheet["E51"].value, 65)
+            self.assertEqual(sheet["F51"].value, 2)
+            self.assertEqual(sheet["G51"].value, 30)
             self.assertIn("更新时间：", sheet["A1"].value)
+            populated_fonts = {
+                cell.font.name
+                for row in sheet.iter_rows()
+                for cell in row
+                if cell.value not in (None, "")
+            }
+            self.assertEqual(populated_fonts, {store_report.REPORT_FONT_NAME})
             leftover = [entry.name for entry in output_file.parent.iterdir() if entry.name.startswith(".")]
             self.assertEqual(leftover, [])
 

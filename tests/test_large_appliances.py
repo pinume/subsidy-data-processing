@@ -74,8 +74,8 @@ class CouponReferenceSupplementTest(unittest.TestCase):
             workbook = Workbook()
             sheet = workbook.active
             sheet.append(["参考号", "单据号", "单据日期"])
-            sheet.append(["12345678901a", "收款1001", "2026-07-06"])
-            sheet.append(["12345678901A", "1001", date(2026, 7, 6)])
+            sheet.append(["12345678901n", "收款1001", "2026-07-06"])
+            sheet.append(["12345678901N", "1001", date(2026, 7, 6)])
             workbook.save(source)
             workbook.close()
 
@@ -83,13 +83,13 @@ class CouponReferenceSupplementTest(unittest.TestCase):
 
             self.assertEqual(
                 lookup,
-                {("1001", date(2026, 7, 6)): frozenset({"12345678901A"})},
+                {("1001", date(2026, 7, 6)): frozenset({"12345678901N"})},
             )
 
     def test_unique_reference_replaces_unmatched_value(self) -> None:
         row = self.coupon_row("1001", date(2026, 7, 6), "待补充")
         rows = [list(COUPON_OUTPUT_HEADER), row]
-        reference = "12345678901A"
+        reference = "12345678901N"
 
         result = fill_coupon_reference_supplement(
             rows,
@@ -106,7 +106,7 @@ class CouponReferenceSupplementTest(unittest.TestCase):
     def test_ambiguous_references_do_not_change_row(self) -> None:
         row = self.coupon_row("1001", date(2026, 7, 6), "待补充")
         rows = [list(COUPON_OUTPUT_HEADER), row]
-        references = frozenset({"12345678901A", "12345678901B"})
+        references = frozenset({"12345678901N", "12345678902N"})
 
         result = fill_coupon_reference_supplement(
             rows,
@@ -121,11 +121,11 @@ class CouponReferenceSupplementTest(unittest.TestCase):
         self.assertEqual(result[3], {})
 
     def test_known_reference_and_excluded_bottom_row_are_unchanged(self) -> None:
-        known = "12345678901A"
+        known = "12345678901N"
         known_row = self.coupon_row("1001", date(2026, 7, 6), known)
         bottom_row = self.coupon_row("1002", date(2026, 7, 6), "待补充")
         rows = [list(COUPON_OUTPUT_HEADER), known_row, bottom_row]
-        replacement = "12345678901B"
+        replacement = "12345678902N"
 
         result = fill_coupon_reference_supplement(
             rows,

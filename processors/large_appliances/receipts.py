@@ -401,7 +401,8 @@ def validate_receipts_output(
                 )
 
             is_duplicate = bool(match_key and match_key_counts[match_key] > 1)
-            for cell in sheet[row_number]:
+            for column in range(1, len(RECEIPTS_OUTPUT_HEADER) + 1):
+                cell = sheet.cell(row_number, column)
                 fill_color = cell.fill.fgColor.rgb
                 is_pink = (
                     cell.fill.fill_type == "solid"
