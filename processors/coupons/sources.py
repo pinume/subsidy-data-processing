@@ -457,15 +457,13 @@ def read_coupon_rows(
 
 def read_coupon_source_total(
     source: Path,
-    profile: CouponSourceProfile,
     source_workbook=None,
 ) -> Decimal | None:
     """Read the 国补 value the source file states in its own 合计 row.
 
-    profile is accepted for backward compatibility but ignored: the merged
-    export has one 合计 row shared by both projects' columns, and the only
-    real caller (appliance.py, matching the original xlrd-era behavior) has
-    always read it from 家电's column.
+    There is one 合计 row shared by both projects' columns; it has only ever
+    been read from 家电's column (matching the original xlrd-era behavior),
+    so this takes no profile — a parameter that accepted DIGITAL_PROFILE
+    without honoring it would be misleading, not genuinely flexible.
     """
-    del profile
     return read_coupon_export(source, source_workbook).source_total

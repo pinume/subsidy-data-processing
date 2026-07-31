@@ -290,9 +290,7 @@ class ReadCouponSourceTotalTest(unittest.TestCase):
             source = Path(directory) / "销售用券情况统计.xlsx"
             _write_coupon_source(source, [])
 
-            total = sources.read_coupon_source_total(
-                source, sources.APPLIANCE_PROFILE
-            )
+            total = sources.read_coupon_source_total(source)
 
             self.assertEqual(str(total), "123.40")
 
@@ -322,9 +320,7 @@ class ReadCouponSourceTotalTest(unittest.TestCase):
             workbook.save(source)
             workbook.close()
 
-            total = sources.read_coupon_source_total(
-                source, sources.APPLIANCE_PROFILE
-            )
+            total = sources.read_coupon_source_total(source)
 
             self.assertIsNotNone(total)
             self.assertEqual(total, 0)

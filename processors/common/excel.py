@@ -11,7 +11,7 @@ from tempfile import NamedTemporaryFile
 from xml.etree.ElementTree import iterparse
 from zipfile import ZipFile
 
-from openpyxl import Workbook, load_workbook
+from openpyxl import Workbook
 from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.utils import column_index_from_string, get_column_letter
 from PIL import ImageFont

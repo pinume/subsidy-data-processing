@@ -688,9 +688,7 @@ def compute_coupon_data(
     )
     group_sheets = build_coupon_group_sheets(rows, matched_count)
     if source_total is _SOURCE_TOTAL_UNSET:
-        source_total = sources.read_coupon_source_total(
-            sources.COUPON_SOURCE_FILE, sources.APPLIANCE_PROFILE
-        )
+        source_total = sources.read_coupon_source_total(sources.COUPON_SOURCE_FILE)
     computed_total = Decimal(str(summary_rows[-1][4]))
 
     return CouponComputation(
