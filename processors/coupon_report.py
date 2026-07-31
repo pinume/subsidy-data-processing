@@ -140,21 +140,7 @@ def process_coupon_sales() -> None:
             coupon_source, read_only=True, data_only=True
         )
         try:
-            appliance_rows = sources.read_coupon_rows(
-                coupon_source,
-                sources.APPLIANCE_PROFILE,
-                source_workbook,
-            )
-            digital_rows = sources.read_coupon_rows(
-                coupon_source,
-                sources.DIGITAL_PROFILE,
-                source_workbook,
-            )
-            source_total = sources.read_coupon_source_total(
-                coupon_source,
-                sources.APPLIANCE_PROFILE,
-                source_workbook,
-            )
+            export = sources.read_coupon_export(coupon_source, source_workbook)
         finally:
             source_workbook.close()
 
@@ -162,12 +148,12 @@ def process_coupon_sales() -> None:
             appliance.COUPON_REMARK_SOURCE_FILE
         )
         appliance_computation = appliance.compute_coupon_data(
-            rows=appliance_rows,
+            rows=export.appliance_rows,
             remark_lookup=remark_lookup,
-            source_total=source_total,
+            source_total=export.source_total,
         )
         digital_computation = digital.compute_coupon_data(
-            rows=digital_rows,
+            rows=export.digital_rows,
             remark_lookup=remark_lookup,
         )
     extra_summary_rows = digital_extra_summary_rows(digital_computation)

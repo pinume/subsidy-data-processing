@@ -34,15 +34,15 @@ class FindDataFilesTest(unittest.TestCase):
     def test_filters_by_keyword_and_suffix_and_skips_temp_files(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             data_dir = Path(directory)
-            matching = data_dir / "收款单统计.XLS"
-            wrong_suffix = data_dir / "收款单统计.xlsx"
-            wrong_keyword = data_dir / "销售用券情况统计.XLS"
-            lock_file = data_dir / "~$收款单统计.XLS"
+            matching = data_dir / "收款单统计.XLSX"
+            wrong_suffix = data_dir / "收款单统计.xls"
+            wrong_keyword = data_dir / "销售用券情况统计.XLSX"
+            lock_file = data_dir / "~$收款单统计.XLSX"
             for path in (matching, wrong_suffix, wrong_keyword, lock_file):
                 path.touch()
 
             self.assertEqual(
-                find_data_files(data_dir, "收款单统计", (".xls",)),
+                find_data_files(data_dir, "收款单统计", (".xlsx",)),
                 [matching],
             )
 

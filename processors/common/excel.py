@@ -451,10 +451,10 @@ def remove_stale_temporary_files(
 
     Everything this program writes into the output directory as an
     intermediate is dot-prefixed: save_workbook_atomically's ".<名字>-<随机>"
-    temporary, and the payment pipeline's ".<源文件名>.working.xlsx" copy.
-    Both are removed on a normal run; a crash or a killed process leaves them
-    behind, where they accumulate invisibly and still hold business data.
-    Excel's own lock files are named "~$...", so they are never touched.
+    temporary file. It is removed on a normal run; a crash or a killed
+    process leaves it behind, where it accumulates invisibly and still holds
+    business data. Excel's own lock files are named "~$...", so they are
+    never touched.
 
     Only files older than minimum_age_seconds are removed. This program was
     never designed for two instances to run against the same output

@@ -49,10 +49,10 @@ from .matching import (
     REFERENCE_REPORT_ORDER,
     coupon_data_rows,
 )
+from .report_contract import SUMMARY_HEADER, SUMMARY_SHEET_NAME
 
 
 DETAILS_SHEET_NAME = "家电-明细总表"
-SUMMARY_SHEET_NAME = "数据汇总"
 # Owned here only to keep this module's own group-sheet titles from
 # colliding with processors.coupons.digital's / coupon_report.py's sheets.
 DIGITAL_DETAILS_SHEET_NAME = "数码-明细总表"
@@ -89,13 +89,11 @@ COUPON_REMARK_INDEX = COUPON_OUTPUT_HEADER.index("备注")
 COUPON_DETAIL_INDEX = COUPON_OUTPUT_HEADER.index("详细情况")
 COUPON_MATCH_FILL_COLOR = "FFC7CE"
 COUPON_BRAND_REPLACEMENTS = sources.COUPON_BRAND_REPLACEMENTS
-COUPON_SUMMARY_HEADER = (
-    "财务大类",
-    "品牌",
-    "备注",
-    "数量",
-    f"{COUPON_SUBSIDY_HEADER}合计",
-)
+# report_contract.py hardcodes this header's text rather than deriving it
+# from COUPON_SUBSIDY_HEADER, so this assertion is what actually keeps the
+# two in sync — see report_contract.py's module docstring.
+assert SUMMARY_HEADER[-1] == f"{COUPON_SUBSIDY_HEADER}合计"
+COUPON_SUMMARY_HEADER = SUMMARY_HEADER
 # 财务大类 for this project's 已上传/未上传/合计 block at the foot of 数据汇总.
 COUPON_SUMMARY_PROJECT_LABEL = "家电"
 COUPON_REMARK_SORT_PRIORITY = {

@@ -17,7 +17,7 @@ def normalize_receipt_date(value, source_row: int):
             except ValueError:
                 continue
     raise ValueError(
-        f"Invalid date at row {source_row} in receipt_statistics.XLS: {value!r}"
+        f"Invalid date at row {source_row} in receipt_statistics.xlsx: {value!r}"
     )
 
 
@@ -34,7 +34,7 @@ def normalize_coupon_date(value: object, source_row: int) -> date:
             continue
     raise ValueError(
         f"Invalid document date at row {source_row} in "
-        f"subsidy_coupon_statistics.XLS: {value!r}"
+        f"subsidy_coupon_statistics.xlsx: {value!r}"
     )
 
 
