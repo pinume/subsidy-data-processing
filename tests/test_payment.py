@@ -181,6 +181,39 @@ class WorkbookLoadingTests(unittest.TestCase):
                 payment._process_sources([source], profile, "ABC123", Workbook())
             self.assertTrue(source.exists())
 
+    def test_process_sources_sorts_records_before_creating_cells(self) -> None:
+        profile = payment.PROFILES["家电"]
+        with TemporaryDirectory(dir=".") as temporary_dir:
+            source = Path(temporary_dir).resolve() / "source.xlsx"
+            _write_source(source, profile, "A04-空调", "格力空调", "10.00")
+            target_book = Workbook()
+            target_book.remove(target_book.active)
+            original_infer = payment._infer_missing_brands
+            original_sort = payment._sort_detail_rows
+            observed = []
+
+            def infer_before_write(rows, headers):
+                sheet = target_book[profile.detail_sheet_name]
+                observed.append(("infer", len(sheet._cells)))
+                return original_infer(rows, headers)
+
+            def sort_before_write(rows, headers, category_map):
+                sheet = target_book[profile.detail_sheet_name]
+                observed.append(("sort", len(sheet._cells)))
+                return original_sort(rows, headers, category_map)
+
+            with (
+                patch.object(payment, "_infer_missing_brands", infer_before_write),
+                patch.object(payment, "_sort_detail_rows", sort_before_write),
+            ):
+                sheet = payment._process_sources(
+                    [source], profile, "ABC123", target_book
+                )
+
+            self.assertEqual(observed, [("infer", 0), ("sort", 0)])
+            self.assertEqual(sheet.max_row, 2)
+            target_book.close()
+
     def _write_detail_workbook(self, path: Path, headers) -> None:
         workbook = Workbook()
         detail = workbook.active

@@ -15,10 +15,12 @@ from openpyxl.styles import PatternFill
 
 from processors.common.config import load_receipt_special_remark_keys
 from processors.common.excel import (
+    capture_style,
     create_sheet_styles,
     load_measurement_font,
     pixels_to_excel_width,
     resolve_font,
+    reuse_style,
     save_workbook_atomically,
     width_measurer,
 )
@@ -303,7 +305,7 @@ def validate_receipts_output(
     path: Path,
     expected_data_rows: int,
 ) -> None:
-    workbook = load_workbook(path, read_only=False, data_only=True)
+    workbook = load_workbook(path, read_only=True, data_only=True)
     try:
         if workbook.sheetnames != ["Sheet1"]:
             raise RuntimeError(
@@ -322,55 +324,81 @@ def validate_receipts_output(
                 f"实际 {sheet.max_column} 列"
             )
 
-        header = tuple(cell.value for cell in sheet[1])
+        rows = sheet.iter_rows(
+            min_row=1,
+            min_col=1,
+            max_col=len(RECEIPTS_OUTPUT_HEADER),
+        )
+        header_cells = next(rows, ())
+        header = tuple(cell.value for cell in header_cells)
         if header != RECEIPTS_OUTPUT_HEADER:
             raise RuntimeError(
                 f"收款单表头校验失败：预期 {RECEIPTS_OUTPUT_HEADER}，"
                 f"实际 {header}"
             )
 
-        referenced_original_invoice_numbers = {
-            normalize_receipt_identifier(sheet.cell(row_number, 3).value)
-            for row_number in range(2, sheet.max_row + 1)
-            if (
-                sheet.cell(row_number, 3).value not in (None, "")
-                and normalize_receipt_identifier(
-                    sheet.cell(row_number, 4).value
-                )
-                .find(RECEIPTS_SAME_MODEL_REPLACEMENT_KEYWORD)
-                == -1
-            )
-        }
-        same_model_replacement_original_invoice_numbers = {
-            normalize_receipt_identifier(sheet.cell(row_number, 3).value)
-            for row_number in range(2, sheet.max_row + 1)
-            if (
-                sheet.cell(row_number, 3).value not in (None, "")
-                and normalize_receipt_identifier(
-                    sheet.cell(row_number, 4).value
-                )
-                .find(RECEIPTS_SAME_MODEL_REPLACEMENT_KEYWORD)
-                != -1
-            )
-        }
+        referenced_original_invoice_numbers: set[str] = set()
+        same_model_replacement_original_invoice_numbers: set[str] = set()
         match_key_counts: dict[str, int] = {}
-        for row_number in range(2, sheet.max_row + 1):
-            document_number = normalize_receipt_identifier(
-                sheet.cell(row_number, 1).value
+        snapshots = []
+        for row_number, row in enumerate(rows, start=2):
+            document_cell, date_cell, original_cell, summary_cell, _, remark_cell = row
+            document_number = normalize_receipt_identifier(document_cell.value)
+            date_value = date_cell.value
+            original_invoice_number = normalize_receipt_identifier(
+                original_cell.value
             )
-            date_value = sheet.cell(row_number, 2).value
-            if date_value is None or not document_number:
-                continue
-            match_key = receipt_match_key(
-                date_value.date()
-                if isinstance(date_value, datetime)
-                else date_value,
-                document_number,
-            )
-            match_key_counts[match_key] = match_key_counts.get(match_key, 0) + 1
+            if original_invoice_number:
+                summary = normalize_receipt_identifier(summary_cell.value)
+                target = (
+                    same_model_replacement_original_invoice_numbers
+                    if RECEIPTS_SAME_MODEL_REPLACEMENT_KEYWORD in summary
+                    else referenced_original_invoice_numbers
+                )
+                target.add(original_invoice_number)
 
-        for row_number in range(2, sheet.max_row + 1):
-            document_number = sheet.cell(row_number, 1).value
+            match_key = ""
+            if date_value is None or not document_number:
+                pass
+            else:
+                match_key = receipt_match_key(
+                    date_value.date()
+                    if isinstance(date_value, datetime)
+                    else date_value,
+                    document_number,
+                )
+                match_key_counts[match_key] = match_key_counts.get(match_key, 0) + 1
+
+            pink_cells = tuple(
+                cell.fill.fill_type == "solid"
+                and cell.fill.fgColor.rgb is not None
+                and cell.fill.fgColor.rgb[-6:]
+                == RECEIPTS_DUPLICATE_FILL_COLOR[-6:]
+                for cell in row
+            )
+            snapshots.append(
+                (
+                    row_number,
+                    document_cell.value,
+                    date_value,
+                    original_invoice_number,
+                    remark_cell.value,
+                    date_cell.number_format,
+                    match_key,
+                    pink_cells,
+                )
+            )
+
+        for (
+            row_number,
+            document_number,
+            date_value,
+            original_invoice_number,
+            actual_remark,
+            date_number_format,
+            match_key,
+            pink_cells,
+        ) in snapshots:
             if document_number is not None and (
                 not isinstance(document_number, str)
                 or document_number.startswith("收款")
@@ -379,30 +407,16 @@ def validate_receipts_output(
                     f"收款单第 {row_number} 行的单据号格式不正确"
                 )
 
-            date_cell = sheet.cell(row_number, 2)
-            if date_cell.value is not None:
-                if not isinstance(date_cell.value, (date, datetime)):
+            if date_value is not None:
+                if not isinstance(date_value, (date, datetime)):
                     raise RuntimeError(
                         f"收款单第 {row_number} 行的日期不是有效日期"
                     )
-                if date_cell.number_format != "yyyymmdd":
+                if date_number_format != "yyyymmdd":
                     raise RuntimeError(
                         f"收款单第 {row_number} 行的日期格式不正确"
                     )
 
-            original_invoice_number = normalize_receipt_identifier(
-                sheet.cell(row_number, 3).value
-            )
-            match_key = (
-                receipt_match_key(
-                    date_cell.value.date()
-                    if isinstance(date_cell.value, datetime)
-                    else date_cell.value,
-                    normalize_receipt_identifier(document_number),
-                )
-                if date_cell.value is not None and document_number is not None
-                else ""
-            )
             expected_remark = receipt_remark(
                 bool(original_invoice_number),
                 bool(
@@ -418,26 +432,91 @@ def validate_receipts_output(
                 ),
                 match_key in RECEIPTS_SPECIAL_REMARK_KEYS,
             )
-            if sheet.cell(row_number, 6).value != expected_remark:
+            if actual_remark != expected_remark:
                 raise RuntimeError(
                     f"收款单第 {row_number} 行的备注校验失败"
                 )
 
             is_duplicate = bool(match_key and match_key_counts[match_key] > 1)
-            for column in range(1, len(RECEIPTS_OUTPUT_HEADER) + 1):
-                cell = sheet.cell(row_number, column)
-                fill_color = cell.fill.fgColor.rgb
-                is_pink = (
-                    cell.fill.fill_type == "solid"
-                    and fill_color is not None
-                    and fill_color[-6:] == RECEIPTS_DUPLICATE_FILL_COLOR[-6:]
-                )
+            for is_pink in pink_cells:
                 if is_pink != is_duplicate:
                     raise RuntimeError(
                         f"收款单第 {row_number} 行的重复匹配键标记不正确"
                     )
     finally:
         workbook.close()
+
+
+def format_receipts_sheet(
+    sheet,
+    *,
+    duplicate_match_keys: set[str],
+    font_name: str,
+    measurement_font,
+) -> None:
+    """Format receipt output while computing each distinct body style once."""
+    normal_font, header_font, header_fill, centered = create_sheet_styles(
+        font_name
+    )
+    measure = width_measurer(measurement_font)
+    maximum_widths = [0.0] * sheet.max_column
+    duplicate_fill = PatternFill(
+        "solid",
+        fgColor=RECEIPTS_DUPLICATE_FILL_COLOR,
+    )
+    body_styles = {}
+    for row_number, row in enumerate(sheet.iter_rows(), start=1):
+        sheet.row_dimensions[row_number].height = RECEIPTS_ROW_HEIGHT
+        row_match_key = ""
+        if row_number >= 2:
+            document_number = normalize_receipt_identifier(row[0].value)
+            receipt_date = row[1].value
+            if receipt_date is not None and document_number:
+                row_match_key = receipt_match_key(
+                    receipt_date.date()
+                    if isinstance(receipt_date, datetime)
+                    else receipt_date,
+                    document_number,
+                )
+        for cell in row:
+            if row_number == 1:
+                cell.font = header_font
+                cell.alignment = centered
+                cell.fill = header_fill
+            else:
+                is_duplicate = row_match_key in duplicate_match_keys
+                number_format_kind = (
+                    "text"
+                    if cell.column == 1
+                    else "date"
+                    if cell.column == 2 and cell.value not in (None, "")
+                    else "general"
+                )
+                style_key = (is_duplicate, number_format_kind)
+                style = body_styles.get(style_key)
+                if style is None:
+                    cell.font = normal_font
+                    cell.alignment = centered
+                    if is_duplicate:
+                        cell.fill = duplicate_fill
+                    if number_format_kind == "text":
+                        cell.number_format = "@"
+                    elif number_format_kind == "date":
+                        cell.number_format = "yyyymmdd"
+                    body_styles[style_key] = capture_style(cell)
+                else:
+                    reuse_style(cell, style)
+
+            width = measure(cell.value)
+            if width > maximum_widths[cell.column - 1]:
+                maximum_widths[cell.column - 1] = width
+
+    sheet.freeze_panes = "A2"
+    for column_index, maximum_pixels in enumerate(maximum_widths, start=1):
+        column_letter = sheet.cell(1, column_index).column_letter
+        sheet.column_dimensions[column_letter].width = pixels_to_excel_width(
+            maximum_pixels
+        )
 
 
 def process_receipts() -> None:
@@ -460,53 +539,12 @@ def process_receipts() -> None:
 
     font_name, font_path = resolve_font()
     measurement_font = load_measurement_font(font_path)
-    normal_font, header_font, header_fill, centered = create_sheet_styles(
-        font_name
+    format_receipts_sheet(
+        sheet,
+        duplicate_match_keys=duplicate_match_keys,
+        font_name=font_name,
+        measurement_font=measurement_font,
     )
-
-    measure = width_measurer(measurement_font)
-    maximum_widths = [0.0] * sheet.max_column
-    duplicate_fill = PatternFill(
-        "solid",
-        fgColor=RECEIPTS_DUPLICATE_FILL_COLOR,
-    )
-    for row_number, row in enumerate(sheet.iter_rows(), start=1):
-        sheet.row_dimensions[row_number].height = RECEIPTS_ROW_HEIGHT
-        row_match_key = ""
-        if row_number >= 2:
-            document_number = normalize_receipt_identifier(row[0].value)
-            receipt_date = row[1].value
-            if receipt_date is not None and document_number:
-                row_match_key = receipt_match_key(
-                    receipt_date.date()
-                    if isinstance(receipt_date, datetime)
-                    else receipt_date,
-                    document_number,
-                )
-        for cell in row:
-            cell.font = header_font if row_number == 1 else normal_font
-            cell.alignment = centered
-            if row_number == 1:
-                cell.fill = header_fill
-            elif row_match_key in duplicate_match_keys:
-                cell.fill = duplicate_fill
-
-            if row_number >= 2 and cell.column == 1:
-                cell.number_format = "@"
-            elif row_number >= 2 and cell.column == 2:
-                if cell.value not in (None, ""):
-                    cell.number_format = "yyyymmdd"
-
-            width = measure(cell.value)
-            if width > maximum_widths[cell.column - 1]:
-                maximum_widths[cell.column - 1] = width
-
-    sheet.freeze_panes = "A2"
-    for column_index, maximum_pixels in enumerate(maximum_widths, start=1):
-        column_letter = sheet.cell(1, column_index).column_letter
-        sheet.column_dimensions[column_letter].width = pixels_to_excel_width(
-            maximum_pixels
-        )
 
     row_count = len(output_rows)
     save_workbook_atomically(

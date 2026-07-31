@@ -295,17 +295,16 @@ def _get_source_positions(
     return positions
 
 
-def _write_normalized_detail(
+def _collect_normalized_detail(
     source,
-    target,
     *,
-    write_header: bool,
     profile: ProcessingProfile,
     merchant_id: str,
     formula_workbook=None,
-) -> tuple[int, int]:
+) -> tuple[list[list[object]], int]:
+    """Normalize one source sheet without creating output Cell objects yet."""
     source_positions: dict[str, int] = {}
-    written_rows = 0
+    normalized_rows: list[list[object]] = []
     unidentified_brands = 0
     merchant_index = profile.detail_headers.index("商户编号")
     category_index = profile.detail_headers.index("编码品类")
@@ -331,8 +330,6 @@ def _write_normalized_detail(
     for row_number, row in _iter_actual_rows_with_numbers(source):
         if not source_positions and _is_header_row(row):
             source_positions = _get_source_positions(row, source.title, profile)
-            if write_header:
-                target.append(profile.detail_headers + DERIVED_HEADERS)
             continue
 
         if not source_positions:
@@ -369,12 +366,34 @@ def _write_normalized_detail(
             brand = _normalize_financial_brand(brand, financial_category)
             if brand is None:
                 unidentified_brands += 1
-            target.append(normalized + [financial_category, brand])
-            written_rows += 1
+            normalized_rows.append(normalized + [financial_category, brand])
 
     if not source_positions:
         raise ValueError(f"工作表 {source.title!r} 未找到明细表头")
-    return written_rows, unidentified_brands
+    return normalized_rows, unidentified_brands
+
+
+def _write_normalized_detail(
+    source,
+    target,
+    *,
+    write_header: bool,
+    profile: ProcessingProfile,
+    merchant_id: str,
+    formula_workbook=None,
+) -> tuple[int, int]:
+    """Compatibility wrapper for callers that need one sheet written now."""
+    rows, unidentified_brands = _collect_normalized_detail(
+        source,
+        profile=profile,
+        merchant_id=merchant_id,
+        formula_workbook=formula_workbook,
+    )
+    if write_header:
+        target.append(profile.detail_headers + DERIVED_HEADERS)
+    for row in rows:
+        target.append(row)
+    return len(rows), unidentified_brands
 
 
 def _extract_brand(product_name, profile: ProcessingProfile) -> str | None:
@@ -411,20 +430,19 @@ def _extract_model_tokens(product_name) -> set[str]:
     }
 
 
-def _infer_missing_brands_from_existing_rows(worksheet) -> int:
-    """Infer only when an exact model token maps to one known brand in this sheet."""
-    header_positions = {
-        cell.value: cell.column for cell in worksheet[1] if cell.value not in (None, "")
-    }
-    product_column = header_positions["商品名称"]
-    brand_column = header_positions["品牌"]
+def _infer_missing_brands(
+    rows: list[list[object]], headers: tuple[str, ...]
+) -> int:
+    """Infer brands in plain records before they become worksheet cells."""
+    product_column = headers.index("商品名称")
+    brand_column = headers.index("品牌")
     token_brands: dict[str, Counter] = defaultdict(Counter)
 
-    for row in range(2, worksheet.max_row + 1):
-        brand = worksheet.cell(row, brand_column).value
+    for row in rows:
+        brand = row[brand_column]
         if brand in (None, ""):
             continue
-        for token in _extract_model_tokens(worksheet.cell(row, product_column).value):
+        for token in _extract_model_tokens(row[product_column]):
             token_brands[token][brand] += 1
 
     unique_token_brand = {
@@ -433,19 +451,16 @@ def _infer_missing_brands_from_existing_rows(worksheet) -> int:
         if len(counts) == 1
     }
     inferred = 0
-    for row in range(2, worksheet.max_row + 1):
-        brand_cell = worksheet.cell(row, brand_column)
-        if brand_cell.value not in (None, ""):
+    for row in rows:
+        if row[brand_column] not in (None, ""):
             continue
         candidates = {
             unique_token_brand[token]
-            for token in _extract_model_tokens(
-                worksheet.cell(row, product_column).value
-            )
+            for token in _extract_model_tokens(row[product_column])
             if token in unique_token_brand
         }
         if len(candidates) == 1:
-            brand_cell.value = candidates.pop()
+            row[brand_column] = candidates.pop()
             inferred += 1
     return inferred
 
@@ -466,51 +481,38 @@ def _sort_scalar(value) -> tuple[int, str]:
     return (0, str(value).strip())
 
 
-def _sort_detail_sheet(worksheet, category_map: dict[str, str]) -> int:
-    """Sort one detail sheet by 财务大类、品牌、交易时间、商品名称."""
-    data_row_count = max(worksheet.max_row - 1, 0)
+def _sort_detail_rows(
+    rows: list[list[object]],
+    headers: tuple[str, ...],
+    category_map: dict[str, str],
+) -> int:
+    """Sort plain detail records before writing the output worksheet."""
+    data_row_count = len(rows)
     if data_row_count <= 1:
         return data_row_count
 
-    header_positions = {
-        cell.value: cell.column for cell in worksheet[1] if cell.value not in (None, "")
-    }
+    header_positions = {header: index for index, header in enumerate(headers)}
     missing = [header for header in DETAIL_SORT_HEADERS if header not in header_positions]
     if missing:
-        raise ValueError(f"{worksheet.title}缺少排序字段：{missing}")
+        raise ValueError(f"明细缺少排序字段：{missing}")
 
-    category_column = header_positions["财务大类"] - 1
-    brand_column = header_positions["品牌"] - 1
-    transaction_time_column = header_positions["交易时间"] - 1
-    product_column = header_positions["商品名称"] - 1
+    category_column = header_positions["财务大类"]
+    brand_column = header_positions["品牌"]
+    transaction_time_column = header_positions["交易时间"]
+    product_column = header_positions["商品名称"]
     category_order = _category_order(category_map)
-    column_count = worksheet.max_column
 
-    rows = [
-        (
-            row_index,
-            [worksheet.cell(row_index, column).value for column in range(1, column_count + 1)],
-        )
-        for row_index in range(2, worksheet.max_row + 1)
-    ]
-
-    sorted_rows = sorted(
-        rows,
+    rows.sort(
         key=lambda item: (
             category_order.get(
-                str(item[1][category_column]),
+                str(item[category_column]),
                 len(category_order),
             ),
-            _sort_scalar(item[1][brand_column]),
-            _sort_scalar(item[1][transaction_time_column]),
-            _sort_scalar(item[1][product_column]),
-            item[0],
+            _sort_scalar(item[brand_column]),
+            _sort_scalar(item[transaction_time_column]),
+            _sort_scalar(item[product_column]),
         ),
     )
-
-    for target_row, (_, values) in enumerate(sorted_rows, 2):
-        for column, value in enumerate(values, 1):
-            worksheet.cell(target_row, column).value = value
     return data_row_count
 
 
@@ -649,6 +651,7 @@ def _process_sources(
     merged_sheet = target_book.create_sheet(profile.detail_sheet_name)
     merged_rows = 0
     merged_header_written = False
+    normalized_rows: list[list[object]] = []
 
     unidentified_brands = 0
     for path in sources:
@@ -669,15 +672,14 @@ def _process_sources(
             for source_sheet in source_book.worksheets:
                 if source_sheet.title == SUMMARY_SHEET_NAME:
                     continue
-                written_rows, missing_brands = _write_normalized_detail(
+                sheet_rows, missing_brands = _collect_normalized_detail(
                     source_sheet,
-                    merged_sheet,
-                    write_header=not merged_header_written,
                     profile=profile,
                     merchant_id=merchant_id,
                     formula_workbook=get_formula_book,
                 )
-                merged_rows += written_rows
+                normalized_rows.extend(sheet_rows)
+                merged_rows += len(sheet_rows)
                 unidentified_brands += missing_brands
                 merged_header_written = True
         finally:
@@ -693,9 +695,17 @@ def _process_sources(
             f"{profile.name}来源文件中未找到商户 {merchant_id} 的数据："
             f"{source_names}；请检查 config/merchants.yaml"
         )
-    inferred_brands = _infer_missing_brands_from_existing_rows(merged_sheet)
+    output_headers = profile.detail_headers + DERIVED_HEADERS
+    inferred_brands = _infer_missing_brands(normalized_rows, output_headers)
     unidentified_brands -= inferred_brands
-    sorted_detail_rows = _sort_detail_sheet(merged_sheet, profile.category_map)
+    sorted_detail_rows = _sort_detail_rows(
+        normalized_rows,
+        output_headers,
+        profile.category_map,
+    )
+    merged_sheet.append(output_headers)
+    for row in normalized_rows:
+        merged_sheet.append(row)
     print(
         f"已处理{profile.name}明细：Sheet {merged_sheet.title}，"
         f"商户 {merchant_id} 共 {merged_rows} 条，"
