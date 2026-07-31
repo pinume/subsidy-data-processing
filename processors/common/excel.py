@@ -4,6 +4,7 @@ import shutil
 import stat
 import time
 from collections.abc import Callable, Iterator
+from copy import copy
 from datetime import date, datetime
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
@@ -246,15 +247,66 @@ def text_pixel_width(value: object, font) -> float:
     return font.getlength(text)
 
 
+# Strings whose width would stop being the sum of their characters' widths the
+# moment a font kerned, ligated, or shaped them: classic kerning pairs, an "ffi"
+# ligature candidate, and the character classes this program actually writes
+# (digits and uppercase in SN/IMEI/invoice numbers, CJK punctuation, runs of
+# Chinese). A font passes only if every one of them measures additively.
+WIDTH_ADDITIVITY_PROBES = (
+    "AV",
+    "To",
+    "Ta",
+    "ffi",
+    "0123456789",
+    "SN2026ABCD",
+    "，。、；：",
+    "连续中文字符",
+    "中文A1，混排",
+)
+
+
+def widths_are_additive(value_font) -> bool:
+    """Whether a string's width always equals the sum of its characters'.
+
+    True for the monospace font this project prefers, false for proportional
+    fonts such as 微软雅黑, which kern. Probing the font itself rather than
+    trusting its name keeps any unrecognised font on the exact, slower path.
+    """
+    for probe in WIDTH_ADDITIVITY_PROBES:
+        summed = sum(value_font.getlength(character) for character in probe)
+        if value_font.getlength(probe) != summed:
+            return False
+    return True
+
+
 def width_measurer(value_font) -> Callable[[object], float]:
     """Measure text width, caching by rendered text.
 
     Sheets repeat dates, statuses, and remarks heavily, but SN/IMEI/invoice
-    columns are effectively all-distinct, so caching alone cannot bound the
-    number of measurements — text_pixel_width's choice of getlength over
-    getbbox is what keeps each of those measurements cheap.
+    columns are effectively all-distinct, so caching by whole string cannot
+    bound the number of font calls. When the font measures additively (see
+    widths_are_additive) a string's width can be summed from its characters
+    instead, which replaces that unbounded set of distinct strings with the
+    bounded set of distinct characters. Fonts that kern keep the whole-string
+    measurement, so their output is unchanged.
     """
     cache: dict[str, float] = {}
+
+    if not widths_are_additive(value_font):
+
+        def measure(value: object) -> float:
+            text = measurement_text(value)
+            if not text:
+                return 0
+            width = cache.get(text)
+            if width is None:
+                width = value_font.getlength(text)
+                cache[text] = width
+            return width
+
+        return measure
+
+    character_widths: dict[str, float] = {}
 
     def measure(value: object) -> float:
         text = measurement_text(value)
@@ -262,7 +314,13 @@ def width_measurer(value_font) -> Callable[[object], float]:
             return 0
         width = cache.get(text)
         if width is None:
-            width = value_font.getlength(text)
+            width = 0.0
+            for character in text:
+                character_width = character_widths.get(character)
+                if character_width is None:
+                    character_width = value_font.getlength(character)
+                    character_widths[character] = character_width
+                width += character_width
             cache[text] = width
         return width
 
@@ -271,6 +329,37 @@ def width_measurer(value_font) -> Callable[[object], float]:
 
 def pixels_to_excel_width(pixels: float) -> float:
     return min(round(((pixels * 1.1) + 16) / 7, 2), 255)
+
+
+# Reusing an already-computed cell style has no public openpyxl API, so these
+# three helpers reach into Cell._style. They are the only place in the project
+# that does; StyleReuseTest pins their behaviour so that an openpyxl upgrade
+# which changes the attribute fails loudly instead of silently corrupting
+# styles or quietly losing the speedup.
+def style_snapshot(cell) -> tuple | None:
+    """An immutable key describing the cell's style right now.
+
+    Deliberately not the StyleArray itself: it is mutable and the assignments
+    that follow keep writing to it, so a live reference used as a dict key
+    would change value underneath the dict.
+    """
+    style = cell._style
+    return tuple(style) if style is not None else None
+
+
+def capture_style(cell):
+    """Detach a finished style so later cells can reuse it."""
+    return copy(cell._style)
+
+
+def reuse_style(cell, style) -> None:
+    """Give the cell its own copy of a previously computed style.
+
+    A copy, never the shared instance. StyleArray is mutable, so cells sharing
+    one instance are not merely equal but linked: code that later sets a fill
+    or a number format on any one of them would change all of them.
+    """
+    cell._style = copy(style)
 
 
 def create_sheet_styles(font_name: str):
@@ -303,17 +392,41 @@ def format_sheet(
 
     measure = width_measurer(measurement_font)
     maximum_pixel_widths = [measure(cell.value) for cell in sheet[1]]
+    # Setting font/alignment/number_format re-registers each value in the
+    # workbook's style tables, and that lookup hashes the whole style object —
+    # by far the most expensive thing this function does on a large sheet. The
+    # body cells only ever produce a handful of distinct results, so each
+    # distinct one is computed once, by the ordinary assignments below, and
+    # afterwards reused. Two separate hazards shape how that is done:
+    #
+    # Styles set before this function runs (payment's 汇总 already carries
+    # #,##0.00) must survive, because the per-cell assignments would have left
+    # them alone. That is why the cell's incoming style is part of the key
+    # rather than something to overwrite.
+    #
+    # Styles set after this function returns (the coupon pipelines' pink fill)
+    # must not leak between cells. That is why reuse_style hands out a copy: a
+    # shared StyleArray would make one later fill assignment repaint every cell
+    # that shares it.
+    styles: dict[tuple, object] = {}
+
     for row_number, row in enumerate(
         sheet.iter_rows(min_row=2, max_row=sheet.max_row), start=2
     ):
         sheet.row_dimensions[row_number].height = ROW_HEIGHT
         for cell in row:
-            cell.font = normal_font
-            cell.alignment = (
-                left_aligned if cell.column in left_aligned_columns else centered
-            )
-            if cell.column == subsidy_column and cell.value is not None:
-                cell.number_format = "0.00"
+            is_left_aligned = cell.column in left_aligned_columns
+            is_subsidy = cell.column == subsidy_column and cell.value is not None
+            key = (style_snapshot(cell), is_left_aligned, is_subsidy)
+            style = styles.get(key)
+            if style is None:
+                cell.font = normal_font
+                cell.alignment = left_aligned if is_left_aligned else centered
+                if is_subsidy:
+                    cell.number_format = "0.00"
+                styles[key] = capture_style(cell)
+            else:
+                reuse_style(cell, style)
             width = measure(cell.value)
             if width > maximum_pixel_widths[cell.column - 1]:
                 maximum_pixel_widths[cell.column - 1] = width
