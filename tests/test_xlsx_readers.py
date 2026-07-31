@@ -14,12 +14,14 @@ random-access pattern without a test failing.
 
 import tempfile
 import unittest
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
+from unittest.mock import patch
 
 from openpyxl import Workbook
 
 from processors.coupons import sources
+from processors import receipts
 from processors.receipts import read_receipt_rows
 
 
@@ -48,6 +50,15 @@ class _CountingWorkbookWrapper:
     @property
     def worksheets(self):
         return [self.sheet_wrapper]
+
+    @property
+    def sheetnames(self):
+        return self._workbook.sheetnames
+
+    def __getitem__(self, name):
+        if name == self.sheet_wrapper.title:
+            return self.sheet_wrapper
+        return self._workbook[name]
 
     def close(self):
         self._workbook.close()
@@ -123,6 +134,77 @@ class ReadReceiptRowsTest(unittest.TestCase):
                     read_receipt_rows(source)
             finally:
                 wrapped.close()
+
+            self.assertEqual(wrapped.sheet_wrapper.iter_rows_calls, 1)
+
+
+class _AdditiveMeasurementFont:
+    def getlength(self, value: object) -> float:
+        return float(len(str(value)) * 8)
+
+
+class ReceiptOutputPerformanceTest(unittest.TestCase):
+    def _build_output_sheet(self, row_count: int = 100):
+        workbook = Workbook()
+        sheet = workbook.active
+        sheet.title = "Sheet1"
+        sheet.append(receipts.RECEIPTS_OUTPUT_HEADER)
+        receipt_date = datetime(2026, 1, 24)
+        for index in range(row_count):
+            sheet.append(
+                [
+                    f"ZH{index:04d}",
+                    receipt_date,
+                    None,
+                    None,
+                    "海尔冰箱",
+                    "",
+                ]
+            )
+        return workbook, sheet
+
+    def test_body_styles_are_computed_per_kind_not_per_cell(self) -> None:
+        workbook, sheet = self._build_output_sheet()
+        duplicate_keys = {
+            receipts.receipt_match_key(date(2026, 1, 24), f"ZH{index:04d}")
+            for index in range(0, 100, 2)
+        }
+        try:
+            with patch.object(
+                receipts,
+                "capture_style",
+                wraps=receipts.capture_style,
+            ) as capture:
+                receipts.format_receipts_sheet(
+                    sheet,
+                    duplicate_match_keys=duplicate_keys,
+                    font_name="Test Font",
+                    measurement_font=_AdditiveMeasurementFont(),
+                )
+
+            self.assertEqual(capture.call_count, 6)
+        finally:
+            workbook.close()
+
+    def test_saved_output_validation_reads_rows_once(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "收款单统计.xlsx"
+            workbook, sheet = self._build_output_sheet(row_count=1)
+            receipts.format_receipts_sheet(
+                sheet,
+                duplicate_match_keys=set(),
+                font_name="Test Font",
+                measurement_font=_AdditiveMeasurementFont(),
+            )
+            workbook.save(path)
+            workbook.close()
+
+            from openpyxl import load_workbook
+
+            loaded = load_workbook(path, read_only=True, data_only=True)
+            wrapped = _CountingWorkbookWrapper(loaded)
+            with patch.object(receipts, "load_workbook", return_value=wrapped):
+                receipts.validate_receipts_output(path, 1)
 
             self.assertEqual(wrapped.sheet_wrapper.iter_rows_calls, 1)
 
