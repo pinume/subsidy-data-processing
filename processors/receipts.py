@@ -17,6 +17,7 @@ from processors.common.config import load_receipt_special_remark_keys
 from processors.common.excel import (
     capture_style,
     create_sheet_styles,
+    format_sheet,
     load_measurement_font,
     pixels_to_excel_width,
     resolve_font,
@@ -54,6 +55,9 @@ RECEIPTS_ROW_HEIGHT = 20
 RECEIPTS_DUPLICATE_FILL_COLOR = "FFC7CE"
 RECEIPTS_EXCLUDED_PRODUCT_KEYWORD = "北国"
 RECEIPTS_SAME_MODEL_REPLACEMENT_KEYWORD = "同型号换货"
+
+ISSUES_SHEET_NAME = "问题明细"
+ISSUES_HEADER = ("问题类型", "行号", "内容", "说明")
 
 
 def configure_data_dir(data_dir: Path) -> None:
@@ -143,7 +147,6 @@ def receipt_remark(
 def prepare_receipt_data(kept_rows: list[list[object]]):
     records: list[dict[str, object]] = []
     key_rows: dict[str, list[int]] = {}
-    original_invoice_numbers: set[str] = set()
     referenced_original_invoice_numbers: set[str] = set()
     same_model_replacement_original_invoice_numbers: set[str] = set()
     excluded_product_count = 0
@@ -165,7 +168,6 @@ def prepare_receipt_data(kept_rows: list[list[object]]):
         if match_key:
             key_rows.setdefault(match_key, []).append(source_row)
         if original_invoice_number:
-            original_invoice_numbers.add(original_invoice_number)
             if RECEIPTS_SAME_MODEL_REPLACEMENT_KEYWORD in (
                 normalize_receipt_identifier(row[3])
             ):
@@ -301,13 +303,30 @@ def prepare_receipt_data(kept_rows: list[list[object]]):
     return output_rows, stats, issues, duplicate_match_keys
 
 
+def build_issues_sheet(
+    workbook: Workbook,
+    issues: list[tuple[str, str, str, str]],
+    font_name: str,
+    measurement_font,
+) -> None:
+    sheet = workbook.create_sheet(ISSUES_SHEET_NAME)
+    sheet.append(ISSUES_HEADER)
+    for issue in issues:
+        sheet.append(issue)
+    format_sheet(sheet, font_name, measurement_font, ("内容", "说明"))
+
+
 def validate_receipts_output(
     path: Path,
     expected_data_rows: int,
+    expected_issues: list[tuple[str, str, str, str]] | None = None,
 ) -> None:
     workbook = load_workbook(path, read_only=True, data_only=True)
     try:
-        if workbook.sheetnames != ["Sheet1"]:
+        expected_sheet_names = (
+            ["Sheet1"] if expected_issues is None else ["Sheet1", ISSUES_SHEET_NAME]
+        )
+        if workbook.sheetnames != expected_sheet_names:
             raise RuntimeError(
                 f"收款单工作表校验失败：实际工作表为 {workbook.sheetnames}"
             )
@@ -443,6 +462,32 @@ def validate_receipts_output(
                     raise RuntimeError(
                         f"收款单第 {row_number} 行的重复匹配键标记不正确"
                     )
+
+        if expected_issues is not None:
+            issues_sheet = workbook[ISSUES_SHEET_NAME]
+            issues_header = tuple(
+                cell.value for cell in next(issues_sheet.iter_rows(max_row=1))
+            )
+            if issues_header != ISSUES_HEADER:
+                raise RuntimeError(
+                    f"{ISSUES_SHEET_NAME}工作表字段标题校验失败：实际为 {issues_header}"
+                )
+
+            def comparable(row: tuple[object, ...]) -> tuple[object, ...]:
+                # A cell saved with "" round-trips through openpyxl as None,
+                # so blanks on either side must compare equal.
+                return tuple("" if value is None else value for value in row)
+
+            actual_issues = [
+                comparable(row)
+                for row in issues_sheet.iter_rows(min_row=2, values_only=True)
+            ]
+            expected = [comparable(tuple(issue)) for issue in expected_issues]
+            if actual_issues != expected:
+                raise RuntimeError(
+                    f"{ISSUES_SHEET_NAME}工作表内容校验失败：预期 {len(expected)} 条，"
+                    f"实际 {len(actual_issues)} 条"
+                )
     finally:
         workbook.close()
 
@@ -527,7 +572,7 @@ def process_receipts() -> None:
         )
 
     kept_rows = read_receipt_rows(RECEIPTS_SOURCE_FILE)
-    output_rows, stats, _issues, duplicate_match_keys = prepare_receipt_data(
+    output_rows, stats, issues, duplicate_match_keys = prepare_receipt_data(
         kept_rows
     )
     workbook = Workbook()
@@ -545,12 +590,13 @@ def process_receipts() -> None:
         font_name=font_name,
         measurement_font=measurement_font,
     )
+    build_issues_sheet(workbook, issues, font_name, measurement_font)
 
     row_count = len(output_rows)
     save_workbook_atomically(
         workbook,
         OUTPUT_FILE,
-        lambda path: validate_receipts_output(path, row_count),
+        lambda path: validate_receipts_output(path, row_count, issues),
     )
     print(f"Receipt statistics complete: {row_count} rows")
     print(
@@ -558,4 +604,5 @@ def process_receipts() -> None:
         f"unmatched original invoices: {stats['未匹配原票号数量']}; "
         f"duplicate match keys: {stats['重复匹配键数量']}"
     )
+    print(f"Issues logged in '{ISSUES_SHEET_NAME}': {len(issues)}")
     print(f"Output file: {OUTPUT_FILE}")

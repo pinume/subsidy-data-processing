@@ -52,15 +52,16 @@ class DetailProcessingTests(unittest.TestCase):
         source.append(_detail_row(profile, "A04-空调", "格力空调"))
         target = workbook.create_sheet("target")
 
-        written, unidentified = payment._write_normalized_detail(
+        rows, unidentified = payment._collect_normalized_detail(
             source,
-            target,
-            write_header=True,
             profile=profile,
             merchant_id="ABC123",
         )
+        target.append(profile.detail_headers + payment.DERIVED_HEADERS)
+        for row in rows:
+            target.append(row)
 
-        self.assertEqual(written, 1)
+        self.assertEqual(len(rows), 1)
         self.assertEqual(unidentified, 0)
 
     def test_header_fields_after_column_twenty_are_supported(self) -> None:
@@ -72,15 +73,16 @@ class DetailProcessingTests(unittest.TestCase):
         source.append(["ignored"] + _detail_row(profile, "A04-空调", "格力空调"))
         target = workbook.create_sheet("target")
 
-        written, unidentified = payment._write_normalized_detail(
+        rows, unidentified = payment._collect_normalized_detail(
             source,
-            target,
-            write_header=True,
             profile=profile,
             merchant_id="ABC123",
         )
+        target.append(profile.detail_headers + payment.DERIVED_HEADERS)
+        for row in rows:
+            target.append(row)
 
-        self.assertEqual(written, 1)
+        self.assertEqual(len(rows), 1)
         self.assertEqual(unidentified, 0)
         self.assertEqual(target.cell(2, len(profile.detail_headers) + 2).value, "格力")
 

@@ -4,7 +4,7 @@ from pathlib import Path
 
 from openpyxl import Workbook
 
-from processors.coupons.sources import load_uploaded_detail_lookup
+from processors.coupons.sources import load_uploaded_summary
 from processors.coupons import appliance, matching
 from processors.coupons import digital as coupons_digital
 
@@ -40,7 +40,7 @@ class CouponStatusLookupTest(unittest.TestCase):
             workbook.close()
 
             self.assertEqual(
-                load_uploaded_detail_lookup(source),
+                load_uploaded_summary(source)[0],
                 {"12345678901A": "已完成：匹配成功"},
             )
 
@@ -59,7 +59,7 @@ class CouponStatusLookupTest(unittest.TestCase):
                 ValueError,
                 "11位数字后跟一个大写字母",
             ):
-                load_uploaded_detail_lookup(source)
+                load_uploaded_summary(source)
 
     def test_uploaded_lookup_rejects_conflicting_duplicate(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -77,7 +77,7 @@ class CouponStatusLookupTest(unittest.TestCase):
                 ValueError,
                 "检索参考号存在冲突",
             ):
-                load_uploaded_detail_lookup(source)
+                load_uploaded_summary(source)
 
 
 class CouponStatusFillTest(unittest.TestCase):

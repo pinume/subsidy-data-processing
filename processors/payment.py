@@ -373,29 +373,6 @@ def _collect_normalized_detail(
     return normalized_rows, unidentified_brands
 
 
-def _write_normalized_detail(
-    source,
-    target,
-    *,
-    write_header: bool,
-    profile: ProcessingProfile,
-    merchant_id: str,
-    formula_workbook=None,
-) -> tuple[int, int]:
-    """Compatibility wrapper for callers that need one sheet written now."""
-    rows, unidentified_brands = _collect_normalized_detail(
-        source,
-        profile=profile,
-        merchant_id=merchant_id,
-        formula_workbook=formula_workbook,
-    )
-    if write_header:
-        target.append(profile.detail_headers + DERIVED_HEADERS)
-    for row in rows:
-        target.append(row)
-    return len(rows), unidentified_brands
-
-
 def _extract_brand(product_name, profile: ProcessingProfile) -> str | None:
     if product_name in (None, ""):
         return None
