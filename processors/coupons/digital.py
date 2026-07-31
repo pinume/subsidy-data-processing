@@ -14,11 +14,6 @@ from decimal import Decimal, InvalidOperation
 from openpyxl import Workbook
 from openpyxl.styles import PatternFill
 
-from processors.common.coupons import (
-    as_currency,
-    load_coupon_remark_lookup,
-    load_uploaded_detail_lookup,
-)
 from processors.common.excel import (
     format_sheet,
     load_measurement_font,
@@ -33,6 +28,8 @@ from processors.receipts import OUTPUT_FILE as RECEIPTS_OUTPUT_FILE
 from processors.submitted import PROFILES as SUBMITTED_PROFILES
 
 from . import matching, sources
+from .matching import as_currency
+from .sources import load_coupon_remark_lookup, load_uploaded_detail_lookup
 
 
 COUPON_SUBSIDY_HEADER = sources.COUPON_DIGITAL_SUBSIDY_HEADER

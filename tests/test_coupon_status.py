@@ -4,7 +4,7 @@ from pathlib import Path
 
 from openpyxl import Workbook
 
-from processors.common.coupons import load_uploaded_detail_lookup
+from processors.coupons.sources import load_uploaded_detail_lookup
 from processors.coupons import appliance, matching
 from processors.coupons import digital as coupons_digital
 

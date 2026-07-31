@@ -10,7 +10,7 @@ from openpyxl.utils import column_index_from_string
 
 from processors import submitted
 from processors.common.config import load_merchants, submitted_file_marker
-from processors.common.submitted import STATUS_ORDER
+from processors.submitted import STATUS_ORDER
 from processors.common.excel import (
     capture_style,
     format_sheet,

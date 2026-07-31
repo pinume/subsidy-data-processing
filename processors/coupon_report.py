@@ -20,10 +20,10 @@ from pathlib import Path
 
 from openpyxl import Workbook, load_workbook
 
-from processors.common.coupons import load_coupon_remark_lookup
 from processors.common.excel import format_sheet, save_workbook_atomically
 from processors.coupons import appliance, digital, matching, sources
 from processors.coupons.report_contract import SUMMARY_HEADER, SUMMARY_SHEET_NAME
+from processors.coupons.sources import load_coupon_remark_lookup
 
 
 BASE_DIR = Path(__file__).resolve().parent.parent

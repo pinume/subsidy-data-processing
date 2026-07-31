@@ -1,7 +1,7 @@
 import unittest
 from datetime import date
 
-from processors.common.coupons import reference_correction_candidates
+from processors.coupons.matching import reference_correction_candidates
 from processors.coupons import appliance, matching
 from processors.coupons import digital as coupons_digital
 

@@ -20,12 +20,6 @@ from openpyxl import Workbook, load_workbook
 from openpyxl.cell.cell import MergedCell
 from openpyxl.styles import Alignment, Border, PatternFill, Side
 
-from processors.common.coupons import (
-    COUPON_REFERENCE_RE,
-    as_currency,
-    load_coupon_remark_lookup,
-    load_uploaded_detail_lookup,
-)
 from processors.common.excel import (
     format_sheet,
     load_measurement_font,
@@ -43,13 +37,16 @@ from processors.submitted import PROFILES as SUBMITTED_PROFILES
 
 from . import matching, sources
 from .matching import (
+    COUPON_REFERENCE_RE,
     REFERENCE_REPORT_CORRECTED,
     REFERENCE_REPORT_UNRESOLVED,
     REFERENCE_REPORT_COLLISION,
     REFERENCE_REPORT_ORDER,
+    as_currency,
     coupon_data_rows,
 )
 from .report_contract import SUMMARY_HEADER, SUMMARY_SHEET_NAME
+from .sources import load_coupon_remark_lookup, load_uploaded_detail_lookup
 
 
 DETAILS_SHEET_NAME = "家电-明细总表"

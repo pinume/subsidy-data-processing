@@ -12,6 +12,7 @@ find_data_files + header match against the same keyword).
 """
 
 from dataclasses import dataclass
+from datetime import date
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 import re
@@ -19,9 +20,13 @@ import re
 from openpyxl import load_workbook
 
 from processors.common.config import load_brand_mapping
-from processors.common.coupons import classify_coupon_row
-from processors.common.dates import normalize_coupon_date
+from processors.common.dates import (
+    normalize_coupon_date,
+    normalize_document_number,
+    normalize_receipt_identifier,
+)
 from processors.common.paths import find_data_files, resolve_unique_file
+from processors.coupons.matching import COUPON_REFERENCE_RE
 
 
 BASE_DIR = Path(__file__).resolve().parent.parent.parent
@@ -85,6 +90,137 @@ DIGITAL_PROFILE = CouponSourceProfile(
     other_subsidy_column=COUPON_FAMILY_SUBSIDY_COLUMN,
     normalize_brand=False,
 )
+
+
+def classify_coupon_row(
+    *,
+    appliance_subsidy: object,
+    digital_subsidy: object,
+    row_number: int,
+    source_name: str,
+) -> str:
+    """Classify a merged 销售用券情况统计 row as "家电" or "数码".
+
+    The merged export is documented (README) to carry exactly one of the two
+    国补 columns populated per row. Both populated is source data corruption
+    serious enough to stop the run rather than silently pick a side; neither
+    populated defaults to 家电, where the existing zero-国补 warning already
+    surfaces it to the operator as bad data.
+    """
+    appliance_nonzero = appliance_subsidy not in (None, "", 0)
+    digital_nonzero = digital_subsidy not in (None, "", 0)
+    if appliance_nonzero and digital_nonzero:
+        raise ValueError(
+            f"{source_name} 第 {row_number} 行同时存在家电国补"
+            f"（{appliance_subsidy}）与数码国补（{digital_subsidy}），"
+            "无法确定该行所属项目"
+        )
+    return "数码" if digital_nonzero else "家电"
+
+
+def load_coupon_remark_lookup(source: Path) -> dict[tuple[str, date], str]:
+    if not source.exists():
+        raise FileNotFoundError(f"未找到备注匹配文件：{source}")
+
+    workbook = load_workbook(source, read_only=True, data_only=True)
+    try:
+        if "Sheet1" not in workbook.sheetnames:
+            raise ValueError(f"{source.name} 缺少 Sheet1 工作表")
+        sheet = workbook["Sheet1"]
+        header = [cell.value for cell in sheet[1]]
+        required_headers = ("单据号", "日期", "备注")
+        missing_headers = [
+            required_header
+            for required_header in required_headers
+            if required_header not in header
+        ]
+        if missing_headers:
+            raise ValueError(
+                f"{source.name} 缺少字段：{'、'.join(missing_headers)}"
+            )
+
+        document_index = header.index("单据号")
+        date_index = header.index("日期")
+        remark_index = header.index("备注")
+        lookup: dict[tuple[str, date], str] = {}
+        for row_number, row in enumerate(
+            sheet.iter_rows(min_row=2, values_only=True),
+            start=2,
+        ):
+            document_number = normalize_document_number(row[document_index])
+            remark = str(row[remark_index] or "").strip()
+            if not document_number or not remark:
+                continue
+            receipt_date = normalize_coupon_date(
+                row[date_index],
+                row_number,
+            )
+            key = (document_number, receipt_date)
+            existing_remark = lookup.get(key)
+            if existing_remark is not None and existing_remark != remark:
+                raise ValueError(
+                    f"{source.name} 第 {row_number} 行组合键存在冲突备注："
+                    f"{document_number} + {receipt_date:%Y-%m-%d}"
+                )
+            lookup[key] = remark
+        return lookup
+    finally:
+        workbook.close()
+
+
+def load_uploaded_detail_lookup(source: Path) -> dict[str, str]:
+    if not source.exists():
+        raise FileNotFoundError(f"未找到已上传匹配文件：{source}")
+
+    workbook = load_workbook(source, read_only=True, data_only=True)
+    try:
+        if "Summary" not in workbook.sheetnames:
+            raise ValueError(f"{source.name} 缺少 Summary 工作表")
+        sheet = workbook["Summary"]
+        header = [cell.value for cell in sheet[1]]
+        required_headers = ("检索参考号", "状态", "描述")
+        missing_headers = [
+            required_header
+            for required_header in required_headers
+            if required_header not in header
+        ]
+        if missing_headers:
+            raise ValueError(
+                f"{source.name} 缺少字段：{'、'.join(missing_headers)}"
+            )
+
+        reference_index = header.index("检索参考号")
+        status_index = header.index("状态")
+        description_index = header.index("描述")
+        lookup: dict[str, str] = {}
+        for row_number, row in enumerate(
+            sheet.iter_rows(min_row=2, values_only=True),
+            start=2,
+        ):
+            reference = normalize_receipt_identifier(
+                row[reference_index]
+            ).upper()
+            if not reference:
+                continue
+            if not COUPON_REFERENCE_RE.fullmatch(reference):
+                raise ValueError(
+                    f"{source.name} 第 {row_number} 行检索参考号格式无效："
+                    f"{row[reference_index]!r}；"
+                    "正确格式应为11位数字后跟一个大写字母"
+                )
+            status = str(row[status_index] or "").strip()
+            description = str(row[description_index] or "").strip()
+            detail = f"{status}：{description}"
+            existing_detail = lookup.get(reference)
+            if existing_detail is not None and existing_detail != detail:
+                raise ValueError(
+                    f"{source.name} 第 {row_number} 行检索参考号存在冲突："
+                    f"{reference}"
+                )
+            lookup[reference] = detail
+        return lookup
+    finally:
+        workbook.close()
 
 
 def _read_header_row(path: Path) -> tuple[object, ...]:

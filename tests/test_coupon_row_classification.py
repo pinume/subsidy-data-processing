@@ -1,6 +1,6 @@
 import unittest
 
-from processors.common.coupons import classify_coupon_row
+from processors.coupons.sources import classify_coupon_row
 
 
 class CouponRowClassificationTest(unittest.TestCase):
