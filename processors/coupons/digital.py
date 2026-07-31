@@ -17,7 +17,6 @@ from openpyxl.styles import PatternFill
 from processors.common.excel import (
     format_sheet,
     load_measurement_font,
-    load_uploaded_subsidy_stats,
     resolve_font,
 )
 from processors.common.dates import (
@@ -29,7 +28,7 @@ from processors.submitted import PROFILES as SUBMITTED_PROFILES
 
 from . import matching, sources
 from .matching import as_currency
-from .sources import load_coupon_remark_lookup, load_uploaded_detail_lookup
+from .sources import load_coupon_remark_lookup, load_uploaded_summary
 
 
 COUPON_SUBSIDY_HEADER = sources.COUPON_DIGITAL_SUBSIDY_HEADER
@@ -132,9 +131,8 @@ def compute_coupon_data(
     matched_count, matched_subsidy_total, _receipt_remark_count = (
         matching.fill_coupon_remarks(rows, remark_lookup, "2026数码国补")
     )
-    detail_lookup = load_uploaded_detail_lookup(COUPON_UPLOADED_SOURCE_FILE)
-    uploaded_subsidy_count, uploaded_subsidy_total = (
-        load_uploaded_subsidy_stats(COUPON_UPLOADED_SOURCE_FILE)
+    detail_lookup, uploaded_subsidy_count, uploaded_subsidy_total = (
+        load_uploaded_summary(COUPON_UPLOADED_SOURCE_FILE)
     )
     # Unsubmitted data is no longer supplied, so submitted data is the only
     # source of valid references.

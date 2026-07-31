@@ -22,6 +22,9 @@ from openpyxl import Workbook, load_workbook
 
 from processors.common.excel import format_sheet, save_workbook_atomically
 from processors.coupons import appliance, digital, matching, sources
+# Not unused despite the lack of a local reference: re-exported for
+# store_report.py, which imports SUMMARY_SHEET_NAME/SUMMARY_HEADER from this
+# module rather than reaching into processors.coupons.report_contract itself.
 from processors.coupons.report_contract import SUMMARY_HEADER, SUMMARY_SHEET_NAME
 from processors.coupons.sources import load_coupon_remark_lookup
 
@@ -133,29 +136,32 @@ def digital_extra_summary_rows(
 def process_coupon_sales() -> None:
     coupon_source = sources.COUPON_SOURCE_FILE
     if coupon_source is None:
-        appliance_computation = appliance.compute_coupon_data()
-        digital_computation = digital.compute_coupon_data()
-    else:
-        source_workbook = load_workbook(
-            coupon_source, read_only=True, data_only=True
+        # compute_coupon_data() raises the same FileNotFoundError once it
+        # sees sources.COUPON_SOURCE_FILE is None; raising it here directly
+        # names the file operators are missing without pretending a second
+        # (unreachable) code path could still succeed after the first raises.
+        raise FileNotFoundError(
+            f"未在 {sources.DATA_DIR} 中找到文件名包含"
+            f"“{sources.COUPON_STATISTICS_KEYWORD}”且表头符合"
+            "家电、数码用券导出格式的 .XLSX 文件"
         )
-        try:
-            export = sources.read_coupon_export(coupon_source, source_workbook)
-        finally:
-            source_workbook.close()
 
-        remark_lookup = load_coupon_remark_lookup(
-            appliance.COUPON_REMARK_SOURCE_FILE
-        )
-        appliance_computation = appliance.compute_coupon_data(
-            rows=export.appliance_rows,
-            remark_lookup=remark_lookup,
-            source_total=export.source_total,
-        )
-        digital_computation = digital.compute_coupon_data(
-            rows=export.digital_rows,
-            remark_lookup=remark_lookup,
-        )
+    source_workbook = load_workbook(coupon_source, read_only=True, data_only=True)
+    try:
+        export = sources.read_coupon_export(coupon_source, source_workbook)
+    finally:
+        source_workbook.close()
+
+    remark_lookup = load_coupon_remark_lookup(appliance.COUPON_REMARK_SOURCE_FILE)
+    appliance_computation = appliance.compute_coupon_data(
+        rows=export.appliance_rows,
+        remark_lookup=remark_lookup,
+        source_total=export.source_total,
+    )
+    digital_computation = digital.compute_coupon_data(
+        rows=export.digital_rows,
+        remark_lookup=remark_lookup,
+    )
     extra_summary_rows = digital_extra_summary_rows(digital_computation)
 
     workbook = Workbook()

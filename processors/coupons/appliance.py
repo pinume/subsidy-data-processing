@@ -23,7 +23,6 @@ from openpyxl.styles import Alignment, Border, PatternFill, Side
 from processors.common.excel import (
     format_sheet,
     load_measurement_font,
-    load_uploaded_subsidy_stats,
     resolve_font,
 )
 from processors.common.dates import (
@@ -38,15 +37,11 @@ from processors.submitted import PROFILES as SUBMITTED_PROFILES
 from . import matching, sources
 from .matching import (
     COUPON_REFERENCE_RE,
-    REFERENCE_REPORT_CORRECTED,
-    REFERENCE_REPORT_UNRESOLVED,
-    REFERENCE_REPORT_COLLISION,
-    REFERENCE_REPORT_ORDER,
     as_currency,
     coupon_data_rows,
 )
 from .report_contract import SUMMARY_HEADER, SUMMARY_SHEET_NAME
-from .sources import load_coupon_remark_lookup, load_uploaded_detail_lookup
+from .sources import load_coupon_remark_lookup, load_uploaded_summary
 
 
 DETAILS_SHEET_NAME = "家电-明细总表"
@@ -75,7 +70,6 @@ COUPON_GROUP_HEADER = (
 COUPON_GROUP_COLUMN_INDEXES = tuple(
     COUPON_OUTPUT_HEADER.index(header) for header in COUPON_GROUP_HEADER
 )
-COUPON_DOCUMENT_INDEX = COUPON_OUTPUT_HEADER.index("单据号")
 COUPON_DATE_INDEX = COUPON_OUTPUT_HEADER.index("单据日期")
 COUPON_PRODUCT_NAME_INDEX = COUPON_OUTPUT_HEADER.index("商品名称")
 COUPON_BRAND_INDEX = COUPON_OUTPUT_HEADER.index("品牌")
@@ -628,7 +622,9 @@ def compute_coupon_data(
             excluded_remark=RECEIPTS_REMARK_SAME_MODEL_REPLACEMENT,
         )
     )
-    detail_lookup = load_uploaded_detail_lookup(COUPON_UPLOADED_SOURCE_FILE)
+    detail_lookup, uploaded_subsidy_count, uploaded_subsidy_total = (
+        load_uploaded_summary(COUPON_UPLOADED_SOURCE_FILE)
+    )
     # Unsubmitted data is no longer supplied, so submitted data is the only
     # source of valid references.
     reference_universe = set(detail_lookup)
@@ -683,9 +679,6 @@ def compute_coupon_data(
         for row in coupon_data_rows(rows, matched_count)
         if str(row[COUPON_CATEGORY_INDEX] or "").strip()
         == COUPON_EXCLUDED_CATEGORY
-    )
-    uploaded_subsidy_count, uploaded_subsidy_total = (
-        load_uploaded_subsidy_stats(COUPON_UPLOADED_SOURCE_FILE)
     )
     summary_rows, zero_subsidy_count = build_coupon_summary(
         rows,

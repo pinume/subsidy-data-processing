@@ -34,8 +34,8 @@ class CouponStatusLookupTest(unittest.TestCase):
             workbook = Workbook()
             sheet = workbook.active
             sheet.title = "Summary"
-            sheet.append(["检索参考号", "状态", "描述"])
-            sheet.append([" 12345678901a ", " 已完成 ", "匹配成功 "])
+            sheet.append(["检索参考号", "状态", "描述", "补贴金额"])
+            sheet.append([" 12345678901a ", " 已完成 ", "匹配成功 ", 1])
             workbook.save(source)
             workbook.close()
 
@@ -50,8 +50,8 @@ class CouponStatusLookupTest(unittest.TestCase):
             workbook = Workbook()
             sheet = workbook.active
             sheet.title = "Summary"
-            sheet.append(["检索参考号", "状态", "描述"])
-            sheet.append(["1234567890A", "已完成", "匹配成功"])
+            sheet.append(["检索参考号", "状态", "描述", "补贴金额"])
+            sheet.append(["1234567890A", "已完成", "匹配成功", 1])
             workbook.save(source)
             workbook.close()
 
@@ -67,9 +67,9 @@ class CouponStatusLookupTest(unittest.TestCase):
             workbook = Workbook()
             sheet = workbook.active
             sheet.title = "Summary"
-            sheet.append(["检索参考号", "状态", "描述"])
-            sheet.append(["12345678901N", "已完成", "结果一"])
-            sheet.append(["12345678901N", "已完成", "结果二"])
+            sheet.append(["检索参考号", "状态", "描述", "补贴金额"])
+            sheet.append(["12345678901N", "已完成", "结果一", 1])
+            sheet.append(["12345678901N", "已完成", "结果二", 1])
             workbook.save(source)
             workbook.close()
 

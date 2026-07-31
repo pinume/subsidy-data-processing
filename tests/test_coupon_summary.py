@@ -8,7 +8,7 @@ from pathlib import Path
 
 from openpyxl import Workbook
 
-from processors.coupons import appliance
+from processors.coupons import appliance, sources
 from processors.coupons import digital as coupons_digital
 
 
@@ -39,15 +39,15 @@ class CouponSummaryTest(unittest.TestCase):
             workbook = Workbook()
             sheet = workbook.active
             sheet.title = "Summary"
-            sheet.append(["检索参考号", "补贴金额"])
-            sheet.append(["12345678901N", 10.1])
-            sheet.append(["12345678902N", None])
-            sheet.append(["12345678903N", 20])
+            sheet.append(["检索参考号", "状态", "描述", "补贴金额"])
+            sheet.append(["12345678901N", "已完成", "匹配成功", 10.1])
+            sheet.append(["12345678902N", "已完成", "匹配成功", None])
+            sheet.append(["12345678903N", "已完成", "匹配成功", 20])
             workbook.save(source)
             workbook.close()
 
             self.assertEqual(
-                coupons_digital.load_uploaded_subsidy_stats(source),
+                sources.load_uploaded_subsidy_stats(source),
                 (2, Decimal("30.1")),
             )
 

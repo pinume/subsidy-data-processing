@@ -136,7 +136,6 @@ def add_subsidy_column(
 
 
 def build_workbook(profile_name: str) -> tuple[Workbook, int, int]:
-    profile = PROFILES[profile_name]
     files = list(INPUT_FILES[profile_name])
     if not files:
         raise FileNotFoundError(

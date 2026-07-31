@@ -169,6 +169,21 @@ def load_coupon_remark_lookup(source: Path) -> dict[tuple[str, date], str]:
 
 
 def load_uploaded_detail_lookup(source: Path) -> dict[str, str]:
+    return load_uploaded_summary(source)[0]
+
+
+def load_uploaded_subsidy_stats(source: Path) -> tuple[int, Decimal]:
+    _detail_lookup, subsidy_count, subsidy_total = load_uploaded_summary(source)
+    return subsidy_count, subsidy_total
+
+
+def load_uploaded_summary(source: Path) -> tuple[dict[str, str], int, Decimal]:
+    """Read a generated 已上传 workbook's Summary sheet once for everything
+    both appliance.py and digital.py need from it: the per-reference detail
+    lookup and the 补贴金额 count/total. The two used to be two separate
+    functions (load_uploaded_detail_lookup here, load_uploaded_subsidy_stats
+    in common/excel.py) each doing their own full pass over the same sheet.
+    """
     if not source.exists():
         raise FileNotFoundError(f"未找到已上传匹配文件：{source}")
 
@@ -178,7 +193,7 @@ def load_uploaded_detail_lookup(source: Path) -> dict[str, str]:
             raise ValueError(f"{source.name} 缺少 Summary 工作表")
         sheet = workbook["Summary"]
         header = [cell.value for cell in sheet[1]]
-        required_headers = ("检索参考号", "状态", "描述")
+        required_headers = ("检索参考号", "状态", "描述", "补贴金额")
         missing_headers = [
             required_header
             for required_header in required_headers
@@ -192,7 +207,10 @@ def load_uploaded_detail_lookup(source: Path) -> dict[str, str]:
         reference_index = header.index("检索参考号")
         status_index = header.index("状态")
         description_index = header.index("描述")
+        subsidy_index = header.index("补贴金额")
         lookup: dict[str, str] = {}
+        subsidy_count = 0
+        subsidy_total = Decimal("0")
         for row_number, row in enumerate(
             sheet.iter_rows(min_row=2, values_only=True),
             start=2,
@@ -200,25 +218,34 @@ def load_uploaded_detail_lookup(source: Path) -> dict[str, str]:
             reference = normalize_receipt_identifier(
                 row[reference_index]
             ).upper()
-            if not reference:
-                continue
-            if not COUPON_REFERENCE_RE.fullmatch(reference):
-                raise ValueError(
-                    f"{source.name} 第 {row_number} 行检索参考号格式无效："
-                    f"{row[reference_index]!r}；"
-                    "正确格式应为11位数字后跟一个大写字母"
-                )
-            status = str(row[status_index] or "").strip()
-            description = str(row[description_index] or "").strip()
-            detail = f"{status}：{description}"
-            existing_detail = lookup.get(reference)
-            if existing_detail is not None and existing_detail != detail:
-                raise ValueError(
-                    f"{source.name} 第 {row_number} 行检索参考号存在冲突："
-                    f"{reference}"
-                )
-            lookup[reference] = detail
-        return lookup
+            if reference:
+                if not COUPON_REFERENCE_RE.fullmatch(reference):
+                    raise ValueError(
+                        f"{source.name} 第 {row_number} 行检索参考号格式无效："
+                        f"{row[reference_index]!r}；"
+                        "正确格式应为11位数字后跟一个大写字母"
+                    )
+                status = str(row[status_index] or "").strip()
+                description = str(row[description_index] or "").strip()
+                detail = f"{status}：{description}"
+                existing_detail = lookup.get(reference)
+                if existing_detail is not None and existing_detail != detail:
+                    raise ValueError(
+                        f"{source.name} 第 {row_number} 行检索参考号存在冲突："
+                        f"{reference}"
+                    )
+                lookup[reference] = detail
+
+            subsidy = row[subsidy_index]
+            if subsidy not in (None, ""):
+                try:
+                    subsidy_total += Decimal(str(subsidy))
+                except InvalidOperation as error:
+                    raise ValueError(
+                        f"{source.name} 第 {row_number} 行补贴金额无效：{subsidy!r}"
+                    ) from error
+                subsidy_count += 1
+        return lookup, subsidy_count, subsidy_total
     finally:
         workbook.close()
 
@@ -280,42 +307,6 @@ def configure_data_dir(data_dir: Path) -> None:
             data_dir, COUPON_REFERENCE_SUPPLEMENT_KEYWORD, (".xlsx",)
         )
     ) or data_dir / f"{COUPON_REFERENCE_SUPPLEMENT_KEYWORD}.xlsx"
-
-
-def read_coupon_source_total(
-    source: Path,
-    profile: CouponSourceProfile,
-    source_workbook=None,
-) -> Decimal | None:
-    """Read the 国补 value the source file states in its own 合计 row.
-
-    The export writes it as display text (e.g. "￥2,866,331.40"), and it has
-    been seen to disagree with the sum of the file's own detail rows. Reading
-    it lets the program report that gap instead of silently absorbing it;
-    returns None when the cell cannot be parsed.
-    """
-    owns_workbook = source_workbook is None
-    workbook = source_workbook or load_workbook(
-        source, read_only=True, data_only=True
-    )
-    try:
-        sheet = workbook.worksheets[0]
-        last_row: tuple[object, ...] | None = None
-        for values in sheet.iter_rows(values_only=True):
-            last_row = values
-        if last_row is None:
-            return None
-        column = max(profile.kept_source_columns)
-        cell_value = last_row[column - 1] if column - 1 < len(last_row) else None
-        raw = "" if cell_value is None else str(cell_value)
-        cleaned = re.sub(r"[^0-9.\-]", "", raw)
-        try:
-            return Decimal(cleaned) if cleaned else None
-        except InvalidOperation:
-            return None
-    finally:
-        if owns_workbook:
-            workbook.close()
 
 
 @dataclass(frozen=True)
@@ -450,90 +441,31 @@ def read_coupon_rows(
     profile: CouponSourceProfile,
     source_workbook=None,
 ) -> list[list[object]]:
-    owns_workbook = source_workbook is None
-    workbook = source_workbook or load_workbook(
-        source, read_only=True, data_only=True
-    )
-    try:
-        sheet = workbook.worksheets[0]
-        # One sequential pass, not sheet.cell(row, col) per row: random access
-        # on a read_only worksheet re-parses from the start of the sheet XML
-        # on every call, which is fine for a header lookup but O(n) per call
-        # — and therefore O(n^2) overall — once it runs once per data row on
-        # a 10000+ row export.
-        all_rows = list(sheet.iter_rows(values_only=True))
-        if len(all_rows) < 3:
-            raise ValueError(f"{source.name} 缺少标题行、字段标题行或合计行")
-        required_columns = max(
-            max(profile.kept_source_columns), profile.other_subsidy_column
-        )
-        header_row = all_rows[1]
-        if len(header_row) < required_columns:
-            raise ValueError(
-                f"{source.name} 列数不足：至少需要 {required_columns} 列"
-            )
-        last_row = all_rows[-1]
-        last_row_marker = last_row[0] if last_row else None
-        if str(last_row_marker or "").strip() != "合计":
-            raise ValueError(f"{source.name} 最后一行不是合计行")
+    """Read and classify just one project's rows.
 
-        source_header = tuple(
-            header_row[column - 1] if column - 1 < len(header_row) else None
-            for column in profile.kept_source_columns
-        )
-        expected_source_header = profile.output_header[
-            : len(profile.kept_source_columns)
-        ]
-        if source_header != expected_source_header:
-            raise ValueError(
-                f"{source.name} 保留列字段标题不符合要求："
-                f"预期为 {expected_source_header}，实际为 {source_header}。"
-                f"请检查该文件是否为正确的销售用券情况统计导出文件。"
-            )
+    A thin wrapper around read_coupon_export, which does the real work (and
+    is what the actual 13000+ row hot path in coupon_report.py calls
+    directly to classify both projects in a single pass). This standalone,
+    single-profile form exists for compute_coupon_data()'s no-rows-supplied
+    fallback and for tests that only care about one project — it still reads
+    the whole sheet once, just without reusing the other project's half of
+    the classification.
+    """
+    export = read_coupon_export(source, source_workbook)
+    return export.appliance_rows if profile.name == "家电" else export.digital_rows
 
-        rows: list[list[object]] = [list(profile.output_header)]
-        for row_number, values in enumerate(all_rows[2:-1], start=3):
-            row_values = [
-                values[column - 1] if column - 1 < len(values) else None
-                for column in profile.kept_source_columns
-            ]
-            if not any(value not in (None, "") for value in row_values):
-                continue
-            # The merged coupon export carries both projects' rows in one
-            # sheet; classify_coupon_row tells 家电 rows apart from 数码
-            # ones by which 国补 column is populated, and refuses to guess
-            # when both are (source data corruption).
-            other_column = profile.other_subsidy_column - 1
-            other_subsidy = values[other_column] if other_column < len(values) else None
-            own_subsidy = row_values[-1]
-            if profile.name == "家电":
-                classification = classify_coupon_row(
-                    appliance_subsidy=own_subsidy,
-                    digital_subsidy=other_subsidy,
-                    row_number=row_number,
-                    source_name=source.name,
-                )
-            else:
-                classification = classify_coupon_row(
-                    appliance_subsidy=other_subsidy,
-                    digital_subsidy=own_subsidy,
-                    row_number=row_number,
-                    source_name=source.name,
-                )
-            if classification != profile.name:
-                continue
-            document_number = (
-                ""
-                if row_values[0] is None
-                else str(row_values[0]).replace("收款", "")
-            )
-            document_date = normalize_coupon_date(row_values[1], row_number)
-            result_row = [document_number, document_date, *row_values[2:], None, None]
-            if profile.normalize_brand:
-                brand = str(result_row[3] or "").strip()
-                result_row[3] = COUPON_BRAND_REPLACEMENTS.get(brand, result_row[3])
-            rows.append(result_row)
-        return rows
-    finally:
-        if owns_workbook:
-            workbook.close()
+
+def read_coupon_source_total(
+    source: Path,
+    profile: CouponSourceProfile,
+    source_workbook=None,
+) -> Decimal | None:
+    """Read the 国补 value the source file states in its own 合计 row.
+
+    profile is accepted for backward compatibility but ignored: the merged
+    export has one 合计 row shared by both projects' columns, and the only
+    real caller (appliance.py, matching the original xlrd-era behavior) has
+    always read it from 家电's column.
+    """
+    del profile
+    return read_coupon_export(source, source_workbook).source_total

@@ -6,7 +6,6 @@ import time
 from collections.abc import Callable, Iterator
 from copy import copy
 from datetime import date, datetime
-from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from tempfile import NamedTemporaryFile
 from xml.etree.ElementTree import iterparse
@@ -571,44 +570,3 @@ def run_with_output_rollback(
     finally:
         for backup_path in temporary_backups:
             backup_path.unlink(missing_ok=True)
-
-
-def load_uploaded_subsidy_stats(source: Path) -> tuple[int, Decimal]:
-    """Count and total the 补贴金额 column of a generated 已上传 workbook.
-
-    Shared by both projects: the column and sheet names are identical in each
-    project's output, and keeping one implementation avoids the kind of drift
-    that once left the two subsidy caps out of sync.
-    """
-    if not source.exists():
-        raise FileNotFoundError(f"未找到已上传统计文件：{source}")
-
-    workbook = load_workbook(source, read_only=True, data_only=True)
-    try:
-        if "Summary" not in workbook.sheetnames:
-            raise ValueError(f"{source.name} 缺少 Summary 工作表")
-        sheet = workbook["Summary"]
-        header = [cell.value for cell in sheet[1]]
-        if "补贴金额" not in header:
-            raise ValueError(f"{source.name} 缺少字段：补贴金额")
-
-        subsidy_index = header.index("补贴金额")
-        subsidy_count = 0
-        subsidy_total = Decimal("0")
-        for row_number, row in enumerate(
-            sheet.iter_rows(min_row=2, values_only=True),
-            start=2,
-        ):
-            subsidy = row[subsidy_index]
-            if subsidy in (None, ""):
-                continue
-            try:
-                subsidy_total += Decimal(str(subsidy))
-            except InvalidOperation as error:
-                raise ValueError(
-                    f"{source.name} 第 {row_number} 行补贴金额无效：{subsidy!r}"
-                ) from error
-            subsidy_count += 1
-        return subsidy_count, subsidy_total
-    finally:
-        workbook.close()
