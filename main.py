@@ -4,7 +4,7 @@ import traceback
 from collections.abc import Callable
 from pathlib import Path
 
-from processors import digital, large_appliances, payment, store_report, submitted
+from processors import digital, large_appliances, payment, receipts, store_report, submitted
 from processors.common.excel import (
     remove_stale_temporary_files,
     run_with_output_rollback,
@@ -17,7 +17,7 @@ def all_output_files() -> tuple[Path, ...]:
 
     return (
         *submitted.OUTPUT_FILES,
-        large_appliances.RECEIPTS_OUTPUT_FILE,
+        receipts.OUTPUT_FILE,
         coupon_output_file,
         payment.OUTPUT_FILE,
         store_report.OUTPUT_FILE,
@@ -42,8 +42,8 @@ def build_processors() -> tuple[tuple[str, Path, Callable[[], None]], ...]:
         ),
         (
             "收款单统计",
-            large_appliances.RECEIPTS_SOURCE_FILE or large_appliances.DATA_DIR,
-            large_appliances.process_receipts,
+            receipts.RECEIPTS_SOURCE_FILE or receipts.DATA_DIR,
+            receipts.process_receipts,
         ),
         (
             "审核明细（销售用券情况统计）",
@@ -137,6 +137,7 @@ def main() -> int:
         # are no longer project-specific, so both need to be configured up
         # front rather than only the one the operator picks.
         submitted.configure_data_dir(data_dir)
+        receipts.configure_data_dir(data_dir)
         digital.configure_data_dir(data_dir)
         large_appliances.configure_data_dir(data_dir)
         payment.configure_data_dir(data_dir)

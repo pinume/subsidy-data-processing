@@ -52,6 +52,7 @@ class ProcessorOrderTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             data_dir = Path(directory)
             app_main.submitted.configure_data_dir(data_dir)
+            app_main.receipts.configure_data_dir(data_dir)
             app_main.digital.configure_data_dir(data_dir)
             app_main.large_appliances.configure_data_dir(data_dir)
             app_main.payment.configure_data_dir(data_dir)
@@ -101,7 +102,7 @@ class AllModeRollbackTest(unittest.TestCase):
                     "OUTPUT_FILES",
                     (paths["large_appliances"], paths["digital"]),
                 ),
-                patch.object(app_main.large_appliances, "RECEIPTS_OUTPUT_FILE", paths["receipts"]),
+                patch.object(app_main.receipts, "OUTPUT_FILE", paths["receipts"]),
                 patch.object(coupon_report, "OUTPUT_FILE", paths["coupon_report"]),
                 patch.object(app_main.payment, "OUTPUT_FILE", paths["payment"]),
                 patch.object(app_main.store_report, "OUTPUT_FILE", paths["store_report"]),

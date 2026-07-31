@@ -1,4 +1,9 @@
-"""Household appliance data processing: submitted data, receipts, coupons."""
+"""Household appliance data processing: submitted data, coupons.
+
+Receipt statistics (收款单统计) now live in processors/receipts.py — see that
+module's docstring for why it is shared at the top level rather than housed
+under either project's package.
+"""
 
 from pathlib import Path
 
@@ -10,25 +15,6 @@ from ._shared import (
     RECEIPTS_OUTPUT_FILE,
     COUPON_REMARK_SOURCE_FILE,
     COUPON_UPLOADED_SOURCE_FILE,
-)
-from .receipts import (
-    RECEIPTS_SOURCE_HEADER,
-    RECEIPTS_OUTPUT_HEADER,
-    RECEIPTS_REMARK_RETURN,
-    RECEIPTS_REMARK_ORIGINAL,
-    RECEIPTS_REMARK_BOTH,
-    RECEIPTS_REMARK_SAME_MODEL_REPLACEMENT,
-    RECEIPTS_REMARK_SPECIAL,
-    RECEIPTS_SPECIAL_REMARK_KEYS,
-    RECEIPTS_ROW_HEIGHT,
-    RECEIPTS_DUPLICATE_FILL_COLOR,
-    RECEIPTS_EXCLUDED_PRODUCT_KEYWORD,
-    RECEIPTS_SAME_MODEL_REPLACEMENT_KEYWORD,
-    read_receipt_rows,
-    receipt_remark,
-    prepare_receipt_data,
-    validate_receipts_output,
-    process_receipts,
 )
 from .coupons import (
     COUPON_KEPT_SOURCE_COLUMNS,
@@ -87,19 +73,16 @@ from .coupons import (
 
 
 DATA_DIR: Path
-RECEIPTS_SOURCE_FILE: Path | None
 COUPON_SOURCE_FILE: Path | None
 COUPON_REFERENCE_SUPPLEMENT_FILE: Path
 
 
 def configure_data_dir(data_dir: Path) -> None:
     global DATA_DIR
-    global RECEIPTS_SOURCE_FILE
     global COUPON_SOURCE_FILE
     global COUPON_REFERENCE_SUPPLEMENT_FILE
 
     _shared.configure_data_dir(data_dir)
     DATA_DIR = _shared.DATA_DIR
-    RECEIPTS_SOURCE_FILE = _shared.RECEIPTS_SOURCE_FILE
     COUPON_SOURCE_FILE = _shared.COUPON_SOURCE_FILE
     COUPON_REFERENCE_SUPPLEMENT_FILE = _shared.COUPON_REFERENCE_SUPPLEMENT_FILE

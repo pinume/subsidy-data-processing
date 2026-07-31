@@ -17,9 +17,9 @@ DATA_DIR: Path
 # here because the coupon pipeline below reads it as
 # COUPON_UPLOADED_SOURCE_FILE.
 OUTPUT_FILE = OUTPUT_DIR / "家电_已上传.xlsx"
-RECEIPTS_SOURCE_FILE: Path | None
-# Shared with digital: both projects' receipt statistics come from the same
-# source file and are processed with this project's rules (see receipts.py).
+# Receipt statistics processing itself now lives in processors/receipts.py
+# (shared by both projects); this constant is kept here only because the
+# coupon pipeline below reads it as COUPON_REMARK_SOURCE_FILE.
 RECEIPTS_OUTPUT_FILE = OUTPUT_DIR / "收款单统计.xlsx"
 COUPON_SOURCE_FILE: Path | None
 COUPON_REFERENCE_SUPPLEMENT_FILE: Path
@@ -32,7 +32,6 @@ COUPON_UPLOADED_SOURCE_FILE = OUTPUT_FILE
 # COUPON_DIGITAL_SUBSIDY_COLUMN below and read_coupon_rows in coupons.py /
 # processors/digital.py), so both projects resolve to the same file, matched
 # by each project's own header column.
-RECEIPT_STATISTICS_KEYWORD = "收款单统计"
 COUPON_STATISTICS_KEYWORD = "销售用券情况统计"
 COUPON_REFERENCE_SUPPLEMENT_KEYWORD = "新建 Microsoft Excel 工作表"
 # The coupon export's field header row (row 2) at its last kept column
@@ -49,14 +48,10 @@ COUPON_DIGITAL_SUBSIDY_COLUMN = 27
 
 def configure_data_dir(data_dir: Path) -> None:
     global DATA_DIR
-    global RECEIPTS_SOURCE_FILE
     global COUPON_SOURCE_FILE
     global COUPON_REFERENCE_SUPPLEMENT_FILE
 
     DATA_DIR = data_dir
-    RECEIPTS_SOURCE_FILE = resolve_unique_file(
-        find_data_files(data_dir, RECEIPT_STATISTICS_KEYWORD, (".xls",))
-    )
     COUPON_SOURCE_FILE = match_source_file_by_header(
         find_data_files(data_dir, COUPON_STATISTICS_KEYWORD, (".xls",)),
         COUPON_SUBSIDY_HEADER,

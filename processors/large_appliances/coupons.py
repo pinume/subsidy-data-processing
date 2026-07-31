@@ -38,7 +38,7 @@ from ._shared import (
     COUPON_SUBSIDY_HEADER,
     COUPON_UPLOADED_SOURCE_FILE,
 )
-from .receipts import RECEIPTS_REMARK_SAME_MODEL_REPLACEMENT
+from processors.receipts import RECEIPTS_REMARK_SAME_MODEL_REPLACEMENT
 
 
 DETAILS_SHEET_NAME = "家电-明细总表"

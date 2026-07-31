@@ -1,7 +1,15 @@
+"""收款单统计 (receipt statistics) processing, shared by both projects.
+
+Household appliances and digital both read this same source file and are
+processed with the same rules (same-model replacement plus the special
+remarks in config/receipt_special_remarks.yaml); there has never been a
+digital-specific variant, so this lives at the top level rather than under
+either project's package.
+"""
+
 from datetime import date, datetime
 from pathlib import Path
 
-import xlrd
 from openpyxl import Workbook, load_workbook
 from openpyxl.styles import PatternFill
 
@@ -21,10 +29,16 @@ from processors.common.dates import (
     normalize_receipt_identifier,
     receipt_match_key,
 )
+from processors.common.paths import find_data_files, resolve_unique_file
 
-from . import _shared
-from ._shared import RECEIPTS_OUTPUT_FILE
 
+BASE_DIR = Path(__file__).resolve().parent.parent
+OUTPUT_DIR = BASE_DIR / "output"
+OUTPUT_FILE = OUTPUT_DIR / "收款单统计.xlsx"
+
+DATA_DIR: Path
+RECEIPTS_SOURCE_FILE: Path | None
+RECEIPT_STATISTICS_KEYWORD = "收款单统计"
 
 RECEIPTS_SOURCE_HEADER = ("单据号", "日期", "原票号", "摘要", "商品名称")
 RECEIPTS_OUTPUT_HEADER = (*RECEIPTS_SOURCE_HEADER, "备注")
@@ -40,16 +54,30 @@ RECEIPTS_EXCLUDED_PRODUCT_KEYWORD = "北国"
 RECEIPTS_SAME_MODEL_REPLACEMENT_KEYWORD = "同型号换货"
 
 
+def configure_data_dir(data_dir: Path) -> None:
+    global DATA_DIR
+    global RECEIPTS_SOURCE_FILE
+
+    DATA_DIR = data_dir
+    RECEIPTS_SOURCE_FILE = resolve_unique_file(
+        find_data_files(data_dir, RECEIPT_STATISTICS_KEYWORD, (".xlsx",))
+    )
+
+
 def read_receipt_rows(source: Path) -> list[list[object]]:
-    """Read legacy XLS files in pure Python without invoking Excel."""
-    source_workbook = xlrd.open_workbook(source)
+    """Read the 收款单统计 .xlsx export: title row, header row, data, 合计."""
+    workbook = load_workbook(source, read_only=True, data_only=True)
     try:
-        source_sheet = source_workbook.sheet_by_index(0)
-        if source_sheet.nrows < 2:
+        sheet = workbook.worksheets[0]
+        rows_iter = sheet.iter_rows(values_only=True)
+        title_row = next(rows_iter, None)
+        header_row = next(rows_iter, None)
+        if title_row is None or header_row is None:
             raise ValueError(f"{source.name} 缺少总标题行或字段标题行")
+
         source_headers = [
-            str(source_sheet.cell_value(1, column_index)).strip()
-            for column_index in range(source_sheet.ncols)
+            str(value).strip() if value is not None else ""
+            for value in header_row
         ]
         missing_headers = [
             header for header in RECEIPTS_SOURCE_HEADER
@@ -64,21 +92,16 @@ def read_receipt_rows(source: Path) -> list[list[object]]:
             source_headers.index(header) for header in RECEIPTS_SOURCE_HEADER
         ]
 
-        rows: list[list[object]] = []
-        for row_index in range(1, source_sheet.nrows):
-            row: list[object] = []
-            for column_index in source_column_indexes:
-                cell = source_sheet.cell(row_index, column_index)
-                value = cell.value
-                if cell.ctype == xlrd.XL_CELL_DATE:
-                    value = xlrd.xldate.xldate_as_datetime(
-                        value,
-                        source_workbook.datemode,
-                    )
-                elif cell.ctype == xlrd.XL_CELL_NUMBER and value == int(value):
-                    value = int(value)
-                row.append(value)
-            if row_index > 1 and str(row[1]).strip() == "合计":
+        def select(values: tuple[object, ...]) -> list[object]:
+            return [
+                values[index] if index < len(values) else None
+                for index in source_column_indexes
+            ]
+
+        rows: list[list[object]] = [select(header_row)]
+        for source_row in rows_iter:
+            row = select(source_row)
+            if str(row[1]).strip() == "合计":
                 continue
             rows.append(row)
 
@@ -93,7 +116,7 @@ def read_receipt_rows(source: Path) -> list[list[object]]:
             )
         return rows
     finally:
-        source_workbook.release_resources()
+        workbook.close()
 
 
 def receipt_remark(
@@ -418,13 +441,13 @@ def validate_receipts_output(
 
 
 def process_receipts() -> None:
-    if _shared.RECEIPTS_SOURCE_FILE is None:
+    if RECEIPTS_SOURCE_FILE is None:
         raise FileNotFoundError(
-            f"未在 {_shared.DATA_DIR} 中找到文件名包含"
-            f"“{_shared.RECEIPT_STATISTICS_KEYWORD}”的 .XLS 文件"
+            f"未在 {DATA_DIR} 中找到文件名包含"
+            f"“{RECEIPT_STATISTICS_KEYWORD}”的 .XLSX 文件"
         )
 
-    kept_rows = read_receipt_rows(_shared.RECEIPTS_SOURCE_FILE)
+    kept_rows = read_receipt_rows(RECEIPTS_SOURCE_FILE)
     output_rows, stats, _issues, duplicate_match_keys = prepare_receipt_data(
         kept_rows
     )
@@ -488,7 +511,7 @@ def process_receipts() -> None:
     row_count = len(output_rows)
     save_workbook_atomically(
         workbook,
-        RECEIPTS_OUTPUT_FILE,
+        OUTPUT_FILE,
         lambda path: validate_receipts_output(path, row_count),
     )
     print(f"Receipt statistics complete: {row_count} rows")
@@ -497,4 +520,4 @@ def process_receipts() -> None:
         f"unmatched original invoices: {stats['未匹配原票号数量']}; "
         f"duplicate match keys: {stats['重复匹配键数量']}"
     )
-    print(f"Output file: {RECEIPTS_OUTPUT_FILE}")
+    print(f"Output file: {OUTPUT_FILE}")
