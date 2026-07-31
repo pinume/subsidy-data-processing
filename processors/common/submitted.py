@@ -1,13 +1,12 @@
 """Shared "submitted data" pipeline for both projects.
 
 Household appliances and digital read the same source column layout, apply
-the same 15% subsidy rate, and validate the same shape of output; the caps,
-source files, and output file differ. Everything that varies is carried in a
-SubmittedConfig built by each project's own module (see
-processors/large_appliances/submitted.py and processors/digital.py), which
-also keeps its own SUBSIDY_RATE / SUBSIDY_CAP constants rather than reading a
-shared default — see README.md's Subsidy Rules section for why the two caps
-are pinned separately instead of merged.
+the same 15% subsidy rate, and validate the same shape of output; only the
+caps, source files, and output file differ. Everything that varies is
+carried in a SubmittedConfig, built by processors/submitted.py from two
+SubmittedProfile instances that each keep their own subsidy_cap rather than
+sharing a default — the two caps were once both written as 500, which
+silently understated 43% of the appliance rows.
 """
 
 from dataclasses import dataclass
