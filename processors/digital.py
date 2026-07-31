@@ -1,5 +1,4 @@
 
-import re
 from collections import Counter
 from dataclasses import dataclass
 from datetime import date, datetime
@@ -14,7 +13,9 @@ from openpyxl.styles import PatternFill
 from processors.common import submitted as common_submitted
 from processors.common.config import submitted_file_marker
 from processors.common.coupons import (
+    COUPON_REFERENCE_RE,
     as_currency,
+    build_reference_correction_index,
     classify_coupon_row,
     load_coupon_remark_lookup,
     load_uploaded_detail_lookup,
@@ -132,7 +133,6 @@ REFERENCE_REPORT_ORDER = {
     REFERENCE_REPORT_UNRESOLVED: 2,
 }
 COUPON_MATCH_FILL_COLOR = "FFC7CE"
-COUPON_REFERENCE_RE = re.compile(r"\d{11}[A-Z]")
 COUPON_SUMMARY_HEADER = (
     "备注",
     "数量",
@@ -188,8 +188,12 @@ def process_submitted_files() -> None:
     common_submitted.process_submitted_files(_config())
 
 
-def read_coupon_rows(source: Path) -> list[list[object]]:
-    source_workbook = xlrd.open_workbook(source)
+def read_coupon_rows(
+    source: Path,
+    source_workbook=None,
+) -> list[list[object]]:
+    owns_workbook = source_workbook is None
+    source_workbook = source_workbook or xlrd.open_workbook(source)
     try:
         source_sheet = source_workbook.sheet_by_index(0)
         if source_sheet.nrows < 3:
@@ -261,7 +265,8 @@ def read_coupon_rows(source: Path) -> list[list[object]]:
                 )
         return rows
     finally:
-        source_workbook.release_resources()
+        if owns_workbook:
+            source_workbook.release_resources()
 
 
 def fill_coupon_remarks(
@@ -357,6 +362,7 @@ def correct_coupon_references(
     target_counts: Counter[str] = Counter()
     unresolved_count = 0
     decisions: list[tuple[str, str, object, str, str]] = []
+    correction_index = build_reference_correction_index(reference_universe)
 
     for row_index, row in enumerate(rows[1:], start=1):
         raw_reference = normalize_receipt_identifier(
@@ -366,7 +372,7 @@ def correct_coupon_references(
             continue
         candidates = reference_correction_candidates(
             raw_reference,
-            reference_universe,
+            correction_index,
         )
         if len(candidates) != 1:
             unresolved_count += 1
@@ -501,7 +507,11 @@ class CouponComputation:
     summary_rows: list[tuple[object, ...]]
 
 
-def compute_coupon_data() -> CouponComputation:
+def compute_coupon_data(
+    *,
+    rows: list[list[object]] | None = None,
+    remark_lookup: dict[tuple[str, date], str] | None = None,
+) -> CouponComputation:
     if COUPON_SOURCE_FILE is None:
         raise FileNotFoundError(
             f"未在 {DATA_DIR} 中找到文件名包含"
@@ -509,8 +519,10 @@ def compute_coupon_data() -> CouponComputation:
             f"“{COUPON_SUBSIDY_HEADER}”的 .XLS 文件"
         )
 
-    rows = read_coupon_rows(COUPON_SOURCE_FILE)
-    remark_lookup = load_coupon_remark_lookup(COUPON_REMARK_SOURCE_FILE)
+    if rows is None:
+        rows = read_coupon_rows(COUPON_SOURCE_FILE)
+    if remark_lookup is None:
+        remark_lookup = load_coupon_remark_lookup(COUPON_REMARK_SOURCE_FILE)
     matched_count, matched_subsidy_total = fill_coupon_remarks(
         rows,
         remark_lookup,
@@ -723,14 +735,14 @@ def validate_detail_sheet(
             and row_number >= matched_start_row
         )
         is_pink = all(
-            cell.fill.fill_type == "solid"
-            and cell.fill.fgColor.rgb
+            sheet.cell(row_number, column).fill.fill_type == "solid"
+            and sheet.cell(row_number, column).fill.fgColor.rgb
             in {
                 COUPON_MATCH_FILL_COLOR,
                 f"00{COUPON_MATCH_FILL_COLOR}",
                 f"FF{COUPON_MATCH_FILL_COLOR}",
             }
-            for cell in sheet[row_number]
+            for column in range(1, len(COUPON_OUTPUT_HEADER) + 1)
         )
         if is_pink != expected_pink:
             raise RuntimeError(

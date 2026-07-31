@@ -14,9 +14,9 @@ from datetime import date
 from processors import digital, large_appliances
 
 
-SUBMITTED_REFERENCE = "12345678901A"
-SUPPLEMENT_REFERENCE = "22222222222B"
-CORRECTABLE_REFERENCE = "33333333333C"
+SUBMITTED_REFERENCE = "12345678901N"
+SUPPLEMENT_REFERENCE = "22222222222N"
+CORRECTABLE_REFERENCE = "33333333333N"
 
 
 def coupon_row(processor, reference: str, document: str, day: date):
@@ -90,7 +90,7 @@ class LargeApplianceMatchOrderTest(unittest.TestCase):
         self.assertEqual(row[self.summary_index], SUPPLEMENT_REFERENCE)
 
     def test_algorithm_runs_only_when_supplement_has_no_entry(self) -> None:
-        row = coupon_row(large_appliances, "33333 333333 C", "002", self.day)
+        row = coupon_row(large_appliances, "33333 333333 N", "002", self.day)
         rows = [list(large_appliances.COUPON_OUTPUT_HEADER), row]
 
         _, _, protected_row_ids, _ = (

@@ -1,6 +1,7 @@
 """Shared helpers for the household-appliance and digital coupon pipelines."""
 
 import re
+from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal, ROUND_HALF_UP
 from pathlib import Path
@@ -12,6 +13,61 @@ from processors.common.dates import (
     normalize_document_number,
     normalize_receipt_identifier,
 )
+
+COUPON_REFERENCE_RE = re.compile(r"\d{11}[A-Z]")
+
+
+@dataclass(frozen=True)
+class ReferenceCorrectionIndex:
+    references: frozenset[str]
+    digit_prefixes: dict[str, frozenset[str]]
+    deletion_variants: dict[str, frozenset[str]]
+    substitution_variants: dict[tuple[int, str], frozenset[str]]
+
+
+def build_reference_correction_index(
+    reference_universe: set[str],
+) -> ReferenceCorrectionIndex:
+    references = frozenset(reference.upper() for reference in reference_universe)
+    invalid_references = sorted(
+        reference
+        for reference in references
+        if not COUPON_REFERENCE_RE.fullmatch(reference)
+    )
+    if invalid_references:
+        raise ValueError(
+            "参考号格式应为11位数字后跟一个大写字母，"
+            f"实际存在无效参考号：{invalid_references[:5]}"
+        )
+    digit_prefixes: dict[str, set[str]] = {}
+    deletion_variants: dict[str, set[str]] = {}
+    substitution_variants: dict[tuple[int, str], set[str]] = {}
+    for reference in references:
+        digit_prefixes.setdefault(reference[:11], set()).add(reference)
+        for index in range(len(reference)):
+            without_character = reference[:index] + reference[index + 1:]
+            deletion_variants.setdefault(without_character, set()).add(
+                reference
+            )
+            substitution_variants.setdefault(
+                (index, without_character),
+                set(),
+            ).add(reference)
+    return ReferenceCorrectionIndex(
+        references=references,
+        digit_prefixes={
+            prefix: frozenset(candidates)
+            for prefix, candidates in digit_prefixes.items()
+        },
+        deletion_variants={
+            variant: frozenset(candidates)
+            for variant, candidates in deletion_variants.items()
+        },
+        substitution_variants={
+            variant: frozenset(candidates)
+            for variant, candidates in substitution_variants.items()
+        },
+    )
 
 
 def as_currency(amount: Decimal) -> Decimal:
@@ -129,6 +185,12 @@ def load_uploaded_detail_lookup(source: Path) -> dict[str, str]:
             ).upper()
             if not reference:
                 continue
+            if not COUPON_REFERENCE_RE.fullmatch(reference):
+                raise ValueError(
+                    f"{source.name} 第 {row_number} 行检索参考号格式无效："
+                    f"{row[reference_index]!r}；"
+                    "正确格式应为11位数字后跟一个大写字母"
+                )
             status = str(row[status_index] or "").strip()
             description = str(row[description_index] or "").strip()
             detail = f"{status}：{description}"
@@ -146,8 +208,14 @@ def load_uploaded_detail_lookup(source: Path) -> dict[str, str]:
 
 def reference_correction_candidates(
     raw_reference: str,
-    reference_universe: set[str],
+    reference_universe: set[str] | ReferenceCorrectionIndex,
 ) -> set[str]:
+    index = (
+        reference_universe
+        if isinstance(reference_universe, ReferenceCorrectionIndex)
+        else build_reference_correction_index(reference_universe)
+    )
+    references = index.references
     candidates: set[str] = set()
     upper_reference = raw_reference.upper()
     compact = re.sub(r"\s+", "", upper_reference)
@@ -157,33 +225,30 @@ def reference_correction_candidates(
         r"(?<!\d)(\d{11}[A-Z])(?![A-Z0-9])",
         upper_reference,
     ):
-        if token in reference_universe:
+        if token in references:
             candidates.add(token)
-    if cleaned in reference_universe:
+    if cleaned in references:
         candidates.add(cleaned)
     if re.fullmatch(r"\d{11}", compact):
-        candidates.update(
-            reference
-            for reference in reference_universe
-            if reference[:11] == compact
-        )
+        candidates.update(index.digit_prefixes.get(compact, ()))
     if len(compact) == 11:
-        for reference in reference_universe:
-            if len(reference) == 12 and any(
-                reference[:index] + reference[index + 1:] == compact
-                for index in range(12)
-            ):
-                candidates.add(reference)
+        candidates.update(index.deletion_variants.get(compact, ()))
     elif len(compact) == 13:
-        for index in range(13):
-            candidate = compact[:index] + compact[index + 1:]
-            if candidate in reference_universe:
+        for character_index in range(13):
+            candidate = (
+                compact[:character_index] + compact[character_index + 1:]
+            )
+            if candidate in references:
                 candidates.add(candidate)
     elif len(compact) == 12:
-        for reference in reference_universe:
-            if len(reference) == 12 and sum(
-                left != right
-                for left, right in zip(compact, reference)
-            ) == 1:
-                candidates.add(reference)
+        for character_index in range(12):
+            without_character = (
+                compact[:character_index] + compact[character_index + 1:]
+            )
+            candidates.update(
+                index.substitution_variants.get(
+                    (character_index, without_character),
+                    (),
+                )
+            )
     return candidates

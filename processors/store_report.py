@@ -15,6 +15,7 @@ this is deferred until a second store is actually needed.
 from __future__ import annotations
 
 import math
+from copy import copy
 from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal
@@ -25,7 +26,7 @@ from openpyxl import load_workbook
 from openpyxl.styles import Alignment, Font
 from openpyxl.workbook.workbook import Workbook
 
-from processors.common.excel import resolve_font, save_workbook_atomically
+from processors.common.excel import save_workbook_atomically
 from processors.common.paths import find_data_files, resolve_unique_file
 from processors.coupon_report import OUTPUT_FILE as UPLOAD_FILE
 from processors.large_appliances.coupons import COUPON_SUMMARY_HEADER as UPLOAD_HEADER
@@ -42,18 +43,22 @@ TEMPLATE_FILE_KEYWORD = "门店国补上传及回款情况表"
 DATA_DIR: Path
 
 SHANGHAI_TZ = ZoneInfo("Asia/Shanghai")
+REPORT_FONT_NAME = "微软雅黑"
 FILLED_ALIGNMENT = Alignment(horizontal="left", vertical="center")
-AMOUNT_NUMBER_FORMAT = "#,##0.00"
+DATA_NUMBER_FORMAT = "General"
+PERCENT_NUMBER_FORMAT = "0.00%"
 CURRENCY_COLUMN_WIDTH = 16.93
 CURRENCY_COLUMNS = ("D", "E", "F", "G", "J", "K")
 TOTAL_ROW = 34
 DETAIL_ROWS = range(4, TOTAL_ROW)
 BRAND_GROUP_TOTAL_ROW = 45
 BRAND_GROUP_DETAIL_ROWS = range(38, BRAND_GROUP_TOTAL_ROW)
+TABLE3_PROJECT_ROWS = {"家电": 49, "数码": 50}
+TABLE3_TOTAL_ROW = 51
 EXPECTED_SHEET_COUNT = 1
 EXPECTED_COLUMN_COUNT = 13  # A..M
 EXPECTED_SHEET_TITLE = "益庄"
-MIN_TEMPLATE_ROW_COUNT = BRAND_GROUP_TOTAL_ROW
+MIN_TEMPLATE_ROW_COUNT = TABLE3_TOTAL_ROW
 
 # A handful of fixed labels that only exist in the right blank template.
 # Checked before writing (wrong/stale template must not silently produce a
@@ -65,6 +70,16 @@ TEMPLATE_STRUCTURE_CELLS: dict[str, str] = {
     "C37": "品牌",
     "C38": "海尔系",
     "C45": "合计",
+    "C47": "表3",
+    "D47": "审核中",
+    "F47": "未上传",
+    "D48": "数量",
+    "E48": "26年国补上传额",
+    "F48": "数量",
+    "G48": "26年国补上传额",
+    "C49": "家电",
+    "C50": "数码",
+    "C51": "合计",
 }
 
 
@@ -177,6 +192,12 @@ class BrandGroupRule:
     categories: tuple[BrandGroupCategory, ...]
 
 
+@dataclass(frozen=True)
+class CountAmount:
+    count: int
+    amount: Decimal
+
+
 BRAND_GROUP_RULES = (
     BrandGroupRule(
         38,
@@ -234,6 +255,13 @@ def to_decimal(value: object) -> Decimal:
     return Decimal(str(value))
 
 
+def to_count(value: object) -> int:
+    count = to_decimal(value)
+    if count != count.to_integral_value():
+        raise ValueError(f"数量应为整数，实际为 {value!r}")
+    return int(count)
+
+
 def normalize_text(value: object) -> str:
     if value is None:
         return ""
@@ -268,9 +296,19 @@ def apply_filled_style(sheet, coords: tuple[str, ...], font: Font) -> None:
         sheet[coord].font = font
 
 
-def apply_amount_style(sheet, coords: tuple[str, ...]) -> None:
+def apply_data_number_format(sheet, coords: tuple[str, ...]) -> None:
     for coord in coords:
-        sheet[coord].number_format = AMOUNT_NUMBER_FORMAT
+        sheet[coord].number_format = DATA_NUMBER_FORMAT
+
+
+def apply_report_font(sheet) -> None:
+    for row in sheet.iter_rows():
+        for cell in row:
+            if cell.value in (None, ""):
+                continue
+            font = copy(cell.font)
+            font.name = REPORT_FONT_NAME
+            cell.font = font
 
 
 def widen_currency_columns(sheet) -> None:
@@ -307,7 +345,11 @@ def _validate_header(sheet, expected_header: tuple[str, ...], source_name: str, 
 
 def load_upload_data(
     upload_file: Path = UPLOAD_FILE,
-) -> tuple[dict[tuple[str, str], dict[str, Decimal]], dict[str, Decimal]]:
+) -> tuple[
+    dict[tuple[str, str], dict[str, Decimal]],
+    dict[str, Decimal],
+    dict[str, dict[str, CountAmount]],
+]:
     workbook = _open_source_workbook(upload_file, "审核明细", "审核明细（销售用券情况统计）")
     try:
         sheet = _sheet_or_raise(workbook, UPLOAD_SHEET_NAME, upload_file.name, "审核明细")
@@ -319,9 +361,13 @@ def load_upload_data(
         digital_uploaded = Decimal("0")
         digital_not_uploaded = Decimal("0")
         digital_total: Decimal | None = None
+        project_metrics: dict[str, dict[str, CountAmount]] = {
+            "家电": {},
+            "数码": {},
+        }
 
         for row in sheet.iter_rows(min_row=2, values_only=True):
-            category_raw, brand_raw, status_raw, _, amount_raw = row
+            category_raw, brand_raw, status_raw, count_raw, amount_raw = row
             if category_raw:
                 current_category = normalize_text(category_raw)
                 if not brand_raw:
@@ -335,13 +381,19 @@ def load_upload_data(
             status = normalize_text(status_raw)
             amount = to_decimal(amount_raw)
 
-            if current_category == "数码" and not current_brand:
-                if status == "已上传":
-                    digital_uploaded += amount
-                elif status == "未上传":
-                    digital_not_uploaded += amount
-                elif status == "合计":
-                    digital_total = amount
+            if current_category in project_metrics and not current_brand:
+                if status in {"已上传", "未上传", "合计"}:
+                    project_metrics[current_category][status] = CountAmount(
+                        to_count(count_raw),
+                        amount,
+                    )
+                if current_category == "数码":
+                    if status == "已上传":
+                        digital_uploaded += amount
+                    elif status == "未上传":
+                        digital_not_uploaded += amount
+                    elif status == "合计":
+                        digital_total = amount
                 continue
 
             if not current_brand:
@@ -362,12 +414,28 @@ def load_upload_data(
         "上传额": digital_uploaded,
     }
 
-    return amounts, digital_totals
+    for project in TABLE3_PROJECT_ROWS:
+        missing_statuses = {
+            status
+            for status in ("已上传", "未上传")
+            if status not in project_metrics[project]
+        }
+        if missing_statuses:
+            raise ValueError(
+                f"{upload_file.name} 的数据汇总缺少{project}项目汇总状态："
+                f"{'、'.join(sorted(missing_statuses))}"
+            )
+
+    return amounts, digital_totals, project_metrics
 
 
 def load_payment_data(
     payment_file: Path = PAYMENT_FILE,
-) -> tuple[dict[tuple[str, str], Decimal], Decimal]:
+) -> tuple[
+    dict[tuple[str, str], Decimal],
+    Decimal,
+    dict[str, CountAmount],
+]:
     workbook = _open_source_workbook(payment_file, "回款明细", "回款明细（家电+数码）")
     try:
         sheet = _sheet_or_raise(workbook, PAYMENT_SHEET_NAME, payment_file.name, "回款明细")
@@ -376,9 +444,13 @@ def load_payment_data(
         amounts: dict[tuple[str, str], Decimal] = {}
         current_category = ""
         digital_amount = Decimal("0")
+        project_metrics = {
+            "家电": CountAmount(0, Decimal("0")),
+            "数码": CountAmount(0, Decimal("0")),
+        }
 
         for row in sheet.iter_rows(min_row=2, values_only=True):
-            category_raw, brand_raw, amount_raw, _ = row
+            category_raw, brand_raw, amount_raw, count_raw = row
             if category_raw:
                 current_category = normalize_text(category_raw)
             category = current_category
@@ -390,12 +462,23 @@ def load_payment_data(
 
             brand = normalize_text(brand_raw)
             amount = to_decimal(amount_raw)
+            count = to_count(count_raw)
 
             if category in HOUSEHOLD_PAYMENT_CATEGORIES:
                 key = (category, brand)
                 amounts[key] = amounts.get(key, Decimal("0")) + amount
+                current = project_metrics["家电"]
+                project_metrics["家电"] = CountAmount(
+                    current.count + count,
+                    current.amount + amount,
+                )
             elif category in DIGITAL_PAYMENT_CATEGORIES:
                 digital_amount += amount
+                current = project_metrics["数码"]
+                project_metrics["数码"] = CountAmount(
+                    current.count + count,
+                    current.amount + amount,
+                )
             else:
                 raise ValueError(
                     f"门店报表尚未配置回款品类：{category!r}（品牌 {brand!r}）；"
@@ -405,7 +488,7 @@ def load_payment_data(
     finally:
         workbook.close()
 
-    return amounts, digital_amount
+    return amounts, digital_amount, project_metrics
 
 
 def sum_upload_amount(
@@ -546,8 +629,6 @@ def write_metrics_row(
     sheet[f"{paid_col}{row}"] = paid_value
     sheet[f"{upload_ratio_col}{row}"] = upload_ratio_value
     sheet[f"{payment_ratio_col}{row}"] = payment_ratio_value
-    sheet[f"{upload_ratio_col}{row}"].number_format = "0.00%"
-    sheet[f"{payment_ratio_col}{row}"].number_format = "0.00%"
 
     expected_cells[f"{occurred_col}{row}"] = occurred_value
     expected_cells[f"{uploaded_col}{row}"] = uploaded_value
@@ -566,7 +647,16 @@ def write_metrics_row(
         ),
         font,
     )
-    apply_amount_style(sheet, (f"{occurred_col}{row}", f"{uploaded_col}{row}", f"{paid_col}{row}"))
+    apply_data_number_format(
+        sheet,
+        (
+            f"{occurred_col}{row}",
+            f"{uploaded_col}{row}",
+            f"{paid_col}{row}",
+        ),
+    )
+    sheet[f"{upload_ratio_col}{row}"].number_format = PERCENT_NUMBER_FORMAT
+    sheet[f"{payment_ratio_col}{row}"].number_format = PERCENT_NUMBER_FORMAT
 
 
 def update_totals_row(
@@ -594,7 +684,6 @@ def update_totals_row(
     for ratio_column, (numerator_column, denominator_column) in ratio_columns.items():
         value = safe_ratio(totals[numerator_column], totals[denominator_column])
         sheet[f"{ratio_column}{total_row}"] = value
-        sheet[f"{ratio_column}{total_row}"].number_format = "0.00%"
         expected_cells[f"{ratio_column}{total_row}"] = value
 
     apply_filled_style(
@@ -602,7 +691,12 @@ def update_totals_row(
         tuple(f"{column}{total_row}" for column in (*amount_columns, *ratio_columns)),
         font,
     )
-    apply_amount_style(sheet, tuple(f"{column}{total_row}" for column in amount_columns))
+    apply_data_number_format(
+        sheet,
+        tuple(f"{column}{total_row}" for column in amount_columns),
+    )
+    for ratio_column in ratio_columns:
+        sheet[f"{ratio_column}{total_row}"].number_format = PERCENT_NUMBER_FORMAT
 
 
 def write_row(
@@ -690,6 +784,56 @@ def update_brand_group_totals(sheet, font: Font, expected_cells: dict[str, objec
         font=font,
         expected_cells=expected_cells,
     )
+
+
+def write_table3(
+    sheet,
+    upload_metrics: dict[str, dict[str, CountAmount]],
+    payment_metrics: dict[str, CountAmount],
+    font: Font,
+    expected_cells: dict[str, object],
+) -> None:
+    pending_total = CountAmount(0, Decimal("0"))
+    not_uploaded_total = CountAmount(0, Decimal("0"))
+    for project, row in TABLE3_PROJECT_ROWS.items():
+        uploaded = upload_metrics[project]["已上传"]
+        not_uploaded = upload_metrics[project]["未上传"]
+        paid = payment_metrics[project]
+        pending = CountAmount(
+            uploaded.count - paid.count,
+            uploaded.amount - paid.amount,
+        )
+        pending_total = CountAmount(
+            pending_total.count + pending.count,
+            pending_total.amount + pending.amount,
+        )
+        not_uploaded_total = CountAmount(
+            not_uploaded_total.count + not_uploaded.count,
+            not_uploaded_total.amount + not_uploaded.amount,
+        )
+        values = {
+            f"D{row}": pending.count or None,
+            f"E{row}": decimal_to_cell_value(pending.amount),
+            f"F{row}": not_uploaded.count or None,
+            f"G{row}": decimal_to_cell_value(not_uploaded.amount),
+        }
+        for coordinate, value in values.items():
+            sheet[coordinate] = value
+            sheet[coordinate].font = font
+            expected_cells[coordinate] = value
+        apply_data_number_format(sheet, tuple(values))
+
+    total_values = {
+        f"D{TABLE3_TOTAL_ROW}": pending_total.count or None,
+        f"E{TABLE3_TOTAL_ROW}": decimal_to_cell_value(pending_total.amount),
+        f"F{TABLE3_TOTAL_ROW}": not_uploaded_total.count or None,
+        f"G{TABLE3_TOTAL_ROW}": decimal_to_cell_value(not_uploaded_total.amount),
+    }
+    for coordinate, value in total_values.items():
+        sheet[coordinate] = value
+        sheet[coordinate].font = font
+        expected_cells[coordinate] = value
+    apply_data_number_format(sheet, tuple(total_values))
 
 
 def current_timestamp() -> datetime:
@@ -803,8 +947,8 @@ def validate_output(
 
 def process_store_report() -> None:
     timestamp = current_timestamp()
-    upload_data, digital_upload = load_upload_data(UPLOAD_FILE)
-    payment_data, digital_payment = load_payment_data(PAYMENT_FILE)
+    upload_data, digital_upload, upload_metrics = load_upload_data(UPLOAD_FILE)
+    payment_data, digital_payment, payment_metrics = load_payment_data(PAYMENT_FILE)
     validate_rule_coverage(upload_data, payment_data)
 
     template_file = resolve_template_file()
@@ -812,8 +956,7 @@ def process_store_report() -> None:
     try:
         validate_template(workbook)
         sheet = workbook[workbook.sheetnames[0]]
-        font_name, _ = resolve_font()
-        font = Font(name=font_name, size=12)
+        font = Font(name=REPORT_FONT_NAME, size=12)
 
         expected_cells: dict[str, object] = dict(TEMPLATE_STRUCTURE_CELLS)
 
@@ -828,8 +971,16 @@ def process_store_report() -> None:
             write_brand_group_row(sheet, brand_group_rule, upload_data, payment_data, font, expected_cells)
 
         update_brand_group_totals(sheet, font, expected_cells)
+        write_table3(
+            sheet,
+            upload_metrics,
+            payment_metrics,
+            font,
+            expected_cells,
+        )
         widen_currency_columns(sheet)
         update_header(sheet, timestamp, expected_cells)
+        apply_report_font(sheet)
     except BaseException:
         # save_workbook_atomically (below) takes ownership of closing the
         # workbook once writing succeeds; anything raised before that point —

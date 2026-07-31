@@ -39,9 +39,9 @@ class CouponSummaryTest(unittest.TestCase):
             sheet = workbook.active
             sheet.title = "Summary"
             sheet.append(["检索参考号", "补贴金额"])
-            sheet.append(["12345678901A", 10.1])
-            sheet.append(["12345678902A", None])
-            sheet.append(["12345678903A", 20])
+            sheet.append(["12345678901N", 10.1])
+            sheet.append(["12345678902N", None])
+            sheet.append(["12345678903N", 20])
             workbook.save(source)
             workbook.close()
 
