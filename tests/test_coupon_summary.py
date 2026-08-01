@@ -6,9 +6,11 @@ from contextlib import redirect_stdout
 from decimal import Decimal
 from pathlib import Path
 
-from openpyxl import Workbook
+from openpyxl import Workbook, load_workbook
+from xlsxwriter import Workbook as XlsxWorkbook
 
-from processors.coupons import appliance, sources
+from processors.common.excel import load_measurement_font, resolve_font
+from processors.coupons import appliance, sources, xlsx_output
 from processors.coupons import digital as coupons_digital
 
 
@@ -302,11 +304,41 @@ class SummarySheetLayoutTest(unittest.TestCase):
         return appliance.CouponComputation(**fields)
 
     def build_sheet(self):
-        workbook = Workbook()
-        workbook.remove(workbook.active)
+        """Write 数据汇总 with the XlsxWriter writer and read it back.
+
+        The assertions below are about the finished sheet — its rows, its
+        merged ranges — so they are unchanged from when an openpyxl builder
+        produced it in memory. Only how the sheet comes into being differs.
+        """
         computation = self.build_computation()
-        appliance.build_summary_and_details_sheets(workbook, computation)
-        return workbook, computation
+        rows = computation.summary_rows
+        blocks = appliance.project_summary_blocks(rows)
+        brand_rows_end = blocks[0][0] if blocks else len(rows)
+        font_name, font_path = resolve_font()
+        measurement_font = load_measurement_font(font_path)
+
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        path = Path(directory.name) / "summary.xlsx"
+        with XlsxWorkbook(str(path)) as workbook:
+            formats = xlsx_output.CouponFormatCache(
+                workbook, font_name, appliance.COUPON_MATCH_FILL_COLOR
+            )
+            xlsx_output.write_summary_sheet(
+                workbook,
+                appliance.SUMMARY_SHEET_NAME,
+                appliance.COUPON_SUMMARY_HEADER,
+                rows,
+                formats,
+                measurement_font,
+                group_merges=(
+                    appliance.coupon_summary_group_merges(rows, brand_rows_end)
+                    if brand_rows_end
+                    else []
+                ),
+                project_merges=appliance.coupon_summary_project_merges(blocks),
+            )
+        return load_workbook(path), computation
 
     def test_summary_sheet_drops_the_side_panels(self) -> None:
         """数据汇总 is the 财务大类/品牌/备注 表 and nothing else.

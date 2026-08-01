@@ -13,7 +13,6 @@ from processors.common.dates import (
     normalize_receipt_date,
 )
 from processors.common.excel import (
-    format_sheet,
     load_measurement_font,
     pixels_to_excel_width,
     remove_stale_temporary_files,
@@ -349,24 +348,6 @@ class ExcelHelpersTest(unittest.TestCase):
                 clear=True,
             ):
                 self.assertEqual(resolve_font(), ("Custom Font", font_path))
-
-    def test_format_sheet_applies_navigation_and_alignment(self) -> None:
-        class MeasurementFont:
-            def getlength(self, text: str) -> float:
-                return len(text) * 8
-
-        workbook = Workbook()
-        sheet = workbook.active
-        sheet.append(["商品名称", "金额"])
-        sheet.append(["商品", 12])
-
-        format_sheet(sheet, "微软雅黑", MeasurementFont(), ("商品名称",))
-
-        self.assertEqual(sheet.freeze_panes, "A2")
-        self.assertEqual(sheet.auto_filter.ref, "A1:B2")
-        self.assertEqual(sheet["A2"].alignment.horizontal, "left")
-        self.assertEqual(sheet["B2"].alignment.horizontal, "center")
-        workbook.close()
 
 if __name__ == "__main__":
     unittest.main()

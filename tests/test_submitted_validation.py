@@ -5,19 +5,14 @@ from decimal import Decimal
 from pathlib import Path
 
 from openpyxl import Workbook, load_workbook
-from openpyxl.styles import Font, PatternFill
 from openpyxl.utils import column_index_from_string
 
 from processors import submitted
 from processors.common.config import load_merchants, submitted_file_marker
 from processors.common.excel import (
-    capture_style,
-    format_sheet,
     load_measurement_font,
     measurement_text,
     resolve_font,
-    reuse_style,
-    style_snapshot,
     width_measurer,
     widths_are_additive,
 )
@@ -254,66 +249,6 @@ class StyleReuseTest(unittest.TestCase):
         for index in range(5):
             sheet.append([f"说明{index}", 100 + index])
         return workbook, sheet
-
-    def test_snapshot_is_immutable_and_survives_later_edits(self) -> None:
-        _, sheet = self.build_sheet()
-        cell = sheet.cell(row=2, column=1)
-        before = style_snapshot(cell)
-        cell.number_format = "0.00"
-        self.assertIsInstance(before, (tuple, type(None)))
-        self.assertNotEqual(before, style_snapshot(cell))
-
-    def test_reused_style_does_not_link_cells_together(self) -> None:
-        _, sheet = self.build_sheet()
-        source = sheet.cell(row=2, column=1)
-        source.font = Font(name="X", size=11)
-        captured = capture_style(source)
-
-        first = sheet.cell(row=3, column=1)
-        second = sheet.cell(row=4, column=1)
-        reuse_style(first, captured)
-        reuse_style(second, captured)
-
-        second.number_format = "0.00"
-        self.assertEqual(second.number_format, "0.00")
-        self.assertEqual(first.number_format, "General")
-        self.assertEqual(source.number_format, "General")
-
-    def test_format_sheet_keeps_a_number_format_set_beforehand(self) -> None:
-        """A number format set before generic formatting must survive.
-
-        Only outside the 补贴金额 column, which format_sheet has always
-        rewritten to 0.00 whatever it held before.
-        """
-        font_name, font_path = resolve_font()
-        measurement_font = load_measurement_font(font_path)
-        _, sheet = self.build_sheet()
-        preserved = sheet.cell(row=2, column=1)
-        preserved.number_format = "0.000"
-        overwritten = sheet.cell(row=3, column=2)
-        overwritten.number_format = "0.000"
-
-        format_sheet(sheet, font_name, measurement_font)
-
-        self.assertEqual(preserved.number_format, "0.000")
-        self.assertEqual(overwritten.number_format, "0.00")
-
-    def test_format_sheet_leaves_later_fills_isolated(self) -> None:
-        font_name, font_path = resolve_font()
-        measurement_font = load_measurement_font(font_path)
-        _, sheet = self.build_sheet()
-
-        format_sheet(sheet, font_name, measurement_font)
-
-        filled = sheet.cell(row=3, column=1)
-        filled.fill = PatternFill("solid", fgColor="FFC7CE")
-
-        self.assertEqual(filled.fill.fgColor.rgb, "00FFC7CE")
-        for row_number in (2, 4, 5, 6):
-            with self.subTest(row=row_number):
-                other = sheet.cell(row=row_number, column=1)
-                self.assertIsNone(other.fill.fill_type)
-
 
 class SubmittedFileMarkerTest(unittest.TestCase):
     """The marker is derived from the merchant id, never configured twice.

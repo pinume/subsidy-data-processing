@@ -12,16 +12,10 @@ from datetime import date
 from decimal import Decimal, InvalidOperation
 
 from openpyxl import Workbook
-from openpyxl.styles import PatternFill
 
 from processors.common.dates import (
     normalize_document_number,
     normalize_receipt_identifier,
-)
-from processors.common.excel import (
-    format_sheet,
-    load_measurement_font,
-    resolve_font,
 )
 from processors.receipts import OUTPUT_FILE as RECEIPTS_OUTPUT_FILE
 from processors.submitted import PROFILES as SUBMITTED_PROFILES
@@ -178,43 +172,6 @@ def compute_coupon_data(
         reference_decisions=reference_decisions,
         summary_rows=summary_rows,
     )
-
-
-def build_detail_sheet(
-    workbook: Workbook,
-    computation: CouponComputation,
-) -> tuple[str, object, PatternFill]:
-    """Append 数码-明细总表 to the (already partially built) 审核明细
-    workbook. Returns (font_name, measurement_font, matched_fill) purely for
-    symmetry with the 家电 builder; callers processing only digital's sheet
-    can ignore them."""
-    sheet = workbook.create_sheet(DETAILS_SHEET_NAME)
-    for row in computation.rows:
-        sheet.append(row)
-
-    font_name, font_path = resolve_font()
-    measurement_font = load_measurement_font(font_path)
-    format_sheet(
-        sheet,
-        font_name,
-        measurement_font,
-        ("商品名称",),
-    )
-    for cell in sheet["A"][1:]:
-        cell.number_format = "@"
-    for cell in sheet["B"][1:]:
-        if cell.value not in (None, ""):
-            cell.number_format = "yyyy-mm-dd"
-    matched_fill = PatternFill("solid", fgColor=COUPON_MATCH_FILL_COLOR)
-    matched_start_row = sheet.max_row - computation.matched_count + 1
-    for row in sheet.iter_rows(
-        min_row=matched_start_row,
-        max_row=sheet.max_row,
-    ):
-        for cell in row:
-            cell.fill = matched_fill
-
-    return font_name, measurement_font, matched_fill
 
 
 def validate_detail_sheet(
