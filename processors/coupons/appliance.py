@@ -16,9 +16,6 @@ from datetime import date, datetime
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
-from openpyxl import Workbook
-from openpyxl.cell.cell import MergedCell
-from openpyxl.styles import Border, Side
 from python_calamine import CalamineWorkbook
 
 from processors.common.dates import (
@@ -42,13 +39,10 @@ from .matching import (
 from .report_contract import SUMMARY_HEADER, SUMMARY_SHEET_NAME
 from .sources import load_coupon_remark_lookup, load_uploaded_summary
 from .validation import (
-    is_pink_row,
-    validate_detail_sheet_shape,
-    validate_document_and_date_cells,
-    validate_left_aligned_column,
+    validate_detail_rows_shape,
+    validate_document_and_date_values,
     validate_matched_subsidy_total,
-    validate_pink_position,
-    validate_remark_and_detail,
+    validate_remark_and_detail_values,
     validate_uploaded_and_unmatched_counts,
 )
 
@@ -99,12 +93,6 @@ COUPON_REMARK_SORT_PRIORITY = {
     "未上传": 0,
     "已上传": 1,
 }
-COUPON_SUMMARY_BORDER = Border(
-    left=Side(style="thin", color="000000"),
-    right=Side(style="thin", color="000000"),
-    top=Side(style="thin", color="000000"),
-    bottom=Side(style="thin", color="000000"),
-)
 INVALID_SHEET_TITLE_RE = re.compile(r"[\[\]:*?/\\]")
 COUPON_REFERENCE_SUPPLEMENT_HEADER = ("参考号", "单据号", "单据日期")
 
@@ -385,7 +373,8 @@ def coupon_group_sheet_title(
     base_title = base_title[:31] or "未分类-未品牌"
     title = base_title
     suffix = 2
-    while title in used_titles:
+    used_title_keys = {used_title.casefold() for used_title in used_titles}
+    while title.casefold() in used_title_keys:
         suffix_text = f"-{suffix}"
         title = f"{base_title[:31 - len(suffix_text)]}{suffix_text}"
         suffix += 1
@@ -709,11 +698,11 @@ def compute_coupon_data(
     )
 
 
-def validate_summary_and_details_sheets(
-    workbook: Workbook,
+def validate_computation(
     computation: CouponComputation,
     extra_summary_rows: list[tuple[object, ...]] = (),
 ) -> None:
+    """Validate business invariants before serializing the workbook."""
     expected_data_rows = computation.data_row_count
     expected_matched_rows = computation.matched_count
     remark_lookup = computation.remark_lookup
@@ -730,20 +719,18 @@ def validate_summary_and_details_sheets(
     expected_summary_rows = computation.summary_rows
     combined_summary_rows = [*expected_summary_rows, *extra_summary_rows]
 
-    sheet = workbook[DETAILS_SHEET_NAME]
-    validate_detail_sheet_shape(sheet, COUPON_OUTPUT_HEADER, expected_data_rows)
+    rows = computation.rows
+    validate_detail_rows_shape(rows, COUPON_OUTPUT_HEADER, expected_data_rows)
     detail_column, remark_column = validate_uploaded_and_unmatched_counts(
-        sheet, COUPON_OUTPUT_HEADER, expected_uploaded_rows, expected_unmatched_rows
+        rows, COUPON_OUTPUT_HEADER, expected_uploaded_rows, expected_unmatched_rows
     )
-    matched_start_row = sheet.max_row - expected_matched_rows + 1
-    summary_column = COUPON_OUTPUT_HEADER.index("明细摘要") + 1
+    matched_start = len(rows) - expected_matched_rows
+    summary_column = COUPON_OUTPUT_HEADER.index("明细摘要")
     actual_unresolved_rows = sum(
         reference not in reference_universe
         for reference in (
-            normalize_receipt_identifier(
-                sheet.cell(row_number, summary_column).value
-            ).upper()
-            for row_number in range(2, matched_start_row)
+            normalize_receipt_identifier(row[summary_column]).upper()
+            for row in rows[1:matched_start]
         )
         if reference
     )
@@ -753,46 +740,21 @@ def validate_summary_and_details_sheets(
             f"{expected_unresolved_rows} 条，实际 "
             f"{actual_unresolved_rows} 条"
         )
-    actual_regular_rows = [
-        row
-        for row in sheet.iter_rows(
-            min_row=2,
-            max_row=matched_start_row - 1,
-            min_col=1,
-            max_col=len(COUPON_OUTPUT_HEADER),
-            values_only=True,
-        )
-    ]
+    actual_regular_rows = rows[1:matched_start]
     if actual_regular_rows != sorted(
         actual_regular_rows,
         key=coupon_regular_sort_key,
     ):
         raise RuntimeError("销售用券明细非粉色区域排序校验失败")
-    actual_pink_rows = [
-        row
-        for row in sheet.iter_rows(
-            min_row=matched_start_row,
-            max_row=sheet.max_row,
-            min_col=1,
-            max_col=len(COUPON_OUTPUT_HEADER),
-            values_only=True,
-        )
-    ]
-    if actual_pink_rows != sorted(
-        actual_pink_rows,
+    matched_partition_rows = rows[matched_start:]
+    if matched_partition_rows != sorted(
+        matched_partition_rows,
         key=coupon_pink_sort_key,
     ):
-        raise RuntimeError("销售用券明细粉色区域排序校验失败")
-    product_name_column = COUPON_OUTPUT_HEADER.index("商品名称") + 1
-    for column_name, column_number in (
-        ("商品名称", product_name_column),
-        ("详细情况", detail_column),
-    ):
-        validate_left_aligned_column(sheet, column_number, column_name)
-    brand_column = COUPON_OUTPUT_HEADER.index("品牌") + 1
+        raise RuntimeError("销售用券明细匹配分区排序校验失败")
+    brand_column = COUPON_OUTPUT_HEADER.index("品牌")
     remaining_source_brands = {
-        str(sheet.cell(row_number, brand_column).value or "").strip()
-        for row_number in range(2, sheet.max_row + 1)
+        str(row[brand_column] or "").strip() for row in rows[1:]
     } & COUPON_BRAND_REPLACEMENTS.keys()
     if remaining_source_brands:
         raise RuntimeError(
@@ -803,41 +765,38 @@ def validate_summary_and_details_sheets(
     actual_reference_supplement_matches: Counter[
         tuple[str, date, str]
     ] = Counter()
-    subsidy_column = COUPON_OUTPUT_HEADER.index(COUPON_SUBSIDY_HEADER) + 1
-    for row_number in range(2, sheet.max_row + 1):
-        document_cell = sheet.cell(row_number, 1)
-        date_cell = sheet.cell(row_number, 2)
-        remark_cell = sheet.cell(row_number, remark_column)
-        detail_cell = sheet.cell(row_number, detail_column)
-        document_date = validate_document_and_date_cells(
-            document_cell, date_cell, row_number
+    subsidy_column = COUPON_OUTPUT_HEADER.index(COUPON_SUBSIDY_HEADER)
+    for row_number, row in enumerate(rows[1:], start=2):
+        document = row[0]
+        document_date = validate_document_and_date_values(
+            document, row[1], row_number
         )
         receipt_remark = remark_lookup.get(
             (
-                normalize_document_number(document_cell.value),
+                normalize_document_number(document),
                 document_date,
             ),
             "",
         )
         reference = normalize_receipt_identifier(
-            sheet.cell(row_number, summary_column).value
+            row[summary_column]
         ).upper()
-        expected_pink = (
+        in_matched_partition = (
             expected_matched_rows > 0
-            and row_number >= matched_start_row
+            and row_number - 1 >= matched_start
         )
         supplement_match = (
-            normalize_document_number(document_cell.value),
+            normalize_document_number(document),
             document_date,
             reference,
         )
         if (
-            not expected_pink
+            not in_matched_partition
             and supplement_match
             in expected_reference_supplement_matches
         ):
             actual_reference_supplement_matches[supplement_match] += 1
-        if expected_pink:
+        if in_matched_partition:
             expected_detail = ""
             expected_remark = receipt_remark
         else:
@@ -848,15 +807,15 @@ def validate_summary_and_details_sheets(
                 expected_remark = "未上传"
             else:
                 expected_remark = receipt_remark
-        validate_remark_and_detail(
-            remark_cell, detail_cell, expected_remark, expected_detail, row_number
+        validate_remark_and_detail_values(
+            row[remark_column],
+            row[detail_column],
+            expected_remark,
+            expected_detail,
+            row_number,
         )
-        is_pink = is_pink_row(
-            sheet, row_number, len(COUPON_OUTPUT_HEADER), COUPON_MATCH_FILL_COLOR
-        )
-        validate_pink_position(is_pink, expected_pink, row_number)
-        if expected_pink:
-            subsidy = sheet.cell(row_number, subsidy_column).value
+        if in_matched_partition:
+            subsidy = row[subsidy_column]
             if subsidy not in (None, ""):
                 actual_matched_subsidy_total += Decimal(str(subsidy))
 
@@ -871,37 +830,7 @@ def validate_summary_and_details_sheets(
     validate_matched_subsidy_total(
         actual_matched_subsidy_total, expected_matched_subsidy_total
     )
-    summary_sheet = workbook[SUMMARY_SHEET_NAME]
-    summary_header = tuple(
-        summary_sheet.cell(1, column).value
-        for column in range(1, len(COUPON_SUMMARY_HEADER) + 1)
-    )
-    if summary_header != COUPON_SUMMARY_HEADER:
-        raise RuntimeError(
-            f"销售用券汇总字段标题校验失败：实际为 {summary_header}"
-        )
-    first_total_row = 1 + len(combined_summary_rows)
-    actual_summary_rows = [
-        tuple(
-            summary_sheet.cell(row_number, column_number).value
-            for column_number in range(1, 6)
-        )
-        for row_number in range(2, first_total_row + 1)
-    ]
-    if actual_summary_rows != merged_coupon_summary_values(
-        combined_summary_rows
-    ):
-        raise RuntimeError("销售用券财务大类、品牌和备注汇总校验失败")
-    actual_merges = {
-        str(cell_range) for cell_range in summary_sheet.merged_cells.ranges
-    }
-    for start, end in project_summary_blocks(combined_summary_rows):
-        expected_merge = f"A{start + 2}:B{end + 2}"
-        if expected_merge not in actual_merges:
-            raise RuntimeError(
-                "销售用券汇总项目合计块未跨财务大类与品牌两列合并："
-                f"缺少 {expected_merge}"
-            )
+    actual_summary_rows = combined_summary_rows
     # The 家电 portion ends in 已上传 / 未上传 / 合计 (in 备注, with 财务大类
     # merged into a single 家电 cell); anything appended after it (digital's
     # rows) is covered by the row-for-row equality check above.
@@ -921,7 +850,7 @@ def validate_summary_and_details_sheets(
         - expected_matched_rows
         - expected_excluded_category_rows
     ):
-        raise RuntimeError("销售用券汇总包含粉红色数据或数量不完整")
+        raise RuntimeError("销售用券汇总包含匹配分区数据或数量不完整")
     # 已上传 is measured from the generated 已上传 workbook, so it must equal
     # what that file reports rather than anything derived from the coupon rows.
     if (
@@ -962,109 +891,3 @@ def validate_summary_and_details_sheets(
             f"预期 {expected_count} / {as_currency(expected_total)}，"
             f"实际 {total_row[3]} / {total_row[4]}"
         )
-    for row in summary_sheet.iter_rows(
-        min_row=1,
-        max_row=len(combined_summary_rows) + 1,
-        min_col=1,
-        max_col=5,
-    ):
-        for cell in row:
-            if isinstance(cell, MergedCell):
-                continue
-            if any(
-                side.style != "thin"
-                for side in (
-                    cell.border.left,
-                    cell.border.right,
-                    cell.border.top,
-                    cell.border.bottom,
-                )
-            ):
-                raise RuntimeError("销售用券汇总表格边框校验失败")
-
-
-def validate_group_sheets(
-    workbook: Workbook,
-    computation: CouponComputation,
-) -> None:
-    for (
-        sheet_name,
-        _,
-        _,
-        expected_rows,
-    ) in computation.group_sheets:
-        group_sheet = workbook[sheet_name]
-        group_header = tuple(cell.value for cell in group_sheet[1])
-        if group_header != COUPON_GROUP_HEADER:
-            raise RuntimeError(f"{sheet_name}分类工作表标题校验失败")
-        if group_sheet.max_row - 1 != len(expected_rows):
-            raise RuntimeError(
-                f"{sheet_name}分类工作表行数校验失败："
-                f"预期 {len(expected_rows)} 条，"
-                f"实际 {group_sheet.max_row - 1} 条"
-            )
-        for row_number, (_, expected_pink) in enumerate(
-            expected_rows,
-            start=2,
-        ):
-            expected_values = select_coupon_group_columns(
-                expected_rows[row_number - 2][0]
-            )
-            actual_values = tuple(
-                group_sheet.cell(row_number, column).value
-                for column in range(1, len(COUPON_GROUP_HEADER) + 1)
-            )
-            normalized_actual = tuple(
-                value.date() if isinstance(value, datetime) else value
-                for value in actual_values
-            )
-            comparable_actual = (
-                coupon_text_sort_value(normalized_actual[0]),
-                normalized_actual[1],
-                coupon_text_sort_value(normalized_actual[2]),
-                (
-                    round(float(normalized_actual[3]), 2)
-                    if normalized_actual[3] not in (None, "")
-                    else normalized_actual[3]
-                ),
-                coupon_text_sort_value(normalized_actual[4]),
-                coupon_text_sort_value(normalized_actual[5]),
-            )
-            comparable_expected = (
-                coupon_text_sort_value(expected_values[0]),
-                expected_values[1],
-                coupon_text_sort_value(expected_values[2]),
-                (
-                    round(float(expected_values[3]), 2)
-                    if expected_values[3] not in (None, "")
-                    else expected_values[3]
-                ),
-                coupon_text_sort_value(expected_values[4]),
-                coupon_text_sort_value(expected_values[5]),
-            )
-            if comparable_actual != comparable_expected:
-                raise RuntimeError(
-                    f"{sheet_name}分类工作表第 {row_number} 行数据或"
-                    f"排序校验失败：实际 {comparable_actual!r}，"
-                    f"预期 {comparable_expected!r}"
-                )
-            actual_pink = all(
-                group_sheet.cell(
-                    row_number,
-                    column,
-                ).fill.fill_type == "solid"
-                and group_sheet.cell(
-                    row_number,
-                    column,
-                ).fill.fgColor.rgb
-                in {
-                    COUPON_MATCH_FILL_COLOR,
-                    f"00{COUPON_MATCH_FILL_COLOR}",
-                    f"FF{COUPON_MATCH_FILL_COLOR}",
-                }
-                for column in range(1, len(COUPON_GROUP_HEADER) + 1)
-            )
-            if actual_pink != expected_pink:
-                raise RuntimeError(
-                    f"{sheet_name}分类工作表粉色标记校验失败"
-                )

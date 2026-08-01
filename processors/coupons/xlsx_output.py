@@ -8,9 +8,8 @@ or date format, where the pink fill goes, and whether cells are merged and
 bordered.
 
 This module only writes. Every value, ordering and grouping decision is made
-before it is called, and the existing validate_merged_coupon_output() is left
-untouched to judge the result: changing the writer and its oracle in the same
-step would leave a failure ambiguous.
+before it is called; the finished workbook is read back independently with
+calamine and compared with those inputs.
 
 XlsxWriter's constant_memory mode is deliberately not used. It flushes each
 row when the next one starts, which makes merge_range() silently do nothing —
@@ -23,6 +22,8 @@ from dataclasses import dataclass
 from datetime import date, datetime
 
 from processors.common.excel import (
+    DATE_NUMBER_FORMAT,
+    DATETIME_NUMBER_FORMAT,
     FONT_SIZE,
     ROW_HEIGHT,
     pixels_to_column_pixels,
@@ -30,7 +31,10 @@ from processors.common.excel import (
 )
 
 TEXT_FORMAT = "@"
-DATE_FORMAT = "yyyy-mm-dd"
+# Shared with the other XlsxWriter writers: openpyxl stamped these onto a cell
+# by itself the moment a date or datetime was assigned, and a date-formatted
+# column here must look the same whichever writer produced the file.
+DATE_FORMAT = DATE_NUMBER_FORMAT
 CURRENCY_FORMAT = "0.00"
 
 
@@ -149,8 +153,14 @@ def _write_table(
                 # The openpyxl writer guarded this one on the cell having a
                 # value; the currency column was stamped unconditionally.
                 number_format = None
-            if isinstance(value, (date, datetime)) and number_format is None:
-                number_format = DATE_FORMAT
+            if number_format is None and isinstance(value, (date, datetime)):
+                # datetime is a subclass of date, so it has to be tested first;
+                # stamping a plain date format on it would hide the time.
+                number_format = (
+                    DATETIME_NUMBER_FORMAT
+                    if isinstance(value, datetime)
+                    else DATE_NUMBER_FORMAT
+                )
             sheet.write(
                 row_number - 1,
                 column,

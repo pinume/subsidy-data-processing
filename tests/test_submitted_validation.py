@@ -234,22 +234,6 @@ class WidthMeasurerFontPathsTest(unittest.TestCase):
         )
 
 
-class StyleReuseTest(unittest.TestCase):
-    """format_sheet reuses computed styles through openpyxl's private _style.
-
-    These pin the two properties that make that safe, so an openpyxl upgrade
-    that changes the attribute fails here rather than in a report nobody
-    re-checks.
-    """
-
-    def build_sheet(self):
-        workbook = Workbook()
-        sheet = workbook.active
-        sheet.append(["描述", "补贴金额"])
-        for index in range(5):
-            sheet.append([f"说明{index}", 100 + index])
-        return workbook, sheet
-
 class SubmittedFileMarkerTest(unittest.TestCase):
     """The marker is derived from the merchant id, never configured twice.
 
