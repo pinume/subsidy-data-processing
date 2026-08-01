@@ -11,17 +11,17 @@ from dataclasses import dataclass
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from pathlib import Path
 
-from openpyxl import Workbook, load_workbook
-from openpyxl.utils import column_index_from_string
+from python_calamine import CalamineWorkbook
+from xlsxwriter import Workbook
 
 from processors.common.config import submitted_file_marker
 from processors.common.excel import (
-    format_sheet,
+    calamine_rows,
     load_measurement_font,
-    read_rows,
     resolve_font,
     run_with_output_rollback,
-    save_workbook_atomically,
+    write_formatted_sheet,
+    write_xlsx_atomically,
 )
 from processors.common.paths import find_data_files
 
@@ -30,9 +30,17 @@ OUTPUT_DIR = BASE_DIR / "output"
 
 # Keep the required source columns in their original order.
 KEPT_SOURCE_COLUMNS = ("D", "E", "F", "G", "I", "J", "Q", "S", "U", "W", "X")
-KEPT_COLUMN_INDEXES = tuple(
-    column_index_from_string(column) for column in KEPT_SOURCE_COLUMNS
-)
+
+
+def _column_index(column: str) -> int:
+    """1-based index of a spreadsheet column letter, "A" -> 1, "AB" -> 28."""
+    index = 0
+    for letter in column:
+        index = index * 26 + (ord(letter) - ord("A") + 1)
+    return index
+
+
+KEPT_COLUMN_INDEXES = tuple(_column_index(column) for column in KEPT_SOURCE_COLUMNS)
 # "补贴金额" is inserted by add_subsidy_column, so only source fields are listed.
 REQUIRED_SUBMITTED_HEADERS = ("状态", "描述", "交易金额")
 STATUS_ORDER = (
@@ -51,6 +59,15 @@ class SubmittedProfile:
     output_file: Path
     subsidy_rate: Decimal
     subsidy_cap: Decimal
+
+
+@dataclass(frozen=True)
+class SubmittedReport:
+    header: tuple[object, ...]
+    summary_rows: list[list[object]]
+    status_rows: dict[str, list[list[object]]]
+    file_count: int
+    data_row_count: int
 
 
 # Household appliances and digital both take 15% of the transaction; the two
@@ -96,6 +113,20 @@ def select_columns(row: list[object]) -> list[object]:
     ]
 
 
+def _trim_trailing_none(row: list[object]) -> list[object]:
+    """Drop trailing blank cells so a row's length reflects its real content.
+
+    calamine pads every row to the sheet's overall used width, unlike the
+    per-row width the previous reader gave; two source files with different
+    formatted-but-empty trailing columns would otherwise make an identical
+    header row compare unequal only because of length.
+    """
+    end = len(row)
+    while end > 0 and row[end - 1] is None:
+        end -= 1
+    return row[:end]
+
+
 def add_subsidy_column(
     row: list[object],
     *,
@@ -134,7 +165,7 @@ def add_subsidy_column(
     return result
 
 
-def build_workbook(profile_name: str) -> tuple[Workbook, int, int]:
+def build_report(profile_name: str) -> SubmittedReport:
     files = list(INPUT_FILES[profile_name])
     if not files:
         raise FileNotFoundError(
@@ -146,58 +177,62 @@ def build_workbook(profile_name: str) -> tuple[Workbook, int, int]:
         status: index for index, status in enumerate(STATUS_ORDER)
     }
 
-    workbook = Workbook(write_only=False)
-    sheet = workbook.active
-    sheet.title = "Summary"
-
     expected_header: list[object] | None = None
     output_header: list[object] | None = None
     data_row_count = 0
     data_rows: list[list[object]] = []
 
     for path in files:
-        rows = read_rows(path)
-        title = next(rows, None)
-        header = next(rows, None)
-        if title is None or header is None:
-            raise ValueError(f"{path.name} 缺少标题行或表头行")
-
-        if expected_header is None:
-            expected_header = header
-            # Drop the source title row and use the selected headers as row 1.
-            output_header = add_subsidy_column(
-                select_columns(header),
-                profile_name=profile_name,
-                is_header=True,
+        source_workbook = CalamineWorkbook.from_path(str(path))
+        try:
+            rows = (
+                _trim_trailing_none(row)
+                for row in calamine_rows(source_workbook.get_sheet_by_index(0))
             )
-            # Reject a wrong export before parsing any rows, so the operator sees
-            # the missing fields instead of a downstream value error.
-            missing_headers = [
-                required
-                for required in REQUIRED_SUBMITTED_HEADERS
-                if required not in output_header
-            ]
-            if missing_headers:
-                raise ValueError(
-                    f"{path.name} 不是已上传数据的导出格式，缺少字段："
-                    f"{'、'.join(missing_headers)}；"
-                    f"实际字段 {tuple(output_header)}"
-                )
-            sheet.append(output_header)
-        elif header != expected_header:
-            raise ValueError(f"{path.name} 的表头与第一个文件不一致")
+            title = next(rows, None)
+            header = next(rows, None)
+            if title is None or header is None:
+                raise ValueError(f"{path.name} 缺少标题行或表头行")
 
-        for source_row, row in enumerate(rows, start=3):
-            if any(value not in (None, "") for value in row):
-                data_rows.append(
-                    add_subsidy_column(
-                        select_columns(row),
-                        profile_name=profile_name,
-                        source_name=path.name,
-                        source_row=source_row,
-                    )
+            if expected_header is None:
+                expected_header = header
+                # Drop the source title row and use the selected headers as
+                # row 1.
+                output_header = add_subsidy_column(
+                    select_columns(header),
+                    profile_name=profile_name,
+                    is_header=True,
                 )
-                data_row_count += 1
+                # Reject a wrong export before parsing any rows, so the
+                # operator sees the missing fields instead of a downstream
+                # value error.
+                missing_headers = [
+                    required
+                    for required in REQUIRED_SUBMITTED_HEADERS
+                    if required not in output_header
+                ]
+                if missing_headers:
+                    raise ValueError(
+                        f"{path.name} 不是已上传数据的导出格式，缺少字段："
+                        f"{'、'.join(missing_headers)}；"
+                        f"实际字段 {tuple(output_header)}"
+                    )
+            elif header != expected_header:
+                raise ValueError(f"{path.name} 的表头与第一个文件不一致")
+
+            for source_row, row in enumerate(rows, start=3):
+                if any(value not in (None, "") for value in row):
+                    data_rows.append(
+                        add_subsidy_column(
+                            select_columns(row),
+                            profile_name=profile_name,
+                            source_name=path.name,
+                            source_row=source_row,
+                        )
+                    )
+                    data_row_count += 1
+        finally:
+            source_workbook.close()
 
     if output_header is None:
         raise RuntimeError("未能生成输出表头")
@@ -209,9 +244,6 @@ def build_workbook(profile_name: str) -> tuple[Workbook, int, int]:
             len(STATUS_ORDER),
         )
     )
-    for row in data_rows:
-        sheet.append(row)
-
     description_column_index = output_header.index("描述")
     rows_by_status: dict[str, list[list[object]]] = {
         status: [] for status in STATUS_ORDER
@@ -221,12 +253,7 @@ def build_workbook(profile_name: str) -> tuple[Workbook, int, int]:
         if status in rows_by_status:
             rows_by_status[status].append(row)
 
-    font_name, font_path = resolve_font()
-    measurement_font = load_measurement_font(font_path)
-    format_sheet(sheet, font_name, measurement_font)
     for status in STATUS_ORDER:
-        status_sheet = workbook.create_sheet(title=status)
-        status_sheet.append(output_header)
         status_rows = rows_by_status[status]
         status_rows.sort(
             key=lambda row: (
@@ -235,50 +262,91 @@ def build_workbook(profile_name: str) -> tuple[Workbook, int, int]:
             ),
             reverse=True,
         )
-        for row in status_rows:
-            status_sheet.append(row)
-        format_sheet(status_sheet, font_name, measurement_font)
 
-    return workbook, len(files), data_row_count
+    return SubmittedReport(
+        header=tuple(output_header),
+        summary_rows=data_rows,
+        status_rows=rows_by_status,
+        file_count=len(files),
+        data_row_count=data_row_count,
+    )
+
+
+def write_workbook(path: Path, report: SubmittedReport) -> None:
+    font_name, font_path = resolve_font()
+    measurement_font = load_measurement_font(font_path)
+    with Workbook(
+        str(path),
+        {
+            "constant_memory": True,
+            "strings_to_urls": False,
+            # 描述 and 商品名称 are free text copied from the source export; a
+            # value starting with "=" is data, not a formula to evaluate.
+            "strings_to_formulas": False,
+        },
+    ) as workbook:
+        write_formatted_sheet(
+            workbook,
+            "Summary",
+            report.header,
+            report.summary_rows,
+            font_name,
+            measurement_font,
+        )
+        for status in STATUS_ORDER:
+            write_formatted_sheet(
+                workbook,
+                status,
+                report.header,
+                report.status_rows[status],
+                font_name,
+                measurement_font,
+            )
 
 
 def validate_output(path: Path, expected_data_rows: int, profile_name: str) -> None:
+    """Re-read the just-written workbook and check its shape and every row's
+    subsidy calculation. Values only (no font/fill checks) — calamine reads
+    the same file several times faster than openpyxl here."""
     profile = PROFILES[profile_name]
-    workbook = load_workbook(path, read_only=True, data_only=True)
+    workbook = CalamineWorkbook.from_path(str(path))
     try:
         expected_sheet_names = ["Summary", *STATUS_ORDER]
-        if workbook.sheetnames != expected_sheet_names:
+        if workbook.sheet_names != expected_sheet_names:
             raise RuntimeError(
                 f"工作表校验失败：预期 {expected_sheet_names}，"
-                f"实际 {workbook.sheetnames}"
+                f"实际 {workbook.sheet_names}"
             )
 
-        sheet = workbook["Summary"]
-        actual_data_rows = max(sheet.max_row - 1, 0)
+        sheet_rows = {
+            name: list(calamine_rows(workbook.get_sheet_by_name(name)))
+            for name in expected_sheet_names
+        }
+        summary_rows = sheet_rows["Summary"]
+        actual_data_rows = max(len(summary_rows) - 1, 0)
         if actual_data_rows != expected_data_rows:
             raise RuntimeError(
                 f"输出校验失败：预期 {expected_data_rows} 条，实际 {actual_data_rows} 条"
             )
+        header = tuple(summary_rows[0]) if summary_rows else ()
         expected_columns = len(KEPT_SOURCE_COLUMNS) + 1
-        if sheet.max_column != expected_columns:
+        if len(header) != expected_columns:
             raise RuntimeError(
                 f"输出校验失败：预期 {expected_columns} 列，"
-                f"实际 {sheet.max_column} 列"
+                f"实际 {len(header)} 列"
             )
 
-        header = tuple(cell.value for cell in next(sheet.iter_rows(max_row=1)))
         status_column = header.index("状态")
         description_column = header.index("描述")
         amount_column = header.index("交易金额")
         subsidy_column = header.index("补贴金额")
 
         status_total = sum(
-            max(workbook[status].max_row - 1, 0)
-            for status in STATUS_ORDER
+            max(len(sheet_rows[status]) - 1, 0) for status in STATUS_ORDER
         )
         known_status_total = sum(
             1
-            for row in sheet.iter_rows(min_row=2, values_only=True)
+            for row in summary_rows[1:]
             if row[status_column] in STATUS_ORDER
         )
         if status_total != known_status_total:
@@ -288,16 +356,14 @@ def validate_output(path: Path, expected_data_rows: int, profile_name: str) -> N
             )
 
         for status in STATUS_ORDER:
-            status_sheet = workbook[status]
-            status_header = tuple(
-                cell.value for cell in next(status_sheet.iter_rows(max_row=1))
-            )
+            status_rows = sheet_rows[status]
+            status_header = tuple(status_rows[0]) if status_rows else ()
             if status_header != header:
                 raise RuntimeError(f"{status}工作表的标题行与汇总表不一致")
 
             descriptions: list[str] = []
             blank_description_found = False
-            for row in status_sheet.iter_rows(min_row=2, values_only=True):
+            for row in status_rows[1:]:
                 if row[status_column] != status:
                     raise RuntimeError(f"{status}工作表中存在其他状态的数据")
 
@@ -330,15 +396,18 @@ def validate_output(path: Path, expected_data_rows: int, profile_name: str) -> N
 
 
 def process_submitted_files(profile_name: str) -> None:
-    workbook, file_count, data_row_count = build_workbook(profile_name)
+    report = build_report(profile_name)
     output_file = PROFILES[profile_name].output_file
-    save_workbook_atomically(
-        workbook,
+    write_xlsx_atomically(
         output_file,
-        lambda path: validate_output(path, data_row_count, profile_name),
+        lambda path: write_workbook(path, report),
+        lambda path: validate_output(path, report.data_row_count, profile_name),
     )
 
-    print(f"Submitted data complete: merged {file_count} files, {data_row_count} rows")
+    print(
+        "Submitted data complete: "
+        f"merged {report.file_count} files, {report.data_row_count} rows"
+    )
     print(f"Output file: {output_file}")
 
 

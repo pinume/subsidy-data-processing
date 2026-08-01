@@ -2,7 +2,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from openpyxl import Workbook
+from openpyxl import load_workbook
 
 from processors import receipts
 
@@ -26,30 +26,30 @@ class PrepareReceiptDataIssuesTest(unittest.TestCase):
 
         _output_rows, stats, issues, duplicate_match_keys = prepare(kept_rows)
 
+        # A duplicate match key is expected here (multi-line suite sales
+        # share one 单据号/日期) and is never reported as an issue — see
+        # test_duplicate_match_keys_are_not_reported_as_issues. Only the
+        # genuine problems below reach 问题明细, numbered by their row in the
+        # output sheet (row 2 is ZH0001, row 3 the ZH0001 duplicate, row 4
+        # ZH0002, row 5 ZH0003).
         self.assertEqual(
             issues,
             [
                 (
-                    "重复匹配键",
-                    "3、4",
-                    "260124ZH0001",
-                    "多个数据行生成了相同的日期与单据号组合键",
-                ),
-                (
                     "缺少匹配键",
-                    "5",
+                    "4",
                     "",
                     "日期或单据号为空，无法生成匹配键",
                 ),
                 (
                     "原票号格式异常",
-                    "6",
+                    "5",
                     "notvalid",
                     "原票号应为6位日期加单据号",
                 ),
                 (
                     "原票号未匹配",
-                    "6",
+                    "5",
                     "notvalid",
                     "未找到日期与单据号组合键相同的原单",
                 ),
@@ -59,6 +59,58 @@ class PrepareReceiptDataIssuesTest(unittest.TestCase):
         self.assertEqual(stats["缺少匹配键数量"], 1)
         self.assertEqual(stats["原票号格式异常数量"], 1)
         self.assertEqual(duplicate_match_keys, {"260124ZH0001"})
+
+    def test_duplicate_match_keys_are_not_reported_as_issues(self) -> None:
+        """Same 单据号/日期 with two line items is a normal suite sale (e.g.
+        烟机+灶具 sold together), not a data problem — it must still count
+        towards 重复匹配键数量 and duplicate_match_keys (for highlighting),
+        just never appear in 问题明细."""
+        kept_rows = [
+            HEADER,
+            ["ZH0001", "2026-01-24", "", "", "老板-欧式烟机-K1L"],
+            ["ZH0001", "2026-01-24", "", "", "老板-嵌入式灶-9B5-B1"],
+        ]
+
+        _output_rows, stats, issues, duplicate_match_keys = prepare(kept_rows)
+
+        self.assertEqual(issues, [])
+        self.assertEqual(stats["重复匹配键数量"], 1)
+        self.assertEqual(duplicate_match_keys, {"260124ZH0001"})
+
+    def test_original_invoice_from_before_the_file_is_not_reported(self) -> None:
+        """收款单统计 only ever covers one year's receipts, so an 原票号
+        pointing at an earlier year can never resolve to a match_key in this
+        file by construction — that is not a data problem either."""
+        kept_rows = [
+            HEADER,
+            ["ZH0001", "2026-01-24", "250101ZH9999", "", "海尔冰箱"],
+        ]
+
+        _output_rows, stats, issues, _duplicates = prepare(kept_rows)
+
+        self.assertEqual(issues, [])
+        self.assertEqual(stats["未匹配原票号数量"], 0)
+
+    def test_original_invoice_from_the_same_year_is_still_reported(self) -> None:
+        kept_rows = [
+            HEADER,
+            ["ZH0001", "2026-01-24", "260101ZH9999", "", "海尔冰箱"],
+        ]
+
+        _output_rows, stats, issues, _duplicates = prepare(kept_rows)
+
+        self.assertEqual(
+            issues,
+            [
+                (
+                    "原票号未匹配",
+                    "2",
+                    "260101ZH9999",
+                    "未找到日期与单据号组合键相同的原单",
+                )
+            ],
+        )
+        self.assertEqual(stats["未匹配原票号数量"], 1)
 
     def test_no_issues_yields_empty_list(self) -> None:
         kept_rows = [
@@ -155,14 +207,16 @@ class BlankAndTotalRowTest(unittest.TestCase):
         self.assertEqual(len(output_rows), 1)
         self.assertEqual(stats["跳过合计行数"], 0)
 
-    def test_skipped_rows_do_not_shift_later_row_numbers(self) -> None:
+    def test_skipped_rows_shift_the_reported_output_row(self) -> None:
         kept_rows = [
             HEADER,
             ["ZH0001", "2026-01-24", "", "", "海尔冰箱"],
             [None, None, None, None, None],
             ["合计", "合计", "", "", ""],
-            # Excel row 6: two rows above it were skipped, but the reported
-            # row number must still point an operator at the real line.
+            # Source Excel row 6, but the blank and 合计 rows above never
+            # reach the output sheet — this is only its second data row,
+            # so 问题明细 must report 3 (an operator's coordinate in
+            # Sheet1), not 6 (its position in the raw import).
             ["ZH0002", None, "", "", "格力空调"],
         ]
 
@@ -170,7 +224,7 @@ class BlankAndTotalRowTest(unittest.TestCase):
 
         self.assertEqual(
             issues,
-            [("缺少匹配键", "6", "", "日期或单据号为空，无法生成匹配键")],
+            [("缺少匹配键", "3", "", "日期或单据号为空，无法生成匹配键")],
         )
 
 
@@ -242,51 +296,50 @@ class IssuesSheetRoundTripTest(unittest.TestCase):
         issues = [
             ("缺少匹配键", "5", "", "日期或单据号为空，无法生成匹配键"),
         ]
-        workbook = Workbook()
-        sheet = workbook.active
-        sheet.title = "Sheet1"
-        sheet.append(receipts.RECEIPTS_OUTPUT_HEADER)
-
-        from processors.common.excel import load_measurement_font, resolve_font
-
-        font_name, font_path = resolve_font()
-        measurement_font = load_measurement_font(font_path)
-        receipts.build_issues_sheet(workbook, issues, font_name, measurement_font)
-
-        self.assertEqual(workbook.sheetnames, ["Sheet1", receipts.ISSUES_SHEET_NAME])
-        issues_sheet = workbook[receipts.ISSUES_SHEET_NAME]
-        self.assertEqual(
-            tuple(cell.value for cell in issues_sheet[1]),
-            receipts.ISSUES_HEADER,
-        )
-        self.assertEqual(
-            [row for row in issues_sheet.iter_rows(min_row=2, values_only=True)],
-            issues,
-        )
-
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "收款单统计.xlsx"
-            workbook.save(path)
-            workbook.close()
+            receipts._write_receipts_workbook(
+                path,
+                [],
+                issues,
+                duplicate_match_keys=set(),
+            )
+
+            workbook = load_workbook(path)
+            try:
+                self.assertEqual(
+                    workbook.sheetnames,
+                    ["Sheet1", receipts.ISSUES_SHEET_NAME],
+                )
+                issues_sheet = workbook[receipts.ISSUES_SHEET_NAME]
+                self.assertEqual(
+                    tuple(cell.value for cell in issues_sheet[1]),
+                    receipts.ISSUES_HEADER,
+                )
+                self.assertEqual(
+                    [
+                        row
+                        for row in issues_sheet.iter_rows(
+                            min_row=2,
+                            values_only=True,
+                        )
+                    ],
+                    [("缺少匹配键", "5", None, "日期或单据号为空，无法生成匹配键")],
+                )
+            finally:
+                workbook.close()
 
             receipts.validate_receipts_output(path, 0, issues)
 
     def test_validation_rejects_mismatched_issues(self) -> None:
-        workbook = Workbook()
-        sheet = workbook.active
-        sheet.title = "Sheet1"
-        sheet.append(receipts.RECEIPTS_OUTPUT_HEADER)
-
-        from processors.common.excel import load_measurement_font, resolve_font
-
-        font_name, font_path = resolve_font()
-        measurement_font = load_measurement_font(font_path)
-        receipts.build_issues_sheet(workbook, [], font_name, measurement_font)
-
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "收款单统计.xlsx"
-            workbook.save(path)
-            workbook.close()
+            receipts._write_receipts_workbook(
+                path,
+                [],
+                [],
+                duplicate_match_keys=set(),
+            )
 
             with self.assertRaisesRegex(RuntimeError, "问题明细工作表内容校验失败"):
                 receipts.validate_receipts_output(

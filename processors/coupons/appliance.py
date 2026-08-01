@@ -16,9 +16,10 @@ from datetime import date, datetime
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
-from openpyxl import Workbook, load_workbook
+from openpyxl import Workbook
 from openpyxl.cell.cell import MergedCell
 from openpyxl.styles import Alignment, Border, PatternFill, Side
+from python_calamine import CalamineWorkbook
 
 from processors.common.dates import (
     normalize_coupon_date,
@@ -26,6 +27,7 @@ from processors.common.dates import (
     normalize_receipt_identifier,
 )
 from processors.common.excel import (
+    calamine_rows,
     format_sheet,
     load_measurement_font,
     resolve_font,
@@ -127,12 +129,13 @@ def load_coupon_reference_supplement(
         print(f"Optional reference supplement file not found; skipping: {source}")
         return {}
 
-    workbook = load_workbook(source, read_only=True, data_only=True)
+    workbook = CalamineWorkbook.from_path(str(source))
     try:
-        sheet = workbook.active
+        sheet = workbook.get_sheet_by_index(0)
+        rows_iter = calamine_rows(sheet)
         header = tuple(
-            normalize_coupon_reference_supplement_header(cell.value)
-            for cell in sheet[1]
+            normalize_coupon_reference_supplement_header(value)
+            for value in next(rows_iter, [])
         )
         if header != COUPON_REFERENCE_SUPPLEMENT_HEADER:
             raise ValueError(
@@ -140,10 +143,7 @@ def load_coupon_reference_supplement(
             )
 
         references_by_key: dict[tuple[str, date], set[str]] = {}
-        for row_number, row in enumerate(
-            sheet.iter_rows(min_row=2, values_only=True),
-            start=2,
-        ):
+        for row_number, row in enumerate(rows_iter, start=2):
             if all(value in (None, "") for value in row):
                 continue
             reference = normalize_receipt_identifier(row[0]).upper()

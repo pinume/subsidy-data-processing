@@ -19,6 +19,7 @@ from decimal import Decimal
 from pathlib import Path
 
 from openpyxl import Workbook, load_workbook
+from python_calamine import CalamineWorkbook
 
 from processors.common.excel import format_sheet, save_workbook_atomically
 from processors.coupons import appliance, digital, matching, sources
@@ -150,7 +151,7 @@ def process_coupon_sales() -> None:
             "家电、数码用券导出格式的 .XLSX 文件"
         )
 
-    source_workbook = load_workbook(coupon_source, read_only=True, data_only=True)
+    source_workbook = CalamineWorkbook.from_path(str(coupon_source))
     try:
         export = sources.read_coupon_export(coupon_source, source_workbook)
     finally:

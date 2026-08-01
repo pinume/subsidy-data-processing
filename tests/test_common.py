@@ -3,9 +3,9 @@ import unittest
 from datetime import date, datetime
 from pathlib import Path
 from unittest.mock import patch
-from zipfile import ZIP_DEFLATED, ZipFile
 
 from openpyxl import Workbook, load_workbook
+from xlsxwriter import Workbook as XlsxWorkbook
 
 from processors.common.dates import (
     normalize_coupon_date,
@@ -14,12 +14,14 @@ from processors.common.dates import (
 )
 from processors.common.excel import (
     format_sheet,
+    load_measurement_font,
     pixels_to_excel_width,
-    read_rows,
     remove_stale_temporary_files,
     resolve_font,
     run_with_output_rollback,
     save_workbook_atomically,
+    write_formatted_sheet,
+    write_xlsx_atomically,
 )
 
 
@@ -155,6 +157,39 @@ class AtomicSaveTest(unittest.TestCase):
             finally:
                 saved.close()
 
+    def test_path_writer_replaces_output_only_after_validation(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "result.xlsx"
+
+            write_xlsx_atomically(
+                output,
+                lambda path: path.write_bytes(b"valid xlsx placeholder"),
+                lambda path: self.assertEqual(
+                    path.read_bytes(),
+                    b"valid xlsx placeholder",
+                ),
+            )
+
+            self.assertEqual(output.read_bytes(), b"valid xlsx placeholder")
+
+    def test_path_writer_validation_failure_preserves_existing_output(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "result.xlsx"
+            output.write_bytes(b"old")
+
+            def reject(_path: Path) -> None:
+                raise RuntimeError("invalid")
+
+            with self.assertRaisesRegex(RuntimeError, "invalid"):
+                write_xlsx_atomically(
+                    output,
+                    lambda path: path.write_bytes(b"new"),
+                    reject,
+                )
+
+            self.assertEqual(output.read_bytes(), b"old")
+            self.assertEqual([path.name for path in output.parent.iterdir()], [output.name])
+
 
 class OutputRollbackTest(unittest.TestCase):
     def test_restores_existing_outputs_and_removes_new_outputs(self) -> None:
@@ -222,6 +257,49 @@ class OutputRollbackTest(unittest.TestCase):
             )
 
 
+class WriteFormattedSheetTest(unittest.TestCase):
+    def test_native_dates_get_the_formats_openpyxl_applied_on_its_own(self) -> None:
+        """XlsxWriter formats nothing unless told to; openpyxl stamped a date
+        format onto the cell as soon as a date was assigned. Without this a
+        native date would render as its serial number (2026-01-02 as 46024).
+        Both writers must produce the same-looking cell."""
+        font_name, font_path = resolve_font()
+        measurement_font = load_measurement_font(font_path)
+        values = [date(2026, 1, 2), datetime(2026, 1, 2, 13, 5), "2026-01-02"]
+
+        with tempfile.TemporaryDirectory() as directory:
+            openpyxl_path = Path(directory) / "openpyxl.xlsx"
+            reference = Workbook()
+            reference.active.append(["日期", "时间", "文本"])
+            reference.active.append(values)
+            reference.save(openpyxl_path)
+            reference.close()
+
+            xlsx_path = Path(directory) / "xlsxwriter.xlsx"
+            with XlsxWorkbook(str(xlsx_path)) as workbook:
+                write_formatted_sheet(
+                    workbook,
+                    "Sheet1",
+                    ["日期", "时间", "文本"],
+                    [values],
+                    font_name,
+                    measurement_font,
+                )
+
+            expected = load_workbook(openpyxl_path).active
+            actual = load_workbook(xlsx_path)["Sheet1"]
+            for column in (1, 2, 3):
+                with self.subTest(column=column):
+                    self.assertEqual(
+                        actual.cell(2, column).number_format,
+                        expected.cell(2, column).number_format,
+                    )
+                    self.assertEqual(
+                        actual.cell(2, column).value,
+                        expected.cell(2, column).value,
+                    )
+
+
 class ExcelHelpersTest(unittest.TestCase):
     def test_excel_column_width_is_capped_at_format_limit(self) -> None:
         self.assertEqual(pixels_to_excel_width(100_000), 255)
@@ -271,35 +349,6 @@ class ExcelHelpersTest(unittest.TestCase):
                 clear=True,
             ):
                 self.assertEqual(resolve_font(), ("Custom Font", font_path))
-
-    def test_read_rows_ignores_incorrect_dimension(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            original = Path(directory) / "original.xlsx"
-            malformed = Path(directory) / "malformed.xlsx"
-
-            workbook = Workbook()
-            sheet = workbook.active
-            sheet.append(["名称", "金额"])
-            sheet.append(["商品", 12])
-            workbook.save(original)
-            workbook.close()
-
-            with ZipFile(original) as source, ZipFile(
-                malformed, "w", ZIP_DEFLATED
-            ) as target:
-                for info in source.infolist():
-                    content = source.read(info.filename)
-                    if info.filename == "xl/worksheets/sheet1.xml":
-                        content = content.replace(
-                            b'<dimension ref="A1:B2"/>',
-                            b'<dimension ref="A1"/>',
-                        )
-                    target.writestr(info, content)
-
-            self.assertEqual(
-                list(read_rows(malformed)),
-                [["名称", "金额"], ["商品", "12"]],
-            )
 
     def test_format_sheet_applies_navigation_and_alignment(self) -> None:
         class MeasurementFont:

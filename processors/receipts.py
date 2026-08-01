@@ -10,8 +10,9 @@ either project's package.
 from datetime import date, datetime
 from pathlib import Path
 
-from openpyxl import Workbook, load_workbook
-from openpyxl.styles import PatternFill
+from openpyxl import load_workbook
+from python_calamine import CalamineWorkbook
+from xlsxwriter import Workbook
 
 from processors.common.config import load_receipt_special_remark_keys
 from processors.common.dates import (
@@ -22,15 +23,14 @@ from processors.common.dates import (
     receipt_match_key,
 )
 from processors.common.excel import (
-    capture_style,
-    create_sheet_styles,
-    format_sheet,
+    FONT_SIZE,
+    ROW_HEIGHT,
     load_measurement_font,
-    pixels_to_excel_width,
+    normalize_calamine_value,
+    pixels_to_column_pixels,
     resolve_font,
-    reuse_style,
-    save_workbook_atomically,
     width_measurer,
+    write_xlsx_atomically,
 )
 from processors.common.paths import find_data_files, resolve_unique_file
 
@@ -78,15 +78,31 @@ def read_receipt_rows(source: Path) -> list[list[object]]:
     its position in this list — so an operator chasing a reported problem
     row would be sent to the wrong line. Filtering happens there instead,
     inside the loop that already knows the true row number.
+
+    Reads via python-calamine rather than openpyxl: the source export always
+    carries far more columns than the five kept here (60 in a real file), and
+    openpyxl's read_only parser still parses every column of every row before
+    select() discards the rest, making it the dominant cost of this whole
+    processing step. calamine parses the same file roughly 5x faster.
     """
-    workbook = load_workbook(source, read_only=True, data_only=True)
+    workbook = CalamineWorkbook.from_path(str(source))
     try:
-        sheet = workbook.worksheets[0]
-        rows_iter = sheet.iter_rows(values_only=True)
+        sheet = workbook.get_sheet_by_index(0)
+        if sheet.start is None:
+            # iter_rows() panics inside the Rust extension on a sheet with no
+            # cells at all, so a blank export has to be rejected before it.
+            raise ValueError(f"{source.name} 缺少总标题行或字段标题行")
+        # Raw iter_rows(), not calamine_rows(): normalizing all 60 source
+        # columns to keep only 5 of them is what this reader exists to avoid.
+        # Column positions are only ever resolved against this same row shape
+        # by header name, so calamine's dropped leading blank columns — which
+        # calamine_rows pads back — cannot misalign anything here.
+        rows_iter = sheet.iter_rows()
         title_row = next(rows_iter, None)
         header_row = next(rows_iter, None)
         if title_row is None or header_row is None:
             raise ValueError(f"{source.name} 缺少总标题行或字段标题行")
+        header_row = [normalize_calamine_value(value) for value in header_row]
 
         source_headers = [
             str(value).strip() if value is not None else ""
@@ -105,9 +121,10 @@ def read_receipt_rows(source: Path) -> list[list[object]]:
             source_headers.index(header) for header in RECEIPTS_SOURCE_HEADER
         ]
 
-        def select(values: tuple[object, ...]) -> list[object]:
+        def select(values: list[object]) -> list[object]:
             return [
-                values[index] if index < len(values) else None
+                normalize_calamine_value(values[index])
+                if index < len(values) else None
                 for index in source_column_indexes
             ]
 
@@ -234,17 +251,31 @@ def prepare_receipt_data(kept_rows: list[list[object]], source_name: str):
             }
         )
 
+    # Every record ends up in output_rows, in this same order, one row per
+    # record — so its 1-based position here (+1 for the header row) is
+    # exactly the row an operator will find it at in Sheet1. 问题明细 reports
+    # that number rather than source_row (the row in the original .xlsx
+    # export) so a reported problem points at the file the operator actually
+    # opens, not the raw import.
+    for position, record in enumerate(records, start=2):
+        record["output_row"] = position
+
+    # Same-document 烟机+灶具 (and similar kitchen-suite) sales are entered as
+    # multiple line items sharing one 单据号/日期, which is expected here, not
+    # a data problem — so it is not reported in 问题明细. duplicate_match_keys
+    # is still returned below for highlighting, and 重复匹配键数量 below still
+    # counts them, just not as issues.
     issues: list[tuple[str, str, str, str]] = []
-    for match_key, source_rows in key_rows.items():
-        if len(source_rows) > 1:
-            issues.append(
-                (
-                    "重复匹配键",
-                    "、".join(str(row) for row in source_rows),
-                    match_key,
-                    "多个数据行生成了相同的日期与单据号组合键",
-                )
-            )
+
+    # 原票号 referencing a sale from a year earlier than anything in this
+    # file can never resolve to a match_key here by construction (the file
+    # only carries one year's receipts), so it is not a data problem either.
+    receipt_years = {
+        record["receipt_date"].year
+        for record in records
+        if record["receipt_date"] is not None
+    }
+    min_receipt_year = min(receipt_years) if receipt_years else None
 
     only_return_count = 0
     only_original_count = 0
@@ -256,7 +287,7 @@ def prepare_receipt_data(kept_rows: list[list[object]], source_name: str):
     special_remark_count = 0
     output_rows: list[list[object]] = []
     for record in records:
-        source_row = int(record["source_row"])
+        output_row = int(record["output_row"])
         original_invoice_number = str(record["original_invoice_number"])
         match_key = str(record["match_key"])
         has_original = bool(original_invoice_number)
@@ -276,7 +307,7 @@ def prepare_receipt_data(kept_rows: list[list[object]], source_name: str):
             issues.append(
                 (
                     "缺少匹配键",
-                    str(source_row),
+                    str(output_row),
                     "",
                     "日期或单据号为空，无法生成匹配键",
                 )
@@ -288,21 +319,30 @@ def prepare_receipt_data(kept_rows: list[list[object]], source_name: str):
             issues.append(
                 (
                     "原票号格式异常",
-                    str(source_row),
+                    str(output_row),
                     original_invoice_number,
                     "原票号应为6位日期加单据号",
                 )
             )
         if has_original and original_invoice_number not in key_rows:
-            unmatched_original_count += 1
-            issues.append(
-                (
-                    "原票号未匹配",
-                    str(source_row),
-                    original_invoice_number,
-                    "未找到日期与单据号组合键相同的原单",
-                )
+            is_prior_period_reference = (
+                min_receipt_year is not None
+                and is_valid_original_invoice_number(original_invoice_number)
+                and datetime.strptime(
+                    original_invoice_number[:6], "%y%m%d"
+                ).year
+                < min_receipt_year
             )
+            if not is_prior_period_reference:
+                unmatched_original_count += 1
+                issues.append(
+                    (
+                        "原票号未匹配",
+                        str(output_row),
+                        original_invoice_number,
+                        "未找到日期与单据号组合键相同的原单",
+                    )
+                )
 
         if has_original and (is_referenced or is_same_model_replacement):
             both_count += 1
@@ -367,17 +407,67 @@ def prepare_receipt_data(kept_rows: list[list[object]], source_name: str):
     return output_rows, stats, issues, duplicate_match_keys
 
 
-def build_issues_sheet(
+def _write_issues_sheet(
     workbook: Workbook,
     issues: list[tuple[str, str, str, str]],
     font_name: str,
     measurement_font,
 ) -> None:
-    sheet = workbook.create_sheet(ISSUES_SHEET_NAME)
-    sheet.append(ISSUES_HEADER)
-    for issue in issues:
-        sheet.append(issue)
-    format_sheet(sheet, font_name, measurement_font, ("内容", "说明"))
+    sheet = workbook.add_worksheet(ISSUES_SHEET_NAME)
+    header_format = workbook.add_format(
+        {
+            "font_name": font_name,
+            "font_size": FONT_SIZE,
+            "bold": True,
+            "font_color": "#FFFFFF",
+            "bg_color": "#000000",
+            "align": "center",
+            "valign": "vcenter",
+        }
+    )
+    centered_format = workbook.add_format(
+        {
+            "font_name": font_name,
+            "font_size": FONT_SIZE,
+            "font_color": "#000000",
+            "align": "center",
+            "valign": "vcenter",
+        }
+    )
+    left_format = workbook.add_format(
+        {
+            "font_name": font_name,
+            "font_size": FONT_SIZE,
+            "font_color": "#000000",
+            "align": "left",
+            "valign": "vcenter",
+        }
+    )
+    left_columns = {
+        ISSUES_HEADER.index("内容"),
+        ISSUES_HEADER.index("说明"),
+    }
+    measure = width_measurer(measurement_font)
+    maximum_widths = [measure(value) for value in ISSUES_HEADER]
+
+    sheet.set_row(0, ROW_HEIGHT)
+    for column, value in enumerate(ISSUES_HEADER):
+        sheet.write(0, column, value, header_format)
+    for row_number, row in enumerate(issues, start=1):
+        sheet.set_row(row_number, ROW_HEIGHT)
+        for column, value in enumerate(row):
+            cell_format = left_format if column in left_columns else centered_format
+            sheet.write(row_number, column, value, cell_format)
+            maximum_widths[column] = max(maximum_widths[column], measure(value))
+
+    sheet.freeze_panes(1, 0)
+    sheet.autofilter(0, 0, len(issues), len(ISSUES_HEADER) - 1)
+    for column, maximum_pixels in enumerate(maximum_widths):
+        sheet.set_column_pixels(
+            column,
+            column,
+            pixels_to_column_pixels(maximum_pixels),
+        )
 
 
 def validate_receipts_output(
@@ -556,75 +646,107 @@ def validate_receipts_output(
         workbook.close()
 
 
-def format_receipts_sheet(
-    sheet,
+def _write_receipts_workbook(
+    path: Path,
+    output_rows: list[list[object]],
+    issues: list[tuple[str, str, str, str]],
     *,
     duplicate_match_keys: set[str],
-    font_name: str,
-    measurement_font,
 ) -> None:
-    """Format receipt output while computing each distinct body style once."""
-    normal_font, header_font, header_fill, centered = create_sheet_styles(
-        font_name
-    )
-    measure = width_measurer(measurement_font)
-    maximum_widths = [0.0] * sheet.max_column
-    duplicate_fill = PatternFill(
-        "solid",
-        fgColor=RECEIPTS_DUPLICATE_FILL_COLOR,
-    )
-    body_styles = {}
-    for row_number, row in enumerate(sheet.iter_rows(), start=1):
-        sheet.row_dimensions[row_number].height = RECEIPTS_ROW_HEIGHT
-        row_match_key = ""
-        if row_number >= 2:
-            document_number = normalize_receipt_identifier(row[0].value)
-            receipt_date = row[1].value
-            if receipt_date is not None and document_number:
-                row_match_key = receipt_match_key(
+    font_name, font_path = resolve_font()
+    measurement_font = load_measurement_font(font_path)
+    with Workbook(
+        str(path),
+        {
+            "constant_memory": True,
+            "strings_to_urls": False,
+            # 商品名称 and 备注 are free text copied from the source export; a
+            # value starting with "=" is data, not a formula to evaluate.
+            "strings_to_formulas": False,
+        },
+    ) as workbook:
+        sheet = workbook.add_worksheet("Sheet1")
+        header_format = workbook.add_format(
+            {
+                "font_name": font_name,
+                "font_size": FONT_SIZE,
+                "bold": True,
+                "font_color": "#FFFFFF",
+                "bg_color": "#000000",
+                "align": "center",
+                "valign": "vcenter",
+            }
+        )
+        body_formats = {}
+        for is_duplicate in (False, True):
+            for number_format_kind in ("general", "text", "date"):
+                properties = {
+                    "font_name": font_name,
+                    "font_size": FONT_SIZE,
+                    "font_color": "#000000",
+                    "align": "center",
+                    "valign": "vcenter",
+                }
+                if is_duplicate:
+                    properties["bg_color"] = f"#{RECEIPTS_DUPLICATE_FILL_COLOR}"
+                if number_format_kind == "text":
+                    properties["num_format"] = "@"
+                elif number_format_kind == "date":
+                    properties["num_format"] = "yyyymmdd"
+                body_formats[(is_duplicate, number_format_kind)] = (
+                    workbook.add_format(properties)
+                )
+
+        measure = width_measurer(measurement_font)
+        maximum_widths = [measure(value) for value in RECEIPTS_OUTPUT_HEADER]
+        sheet.set_row(0, RECEIPTS_ROW_HEIGHT)
+        for column, value in enumerate(RECEIPTS_OUTPUT_HEADER):
+            sheet.write(0, column, value, header_format)
+
+        for row_number, row in enumerate(output_rows, start=1):
+            sheet.set_row(row_number, RECEIPTS_ROW_HEIGHT)
+            document_number = normalize_receipt_identifier(row[0])
+            receipt_date = row[1]
+            row_match_key = (
+                receipt_match_key(
                     receipt_date.date()
                     if isinstance(receipt_date, datetime)
                     else receipt_date,
                     document_number,
                 )
-        for cell in row:
-            if row_number == 1:
-                cell.font = header_font
-                cell.alignment = centered
-                cell.fill = header_fill
-            else:
-                is_duplicate = row_match_key in duplicate_match_keys
+                if receipt_date is not None and document_number
+                else ""
+            )
+            is_duplicate = row_match_key in duplicate_match_keys
+            for column, value in enumerate(row):
                 number_format_kind = (
                     "text"
-                    if cell.column == 1
+                    if column == 0
                     else "date"
-                    if cell.column == 2 and cell.value not in (None, "")
+                    if column == 1 and value not in (None, "")
                     else "general"
                 )
-                style_key = (is_duplicate, number_format_kind)
-                style = body_styles.get(style_key)
-                if style is None:
-                    cell.font = normal_font
-                    cell.alignment = centered
-                    if is_duplicate:
-                        cell.fill = duplicate_fill
-                    if number_format_kind == "text":
-                        cell.number_format = "@"
-                    elif number_format_kind == "date":
-                        cell.number_format = "yyyymmdd"
-                    body_styles[style_key] = capture_style(cell)
-                else:
-                    reuse_style(cell, style)
+                sheet.write(
+                    row_number,
+                    column,
+                    value,
+                    body_formats[(is_duplicate, number_format_kind)],
+                )
+                maximum_widths[column] = max(maximum_widths[column], measure(value))
 
-            width = measure(cell.value)
-            if width > maximum_widths[cell.column - 1]:
-                maximum_widths[cell.column - 1] = width
+        sheet.freeze_panes(1, 0)
+        for column, maximum_pixels in enumerate(maximum_widths):
+            sheet.set_column_pixels(
+                column,
+                column,
+                pixels_to_column_pixels(maximum_pixels),
+            )
 
-    sheet.freeze_panes = "A2"
-    for column_index, maximum_pixels in enumerate(maximum_widths, start=1):
-        column_letter = sheet.cell(1, column_index).column_letter
-        sheet.column_dimensions[column_letter].width = pixels_to_excel_width(
-            maximum_pixels
+        _write_issues_sheet(
+            workbook,
+            issues,
+            font_name,
+            measurement_font,
         )
 
 
@@ -639,27 +761,15 @@ def process_receipts() -> None:
     output_rows, stats, issues, duplicate_match_keys = prepare_receipt_data(
         kept_rows, source_name=RECEIPTS_SOURCE_FILE.name
     )
-    workbook = Workbook()
-    sheet = workbook.active
-    sheet.title = "Sheet1"
-    sheet.append(RECEIPTS_OUTPUT_HEADER)
-    for row in output_rows:
-        sheet.append(row)
-
-    font_name, font_path = resolve_font()
-    measurement_font = load_measurement_font(font_path)
-    format_receipts_sheet(
-        sheet,
-        duplicate_match_keys=duplicate_match_keys,
-        font_name=font_name,
-        measurement_font=measurement_font,
-    )
-    build_issues_sheet(workbook, issues, font_name, measurement_font)
-
     row_count = len(output_rows)
-    save_workbook_atomically(
-        workbook,
+    write_xlsx_atomically(
         OUTPUT_FILE,
+        lambda path: _write_receipts_workbook(
+            path,
+            output_rows,
+            issues,
+            duplicate_match_keys=duplicate_match_keys,
+        ),
         lambda path: validate_receipts_output(path, row_count, issues),
     )
     print(f"Receipt statistics complete: {row_count} rows")
