@@ -1,5 +1,4 @@
 import os
-import re
 import shutil
 import stat
 import time
@@ -8,18 +7,13 @@ from copy import copy
 from datetime import date, datetime
 from pathlib import Path
 from tempfile import NamedTemporaryFile
-from xml.etree.ElementTree import iterparse
-from zipfile import ZipFile
 
 from openpyxl import Workbook
 from openpyxl.styles import Alignment, Font, PatternFill
-from openpyxl.utils import column_index_from_string, get_column_letter
+from openpyxl.utils import get_column_letter
 from PIL import ImageFont
+from python_calamine import CalamineSheet
 
-MAIN_NS = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
-REL_NS = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
-TAG = f"{{{MAIN_NS}}}"
-CELL_REF_RE = re.compile(r"([A-Z]+)")
 FONT_NAME = "Maple Mono NF CN"
 FALLBACK_FONT_NAME = "微软雅黑"
 FONT_SIZE = 11
@@ -99,86 +93,56 @@ FONT_SEARCH_ROOTS = (
 )
 
 
-def _shared_strings(archive: ZipFile) -> list[str]:
-    try:
-        stream = archive.open("xl/sharedStrings.xml")
-    except KeyError:
-        return []
+def normalize_calamine_value(value: object) -> object:
+    """Bridge calamine's cell typing to openpyxl's read_only, data_only output.
 
-    values: list[str] = []
-    with stream:
-        for _, element in iterparse(stream, events=("end",)):
-            if element.tag == TAG + "si":
-                values.append(
-                    "".join(node.text or "" for node in element.iter(TAG + "t"))
-                )
-                element.clear()
-    return values
+    calamine represents a blank cell as "" where openpyxl gives None, and a
+    whole number as float where openpyxl gives int when the stored value has
+    no fractional part. Normalizing here keeps every downstream consumer —
+    written against openpyxl's original output — working unchanged.
 
+    Two differences are deliberately left alone, so this is a close bridge
+    rather than an equivalent one:
 
-def _first_sheet_path(archive: ZipFile) -> str:
-    from xml.etree.ElementTree import fromstring
+    A date-formatted cell with no time part arrives as datetime.date, where
+    openpyxl always gave datetime.datetime. Every reader of these values
+    narrows a datetime to its date anyway, so the plain date is already the
+    wanted form; converting it back up would only add a round trip.
 
-    workbook = fromstring(archive.read("xl/workbook.xml"))
-    sheet = workbook.find(f"{TAG}sheets/{TAG}sheet")
-    if sheet is None:
-        raise ValueError("The workbook contains no worksheets")
-
-    relationship_id = sheet.attrib[f"{{{REL_NS}}}id"]
-    relationships = fromstring(archive.read("xl/_rels/workbook.xml.rels"))
-    package_rel_ns = "http://schemas.openxmlformats.org/package/2006/relationships"
-    for relationship in relationships:
-        if (
-            relationship.tag == f"{{{package_rel_ns}}}Relationship"
-            and relationship.attrib.get("Id") == relationship_id
-        ):
-            target = relationship.attrib["Target"].replace("\\", "/").lstrip("/")
-            return target if target.startswith("xl/") else f"xl/{target}"
-    raise ValueError("Unable to locate the first worksheet")
-
-
-def _cell_value(cell, shared_strings: list[str]):
-    cell_type = cell.attrib.get("t")
-    if cell_type == "inlineStr":
-        return "".join(node.text or "" for node in cell.iter(TAG + "t"))
-
-    value_node = cell.find(TAG + "v")
-    if value_node is None or value_node.text is None:
+    An error cell (#DIV/0!, #N/A) is indistinguishable from a blank one:
+    calamine has no error type at all and yields "" for both, so nothing
+    here can recover the "#DIV/0!" string openpyxl produced. Callers of
+    financially significant fields must therefore inspect the original
+    cell type when a calamine value unexpectedly appears blank.
+    """
+    if value == "":
         return None
-    value = value_node.text
-
-    if cell_type == "s":
-        return shared_strings[int(value)]
-    if cell_type == "b":
-        return value == "1"
-    if cell_type in {"str", "e"}:
-        return value
+    if isinstance(value, float) and value.is_integer():
+        return int(value)
     return value
 
 
-def read_rows(path: Path) -> Iterator[list[object]]:
-    """Stream rows from the first sheet, ignoring an incorrect dimension value."""
-    with ZipFile(path) as archive:
-        shared_strings = _shared_strings(archive)
-        sheet_path = _first_sheet_path(archive)
-        with archive.open(sheet_path) as stream:
-            for _, row in iterparse(stream, events=("end",)):
-                if row.tag != TAG + "row":
-                    continue
+def calamine_rows(sheet: CalamineSheet) -> Iterator[list[object]]:
+    """Yield every row of a calamine sheet, cell values normalized to match
+    openpyxl's read_only, data_only output (see normalize_calamine_value).
 
-                cells: dict[int, object] = {}
-                max_column = 0
-                for cell in row.findall(TAG + "c"):
-                    reference = cell.attrib.get("r", "")
-                    match = CELL_REF_RE.match(reference)
-                    if not match:
-                        continue
-                    column = column_index_from_string(match.group(1))
-                    cells[column] = _cell_value(cell, shared_strings)
-                    max_column = max(max_column, column)
+    Two shape differences from openpyxl are corrected here as well. A sheet
+    whose used range starts below row 1 still gets its leading blank rows
+    from iter_rows(), so row numbers stay absolute, but leading blank
+    *columns* are dropped — every row would start at the used range's first
+    column. They are padded back so index 0 always means column A, which
+    submitted's fixed D/E/F… column letters depend on, and which payment
+    needs in order to address the same column in a sheet read by calamine
+    and its openpyxl-read formula twin.
 
-                yield [cells.get(column) for column in range(1, max_column + 1)]
-                row.clear()
+    A sheet with no cells at all reports start None and makes iter_rows()
+    panic inside the Rust extension, so it yields nothing instead.
+    """
+    if sheet.start is None:
+        return
+    leading_blanks = [None] * sheet.start[1]
+    for row in sheet.iter_rows():
+        yield leading_blanks + [normalize_calamine_value(value) for value in row]
 
 
 def _find_font_file(file_names: tuple[str, ...]) -> Path | None:
@@ -316,6 +280,24 @@ def pixels_to_excel_width(pixels: float) -> float:
     return min(round(((pixels * 1.1) + 16) / 7, 2), 255)
 
 
+# 255 character units is Excel's widest column; set_column_pixels() divides by
+# the same 7 pixels per unit that pixels_to_excel_width does.
+MAX_COLUMN_PIXELS = 255 * 7
+
+
+def pixels_to_column_pixels(pixels: float) -> int:
+    """Padded pixel width for XlsxWriter's set_column_pixels().
+
+    pixels_to_excel_width folds Excel's cell padding into the character width
+    it returns, and openpyxl writes that number to the file verbatim.
+    XlsxWriter's set_column() adds padding of its own, so passing it the same
+    number would widen every column by about 0.7 units. set_column_pixels()
+    reverses XlsxWriter's own conversion instead, reproducing the widths the
+    openpyxl writer produced to within a rounding step.
+    """
+    return min(round((pixels * 1.1) + 16), MAX_COLUMN_PIXELS)
+
+
 # Reusing an already-computed cell style has no public openpyxl API, so these
 # three helpers reach into Cell._style. They are the only place in the project
 # that does; StyleReuseTest pins their behaviour so that an openpyxl upgrade
@@ -384,8 +366,8 @@ def format_sheet(
     # distinct one is computed once, by the ordinary assignments below, and
     # afterwards reused. Two separate hazards shape how that is done:
     #
-    # Styles set before this function runs (payment's 汇总 already carries
-    # #,##0.00) must survive, because the per-cell assignments would have left
+    # Styles set before this function runs (such as payment's summary number
+    # formats) must survive, because the per-cell assignments would have left
     # them alone. That is why the cell's incoming style is part of the key
     # rather than something to overwrite.
     #
@@ -423,6 +405,119 @@ def format_sheet(
         sheet.column_dimensions[get_column_letter(column)].width = (
             pixels_to_excel_width(maximum_pixels)
         )
+
+
+# What openpyxl assigned to a cell on its own when given a date or datetime.
+DATE_NUMBER_FORMAT = "yyyy-mm-dd"
+DATETIME_NUMBER_FORMAT = "yyyy-mm-dd h:mm:ss"
+
+
+def sheet_format_set(workbook, font_name: str) -> dict[str, object]:
+    """The four cell formats every plain output table uses.
+
+    XlsxWriter deduplicates identical formats into one style-table entry, so
+    building this per sheet costs nothing and keeps each sheet's writer
+    self-contained.
+    """
+    base = {
+        "font_name": font_name,
+        "font_size": FONT_SIZE,
+        "font_color": "#000000",
+        "align": "center",
+        "valign": "vcenter",
+    }
+    return {
+        "header": workbook.add_format(
+            {**base, "bold": True, "font_color": "#FFFFFF", "bg_color": "#000000"}
+        ),
+        "center": workbook.add_format(base),
+        "left": workbook.add_format({**base, "align": "left"}),
+        # openpyxl stamped these two formats onto a cell automatically the
+        # moment a date or datetime was assigned to it; XlsxWriter applies
+        # nothing and would leave the value showing as its serial number
+        # (2026-01-02 as 46024). Same formats, so a native Excel date looks
+        # identical whichever writer produced the file.
+        "date": workbook.add_format({**base, "num_format": DATE_NUMBER_FORMAT}),
+        "datetime": workbook.add_format(
+            {**base, "num_format": DATETIME_NUMBER_FORMAT}
+        ),
+    }
+
+
+def write_formatted_sheet(
+    workbook,
+    sheet_name: str,
+    header,
+    rows,
+    font_name: str,
+    measurement_font,
+    *,
+    left_aligned_headers: tuple[str, ...] = ("描述",),
+    number_formats: dict[str, str] | None = None,
+    autofilter: bool = True,
+) -> None:
+    """XlsxWriter equivalent of format_sheet for a plain header-plus-body table.
+
+    Same result as building the sheet with openpyxl and running format_sheet
+    over it: black header row, centered body, per-column widths measured from
+    the widest value, frozen header, and an autofilter over the whole table.
+    number_formats maps a header name to the number format its column takes,
+    defaulting to 补贴金额 as "0.00" exactly as format_sheet applied it.
+    """
+    if number_formats is None:
+        number_formats = {"补贴金额": "0.00"}
+    sheet = workbook.add_worksheet(sheet_name)
+    formats = sheet_format_set(workbook, font_name)
+    numbered_formats = {
+        index: workbook.add_format(
+            {
+                "font_name": font_name,
+                "font_size": FONT_SIZE,
+                "font_color": "#000000",
+                "align": "center",
+                "valign": "vcenter",
+                "num_format": number_format,
+            }
+        )
+        for index, name in enumerate(header)
+        if (number_format := number_formats.get(name)) is not None
+    }
+    left_columns = {
+        index for index, name in enumerate(header) if name in left_aligned_headers
+    }
+
+    measure = width_measurer(measurement_font)
+    maximum_widths = [measure(value) for value in header]
+    sheet.set_row(0, ROW_HEIGHT)
+    for column, value in enumerate(header):
+        sheet.write(0, column, value, formats["header"])
+
+    for row_number, row in enumerate(rows, start=1):
+        sheet.set_row(row_number, ROW_HEIGHT)
+        for column, value in enumerate(row):
+            # datetime is a subclass of date, so it has to be tested first.
+            if isinstance(value, datetime):
+                cell_format = formats["datetime"]
+            elif isinstance(value, date):
+                cell_format = formats["date"]
+            elif column in left_columns:
+                cell_format = formats["left"]
+            elif column in numbered_formats and value is not None:
+                cell_format = numbered_formats[column]
+            else:
+                cell_format = formats["center"]
+            sheet.write(row_number, column, value, cell_format)
+            if column < len(maximum_widths):
+                maximum_widths[column] = max(maximum_widths[column], measure(value))
+
+    sheet.freeze_panes(1, 0)
+    if autofilter:
+        sheet.autofilter(0, 0, len(rows), len(header) - 1)
+    for column, maximum_pixels in enumerate(maximum_widths):
+        sheet.set_column_pixels(
+            column, column, pixels_to_column_pixels(maximum_pixels)
+        )
+    return sheet
 
 
 STALE_TEMPORARY_FILE_AGE_SECONDS = 180
@@ -499,6 +594,37 @@ def save_workbook_atomically(
         temporary_path = None
     finally:
         workbook.close()
+        if temporary_path is not None:
+            temporary_path.unlink(missing_ok=True)
+
+
+def write_xlsx_atomically(
+    output_path: Path,
+    writer: Callable[[Path], None],
+    validator: Callable[[Path], None],
+) -> None:
+    """Write a path-based XLSX producer with the same atomic contract.
+
+    XlsxWriter takes its destination path when the workbook is created, unlike
+    openpyxl's save-at-the-end API. Keeping that difference here lets either
+    writer use the same write, validate, and replace transaction.
+    """
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    temporary_path: Path | None = None
+    try:
+        with NamedTemporaryFile(
+            prefix=f".{output_path.stem}-",
+            suffix=output_path.suffix,
+            dir=output_path.parent,
+            delete=False,
+        ) as temporary_file:
+            temporary_path = Path(temporary_file.name)
+
+        writer(temporary_path)
+        validator(temporary_path)
+        os.replace(temporary_path, output_path)
+        temporary_path = None
+    finally:
         if temporary_path is not None:
             temporary_path.unlink(missing_ok=True)
 

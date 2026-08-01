@@ -10,20 +10,27 @@ from __future__ import annotations
 
 import re
 from collections import Counter, defaultdict
+from collections.abc import Iterator
 from dataclasses import dataclass
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from pathlib import Path
 
-from openpyxl import Workbook, load_workbook
-from openpyxl.styles import Alignment, Font
+from openpyxl import load_workbook
+from python_calamine import CalamineWorkbook
+from xlsxwriter import Workbook
 
 from processors.common.config import load_payment_brand_config, merchant_id
 from processors.common.excel import (
     FONT_SIZE,
-    format_sheet,
+    ROW_HEIGHT,
+    calamine_rows,
     load_measurement_font,
+    pixels_to_column_pixels,
     resolve_font,
-    save_workbook_atomically,
+    sheet_format_set,
+    width_measurer,
+    write_formatted_sheet,
+    write_xlsx_atomically,
 )
 from processors.common.paths import find_data_files
 
@@ -137,6 +144,25 @@ class PaymentOutputExpectation:
     merchant_id: str
 
 
+@dataclass(frozen=True)
+class DetailSection:
+    """One data type's merged detail rows, before they become a worksheet."""
+
+    name: str
+    header: tuple[str, ...]
+    rows: list[list[object]]
+
+
+@dataclass(frozen=True)
+class PaymentReport:
+    summary_rows: list[list[object]]
+    summary_bold_rows: list[int]
+    summary_merge_ranges: list[tuple[int, int]]
+    details: list[DetailSection]
+    section_profiles: list[ProcessingProfile]
+    summary_groups: int
+
+
 PROFILES = {
     "家电": ProcessingProfile(
         name="家电",
@@ -188,9 +214,27 @@ def _iter_actual_rows_with_numbers(worksheet):
             yield row_number, values
 
 
-def _iter_actual_rows(worksheet):
-    for _, values in _iter_actual_rows_with_numbers(worksheet):
-        yield values
+def _iter_actual_cell_rows_with_numbers(worksheet):
+    """Cell-preserving twin used only to recover types calamine discards."""
+    if hasattr(worksheet, "reset_dimensions"):
+        worksheet.reset_dimensions()
+    for row_number, row in enumerate(worksheet.iter_rows(min_col=1), 1):
+        if any(cell.value not in (None, "") for cell in row):
+            yield row_number, row
+
+
+def _iter_actual_calamine_rows_with_numbers(sheet):
+    """calamine equivalent of _iter_actual_rows_with_numbers.
+
+    calamine already reports a sheet's real used range (no analogue of
+    openpyxl's reset_dimensions() workaround is needed — see
+    _iter_actual_rows_with_numbers), so this only needs to normalize values
+    and drop rows that are blank after normalization.
+    """
+    for row_number, row in enumerate(calamine_rows(sheet), 1):
+        values = tuple(row)
+        if any(value not in (None, "") for value in values):
+            yield row_number, values
 
 
 def _cell_value(row: tuple, index: int):
@@ -244,12 +288,13 @@ def detect_profile(path: Path, source_name: str | None = None) -> ProcessingProf
         if profile is not None:
             print(f"已按文件名识别数据类型：{profile.name}")
             return profile
-    book = load_workbook(path, read_only=True, data_only=True)
+    book = CalamineWorkbook.from_path(str(path))
     try:
-        for sheet in book.worksheets:
-            if sheet.title == SUMMARY_SHEET_NAME:
+        for sheet_name in book.sheet_names:
+            if sheet_name == SUMMARY_SHEET_NAME:
                 continue
-            for row in _iter_actual_rows(sheet):
+            sheet = book.get_sheet_by_name(sheet_name)
+            for _, row in _iter_actual_calamine_rows_with_numbers(sheet):
                 if not _is_header_row(row):
                     continue
                 headers = _normalize_header_names(row)
@@ -295,13 +340,20 @@ def _get_source_positions(
 
 
 def _collect_normalized_detail(
-    source,
+    rows_with_numbers,
+    sheet_name: str,
     *,
     profile: ProcessingProfile,
     merchant_id: str,
     formula_workbook=None,
 ) -> tuple[list[list[object]], int]:
-    """Normalize one source sheet without creating output Cell objects yet."""
+    """Normalize one source sheet without creating output Cell objects yet.
+
+    rows_with_numbers takes (row_number, values) pairs rather than a
+    worksheet object so this same logic serves both the calamine-based read
+    of the source workbook and — for a cell needing its original type —
+    _iter_actual_cell_rows_with_numbers's openpyxl read of the source workbook.
+    """
     source_positions: dict[str, int] = {}
     normalized_rows: list[list[object]] = []
     unidentified_brands = 0
@@ -312,13 +364,13 @@ def _collect_normalized_detail(
     subsidy_header = "补贴金额"
     formula_rows_iterator = None
 
-    def _find_formula_value(row_number: int, column_index: int):
-        # Advances the formula-view iterator forward only as far as needed;
-        # opens the (expensive) formula workbook lazily on first use.
+    def _find_source_cell(row_number: int, column_index: int):
+        # Advances the cell-preserving iterator forward only as far as needed;
+        # opens the (expensive) openpyxl workbook lazily on first use.
         nonlocal formula_rows_iterator
         if formula_rows_iterator is None:
-            formula_sheet = formula_workbook()[source.title]
-            formula_rows_iterator = _iter_actual_rows_with_numbers(formula_sheet)
+            formula_sheet = formula_workbook()[sheet_name]
+            formula_rows_iterator = _iter_actual_cell_rows_with_numbers(formula_sheet)
         for formula_row_number, formula_row in formula_rows_iterator:
             if formula_row_number == row_number:
                 return _cell_value(formula_row, column_index)
@@ -326,9 +378,9 @@ def _collect_normalized_detail(
                 break
         return None
 
-    for row_number, row in _iter_actual_rows_with_numbers(source):
+    for row_number, row in rows_with_numbers:
         if not source_positions and _is_header_row(row):
-            source_positions = _get_source_positions(row, source.title, profile)
+            source_positions = _get_source_positions(row, sheet_name, profile)
             continue
 
         if not source_positions:
@@ -339,6 +391,13 @@ def _collect_normalized_detail(
             for name in profile.detail_headers
         ]
         row_merchant_id = normalized[merchant_index]
+        # Any row that is not this merchant's is skipped without comment — the
+        # source carries every merchant's sales, so most rows are someone
+        # else's. That deliberately includes a 商户编号 holding an Excel error
+        # value: the 数码 source has one (#N/A at F460, a 404.85 subsidy row),
+        # and it was confirmed as data that legitimately does not belong to
+        # this merchant. Raising on it, as the 补贴金额 column does, would stop
+        # every run on a file that is fine.
         if str(row_merchant_id).strip() == merchant_id:
             subsidy_value = normalized[subsidy_index_in_headers]
             if (
@@ -346,10 +405,17 @@ def _collect_normalized_detail(
                 and formula_workbook is not None
                 and subsidy_header in source_positions
             ):
-                formula = _find_formula_value(row_number, source_positions[subsidy_header])
-                if isinstance(formula, str) and formula.startswith("="):
+                source_cell = _find_source_cell(
+                    row_number, source_positions[subsidy_header]
+                )
+                if source_cell is not None and source_cell.data_type == "e":
                     raise ValueError(
-                        f"工作表 {source.title!r} 第 {row_number} 行字段 "
+                        f"工作表 {sheet_name!r} 第 {row_number} 行字段 "
+                        f"{subsidy_header!r} 是 Excel 错误值：{source_cell.value!r}"
+                    )
+                if source_cell is not None and source_cell.data_type == "f":
+                    raise ValueError(
+                        f"工作表 {sheet_name!r} 第 {row_number} 行字段 "
                         f"{subsidy_header!r} 是公式但没有缓存计算结果；"
                         "请先用 Excel/WPS 打开并保存，或将公式转换为数值"
                     )
@@ -357,7 +423,7 @@ def _collect_normalized_detail(
             financial_category = profile.category_map.get(encoded_category)
             if financial_category is None:
                 raise ValueError(
-                    f"工作表 {source.title!r} 第 {row_number} 行存在未配置的编码品类："
+                    f"工作表 {sheet_name!r} 第 {row_number} 行存在未配置的编码品类："
                     f"{encoded_category!r}"
                 )
             product_name = normalized[product_index]
@@ -368,7 +434,7 @@ def _collect_normalized_detail(
             normalized_rows.append(normalized + [financial_category, brand])
 
     if not source_positions:
-        raise ValueError(f"工作表 {source.title!r} 未找到明细表头")
+        raise ValueError(f"工作表 {sheet_name!r} 未找到明细表头")
     return normalized_rows, unidentified_brands
 
 
@@ -492,13 +558,28 @@ def _sort_detail_rows(
     return data_row_count
 
 
-def _sum_detail_groups(detail_sheets) -> dict[tuple[str, str], list]:
+def _worksheet_rows(worksheet) -> Iterator[tuple]:
+    """Row values of an openpyxl worksheet, shaped like calamine_rows' output.
+
+    Lets the two helpers below serve both the in-memory workbook being built
+    and the saved file read back through calamine.
+    """
+    return worksheet.iter_rows(values_only=True)
+
+
+def _sum_detail_groups(detail_sections) -> dict[tuple[str, str], list]:
+    """Total 补贴金额 by (财务大类, 品牌) across detail sheets.
+
+    detail_sections takes (sheet_name, rows) pairs rather than worksheets so
+    the same totals can be computed from the workbook under construction and
+    from the saved file, whichever library read it.
+    """
     groups: dict[tuple[str, str], list] = {}
-    for detail_sheet in detail_sheets:
-        rows = detail_sheet.iter_rows(values_only=True)
+    for sheet_name, sheet_rows in detail_sections:
+        rows = iter(sheet_rows)
         header = next(rows, None)
         if header is None:
-            raise ValueError(f"{detail_sheet.title}缺少表头")
+            raise ValueError(f"{sheet_name}缺少表头")
         header_positions = {
             value: index
             for index, value in enumerate(header)
@@ -514,7 +595,7 @@ def _sum_detail_groups(detail_sheets) -> dict[tuple[str, str], list]:
             subsidy = row[subsidy_column]
             if category in (None, ""):
                 raise ValueError(
-                    f"{detail_sheet.title}第 {row_number} 行缺少财务大类"
+                    f"{sheet_name}第 {row_number} 行缺少财务大类"
                 )
             key = (str(category), "" if brand in (None, "") else str(brand))
             if key not in groups:
@@ -524,39 +605,41 @@ def _sum_detail_groups(detail_sheets) -> dict[tuple[str, str], list]:
                     subsidy_amount = Decimal(str(subsidy))
                 except (InvalidOperation, ValueError) as error:
                     raise ValueError(
-                        f"{detail_sheet.title}第 {row_number} 行补贴金额不是有效数值"
+                        f"{sheet_name}第 {row_number} 行补贴金额不是有效数值"
                     ) from error
                 groups[key][0] += subsidy_amount
                 groups[key][1] += -1 if subsidy_amount < 0 else 1
     return groups
 
 
-def _append_summary_row(summary_sheet, category, brand, amount: Decimal, count: int) -> None:
+def _append_summary_row(rows, category, brand, amount: Decimal, count: int) -> None:
     rounded_amount = amount.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
-    summary_sheet.append([category, brand, float(rounded_amount), count])
-    summary_sheet.cell(summary_sheet.max_row, 3).number_format = "#,##0.00"
-    summary_sheet.cell(summary_sheet.max_row, 4).number_format = "0"
+    rows.append([category, brand, float(rounded_amount), count])
 
 
-def _build_summary_sheet(
-    summary_sheet, sections: list[tuple[str, list, dict[str, str]]]
-) -> tuple[int, list[int]]:
-    """Write one subtotaled block per data type into 汇总; sections keep their
-    given order so 家电 and 数码 never interleave, and are separated by one blank
-    row instead of a labeled title row."""
-    summary_sheet.append(SUMMARY_HEADERS)
+def _build_summary_rows(
+    sections: list[tuple[str, list, dict[str, str]]],
+) -> tuple[list[list[object]], list[int], int]:
+    """Build 汇总 as plain rows: one subtotaled block per data type.
+
+    Sections keep their given order so 家电 and 数码 never interleave, and are
+    separated by one blank row instead of a labeled title row. Returns the
+    rows, the 1-based sheet row numbers of the bold 合计 rows, and the group
+    count; the writer turns those into cells.
+    """
+    rows: list[list[object]] = [list(SUMMARY_HEADERS)]
     total_groups = 0
-    bold_rows = []
+    bold_rows: list[int] = []
     grand_amount = Decimal("0")
     grand_count = 0
     written_sections = 0
 
-    for _label, detail_sheets, category_map in sections:
-        groups = _sum_detail_groups(detail_sheets)
+    for _label, detail_sections, category_map in sections:
+        groups = _sum_detail_groups(detail_sections)
         if not groups:
             continue
         if written_sections:
-            summary_sheet.append([None, None, None, None])
+            rows.append([None, None, None, None])
         written_sections += 1
 
         category_order = _category_order(category_map)
@@ -567,89 +650,84 @@ def _build_summary_sheet(
                 item[0][1],
             ),
         ):
-            _append_summary_row(summary_sheet, category, brand, amount, count)
+            _append_summary_row(rows, category, brand, amount, count)
         total_groups += len(groups)
 
         section_amount = sum((values[0] for values in groups.values()), Decimal("0"))
         section_count = sum(values[1] for values in groups.values())
-        _append_summary_row(summary_sheet, "合计", None, section_amount, section_count)
-        bold_rows.append(summary_sheet.max_row)
+        _append_summary_row(rows, "合计", None, section_amount, section_count)
+        bold_rows.append(len(rows))
         grand_amount += section_amount
         grand_count += section_count
 
-    _append_summary_row(summary_sheet, "合计", None, grand_amount, grand_count)
-    bold_rows.append(summary_sheet.max_row)
-    return total_groups, bold_rows
+    _append_summary_row(rows, "合计", None, grand_amount, grand_count)
+    bold_rows.append(len(rows))
+    return rows, bold_rows, total_groups
 
 
-def _merge_summary_categories(summary_sheet) -> int:
-    category_column = 1
+def _summary_merge_ranges(rows: list[list[object]]) -> list[tuple[int, int]]:
+    """Row spans of 财务大类 runs worth merging, as 1-based sheet rows.
+
+    Mirrors what _merge_summary_categories did against a built worksheet: the
+    header and the bottom grand-total row are excluded, and a run of one row
+    merges nothing but still gets centered by the writer.
+    """
     first_data_row = 2
-    last_data_row = summary_sheet.max_row - 1  # Exclude the bottom total row.
+    last_data_row = len(rows) - 1  # Exclude the bottom total row.
     if last_data_row < first_data_row:
-        return 0
+        return []
 
-    merged_groups = 0
+    ranges: list[tuple[int, int]] = []
     group_start = first_data_row
-    current_value = summary_sheet.cell(group_start, category_column).value
-    for row in range(first_data_row + 1, last_data_row + 2):
+    current_value = rows[group_start - 1][0]
+    for row_number in range(first_data_row + 1, last_data_row + 2):
         next_value = (
-            summary_sheet.cell(row, category_column).value
-            if row <= last_data_row
-            else object()
+            rows[row_number - 1][0] if row_number <= last_data_row else object()
         )
         if next_value == current_value:
             continue
-        group_end = row - 1
-        if group_end > group_start:
-            summary_sheet.merge_cells(
-                start_row=group_start,
-                start_column=category_column,
-                end_row=group_end,
-                end_column=category_column,
-            )
-            merged_groups += 1
-        summary_sheet.cell(group_start, category_column).alignment = Alignment(
-            horizontal="center", vertical="center"
-        )
-        group_start = row
+        ranges.append((group_start, row_number - 1))
+        group_start = row_number
         current_value = next_value
-    return merged_groups
+    return ranges
 
 
 def _process_sources(
     sources: list[Path],
     profile: ProcessingProfile,
     merchant_id: str,
-    target_book: Workbook,
-):
-    """Merge every source file of one data type into a single detail sheet."""
-    merged_sheet = target_book.create_sheet(profile.detail_sheet_name)
+) -> DetailSection:
+    """Merge every source file of one data type into a single detail section.
+
+    Returns rows rather than a worksheet: the caller aggregates 汇总 from them
+    and only then hands everything to the writer, so nothing is turned into
+    cells until the data is final.
+    """
     merged_rows = 0
     merged_header_written = False
     normalized_rows: list[list[object]] = []
 
     unidentified_brands = 0
     for path in sources:
-        # Use values cached by Excel for formula cells; openpyxl does not
-        # calculate formulas.
-        source_book = load_workbook(path, read_only=True, data_only=True)
+        source_book = CalamineWorkbook.from_path(str(path))
+        # Formula and error cell types aren't available from calamine's cached
+        # values, so a blank subsidy needs a lazy openpyxl check of that cell.
         formula_book: object | None = None
 
         def get_formula_book(path=path):
-            # Opened only if a subsidy cell needs checking for an uncached
-            # formula; a second full workbook parse is otherwise skipped.
             nonlocal formula_book
             if formula_book is None:
                 formula_book = load_workbook(path, read_only=True, data_only=False)
             return formula_book
 
         try:
-            for source_sheet in source_book.worksheets:
-                if source_sheet.title == SUMMARY_SHEET_NAME:
+            for sheet_name in source_book.sheet_names:
+                if sheet_name == SUMMARY_SHEET_NAME:
                     continue
+                source_sheet = source_book.get_sheet_by_name(sheet_name)
                 sheet_rows, missing_brands = _collect_normalized_detail(
-                    source_sheet,
+                    _iter_actual_calamine_rows_with_numbers(source_sheet),
+                    sheet_name,
                     profile=profile,
                     merchant_id=merchant_id,
                     formula_workbook=get_formula_book,
@@ -679,16 +757,17 @@ def _process_sources(
         output_headers,
         profile.category_map,
     )
-    merged_sheet.append(output_headers)
-    for row in normalized_rows:
-        merged_sheet.append(row)
     print(
-        f"已处理{profile.name}明细：Sheet {merged_sheet.title}，"
+        f"已处理{profile.name}明细：Sheet {profile.detail_sheet_name}，"
         f"商户 {merchant_id} 共 {merged_rows} 条，"
         f"品牌推断 {inferred_brands} 条、未识别 {unidentified_brands} 条，"
         f"明细排序 {sorted_detail_rows} 条"
     )
-    return merged_sheet
+    return DetailSection(
+        name=profile.detail_sheet_name,
+        header=output_headers,
+        rows=normalized_rows,
+    )
 
 
 def _classify_sources() -> dict[str, list[Path]]:
@@ -705,12 +784,10 @@ def _classify_sources() -> dict[str, list[Path]]:
     return classified
 
 
-def build_workbook() -> tuple[Workbook, list[tuple[ProcessingProfile, object]], int]:
-    """Build the payment workbook in memory and return it with its 汇总 stats."""
-    target_book = Workbook()
-    target_book.remove(target_book.active)
+def build_report() -> PaymentReport:
+    """Assemble every sheet's rows in memory, before any of them become cells."""
     classified = _classify_sources()
-    sections: list[tuple[ProcessingProfile, object]] = []
+    sections: list[tuple[ProcessingProfile, DetailSection]] = []
     for profile_name in PROFILE_ORDER:
         sources = classified.get(profile_name)
         if not sources:
@@ -722,7 +799,6 @@ def build_workbook() -> tuple[Workbook, list[tuple[ProcessingProfile, object]], 
                     sources,
                     PROFILES[profile_name],
                     merchant_id(profile_name),
-                    target_book,
                 ),
             )
         )
@@ -730,40 +806,138 @@ def build_workbook() -> tuple[Workbook, list[tuple[ProcessingProfile, object]], 
     if not sections:
         raise ValueError("没有任何明细数据可输出")
 
-    summary_sheet = target_book.create_sheet(SUMMARY_SHEET_NAME, 0)
-    summary_groups, bold_rows = _build_summary_sheet(
-        summary_sheet,
+    summary_rows, bold_rows, summary_groups = _build_summary_rows(
         [
-            (profile.name, [detail_sheet], profile.category_map)
-            for profile, detail_sheet in sections
-        ],
+            (
+                profile.name,
+                [(detail.name, [detail.header, *detail.rows])],
+                profile.category_map,
+            )
+            for profile, detail in sections
+        ]
+    )
+    # Merging a run of 财务大类 leaves only the top cell holding the value, so
+    # the rows are blanked here rather than in the writer: validate_output
+    # compares these same rows against the saved file, and would otherwise see
+    # a category the file no longer carries.
+    merge_ranges = _summary_merge_ranges(summary_rows)
+    for first_row, last_row in merge_ranges:
+        for row_number in range(first_row + 1, last_row + 1):
+            summary_rows[row_number - 1][0] = None
+
+    font_name, _ = resolve_font()
+    print(f"汇总分 {len(sections)} 类共 {summary_groups} 组，字体 {font_name}")
+    return PaymentReport(
+        summary_rows=summary_rows,
+        summary_bold_rows=bold_rows,
+        summary_merge_ranges=merge_ranges,
+        details=[detail for _profile, detail in sections],
+        section_profiles=[profile for profile, _detail in sections],
+        summary_groups=summary_groups,
     )
 
+
+def write_workbook(path: Path, report: PaymentReport) -> None:
     font_name, font_path = resolve_font()
     measurement_font = load_measurement_font(font_path)
-    for sheet in target_book.worksheets:
-        format_sheet(sheet, font_name, measurement_font)
-    # 汇总 is a report with merged category cells and a blank separator row,
-    # not a filterable table.
-    summary_sheet.auto_filter.ref = None
-    _merge_summary_categories(summary_sheet)
-    for row in bold_rows:
-        for cell in summary_sheet[row]:
-            cell.font = Font(name=font_name, size=FONT_SIZE, bold=True)
+    with Workbook(
+        str(path),
+        {
+            # Deliberately not constant_memory: 汇总 merges runs of 财务大类
+            # after its rows are written, and constant_memory flushes each row
+            # on the next one, so merge_range would silently do nothing. The
+            # largest sheet here is a few thousand rows, well within memory.
+            "strings_to_urls": False,
+            # 商品名称 is free text from the source export; a leading "=" is
+            # data, not a formula to evaluate.
+            "strings_to_formulas": False,
+        },
+    ) as workbook:
+        _write_summary_sheet(workbook, report, font_name, measurement_font)
+        for detail in report.details:
+            write_formatted_sheet(
+                workbook,
+                detail.name,
+                detail.header,
+                detail.rows,
+                font_name,
+                measurement_font,
+            )
 
-    print(f"汇总分 {len(sections)} 类共 {summary_groups} 组，字体 {font_name}")
-    return target_book, sections, summary_groups
 
-
-def _summary_snapshot(worksheet) -> list[tuple[object, ...]]:
-    return [
-        tuple(row)
-        for row in worksheet.iter_rows(
-            min_row=1,
-            max_col=len(SUMMARY_HEADERS),
-            values_only=True,
+def _write_summary_sheet(
+    workbook, report: PaymentReport, font_name: str, measurement_font
+) -> None:
+    """汇总 is a report, not a filterable table: merged 财务大类 runs, a blank
+    separator row between data types, bold 合计 rows, and no autofilter."""
+    sheet = workbook.add_worksheet(SUMMARY_SHEET_NAME)
+    base = {
+        "font_name": font_name,
+        "font_size": FONT_SIZE,
+        "font_color": "#000000",
+        "align": "center",
+        "valign": "vcenter",
+    }
+    formats = sheet_format_set(workbook, font_name)
+    cell_formats = {
+        (bold, number_format): workbook.add_format(
+            {**base, **({"bold": True} if bold else {})}
+            | ({"num_format": number_format} if number_format else {})
         )
-    ]
+        for bold in (False, True)
+        for number_format in (None, "0.00", "0")
+    }
+    # Matches what format_sheet applied to 汇总 before: the amount column
+    # carries two decimals, the count column none.
+    column_number_formats = {2: "0.00", 3: "0"}
+
+    measure = width_measurer(measurement_font)
+    header = report.summary_rows[0]
+    maximum_widths = [measure(value) for value in header]
+    sheet.set_row(0, ROW_HEIGHT)
+    for column, value in enumerate(header):
+        sheet.write(0, column, value, formats["header"])
+
+    bold_rows = set(report.summary_bold_rows)
+    for row_number, row in enumerate(report.summary_rows[1:], start=2):
+        sheet.set_row(row_number - 1, ROW_HEIGHT)
+        is_bold = row_number in bold_rows
+        for column, value in enumerate(row):
+            number_format = (
+                column_number_formats.get(column) if value is not None else None
+            )
+            sheet.write(
+                row_number - 1, column, value, cell_formats[(is_bold, number_format)]
+            )
+            if column < len(maximum_widths):
+                maximum_widths[column] = max(maximum_widths[column], measure(value))
+
+    for first_row, last_row in report.summary_merge_ranges:
+        if last_row > first_row:
+            sheet.merge_range(
+                first_row - 1,
+                0,
+                last_row - 1,
+                0,
+                report.summary_rows[first_row - 1][0],
+                cell_formats[(first_row in bold_rows, None)],
+            )
+
+    sheet.freeze_panes(1, 0)
+    for column, maximum_pixels in enumerate(maximum_widths):
+        sheet.set_column_pixels(
+            column, column, pixels_to_column_pixels(maximum_pixels)
+        )
+
+
+def _summary_snapshot(rows) -> list[tuple[object, ...]]:
+    """Truncate 汇总 to its declared columns so the two sides compare equal.
+
+    calamine pads every row out to the sheet's used width, and openpyxl's
+    max_col did the truncating before; doing it here keeps the snapshot taken
+    from the workbook being built comparable with the one read back.
+    """
+    return [tuple(row[: len(SUMMARY_HEADERS)]) for row in rows]
 
 
 def validate_output(
@@ -771,28 +945,32 @@ def validate_output(
     expectations: dict[str, PaymentOutputExpectation],
     expected_summary: list[tuple[object, ...]],
 ) -> None:
-    """Re-read the saved workbook and cross-check details against the summary."""
-    workbook = load_workbook(path, read_only=True, data_only=True)
+    """Re-read the saved workbook and cross-check details against the summary.
+
+    Values only — no font or fill checks — so this reads through calamine,
+    which parses the file several times faster than openpyxl did.
+    """
+    workbook = CalamineWorkbook.from_path(str(path))
     try:
         expected_sheet_names = [SUMMARY_SHEET_NAME, *expectations]
-        if workbook.sheetnames != expected_sheet_names:
+        if workbook.sheet_names != expected_sheet_names:
             raise ValueError(
                 f"{path.name} 工作表应为 {expected_sheet_names}，"
-                f"实际为 {workbook.sheetnames}"
+                f"实际为 {workbook.sheet_names}"
             )
 
-        detail_sheets = []
+        detail_sections = []
         for sheet_name, expectation in expectations.items():
-            sheet = workbook[sheet_name]
+            rows = list(calamine_rows(workbook.get_sheet_by_name(sheet_name)))
             expected_header = expectation.profile.detail_headers + DERIVED_HEADERS
-            actual_header = tuple(cell.value for cell in sheet[1])
+            actual_header = tuple(rows[0][: len(expected_header)]) if rows else ()
             if actual_header != expected_header:
                 raise ValueError(
                     f"{path.name} 的“{sheet_name}”表头不符合要求："
                     f"预期 {expected_header}，实际 {actual_header}"
                 )
 
-            written = max(sheet.max_row - 1, 0)
+            written = max(len(rows) - 1, 0)
             if written != expectation.row_count:
                 raise ValueError(
                     f"{path.name} 的“{sheet_name}”应有 "
@@ -803,10 +981,7 @@ def validate_output(
             merchant_column = expected_header.index("商户编号")
             wrong_merchants = [
                 row_number
-                for row_number, row in enumerate(
-                    sheet.iter_rows(min_row=2, values_only=True),
-                    start=2,
-                )
+                for row_number, row in enumerate(rows[1:], start=2)
                 if str(row[merchant_column]).strip() != expectation.merchant_id
             ]
             if wrong_merchants:
@@ -814,14 +989,15 @@ def validate_output(
                     f"{path.name} 的“{sheet_name}”存在非目标商户数据，"
                     f"首个异常行：{wrong_merchants[0]}"
                 )
-            detail_sheets.append(sheet)
+            detail_sections.append((sheet_name, rows))
 
-        summary_sheet = workbook[SUMMARY_SHEET_NAME]
-        actual_summary = _summary_snapshot(summary_sheet)
+        actual_summary = _summary_snapshot(
+            calamine_rows(workbook.get_sheet_by_name(SUMMARY_SHEET_NAME))
+        )
         if actual_summary != expected_summary:
             raise ValueError(f"{path.name} 的“{SUMMARY_SHEET_NAME}”内容校验失败")
 
-        detail_groups = _sum_detail_groups(detail_sheets)
+        detail_groups = _sum_detail_groups(detail_sections)
         detail_total = sum(
             (values[0] for values in detail_groups.values()),
             Decimal("0"),
@@ -846,19 +1022,19 @@ def validate_output(
 
 
 def process_payment_files() -> None:
-    target_book, sections, _ = build_workbook()
+    report = build_report()
     expectations = {
-        detail_sheet.title: PaymentOutputExpectation(
+        detail.name: PaymentOutputExpectation(
             profile=profile,
-            row_count=max(detail_sheet.max_row - 1, 0),
+            row_count=len(detail.rows),
             merchant_id=merchant_id(profile.name),
         )
-        for profile, detail_sheet in sections
+        for profile, detail in zip(report.section_profiles, report.details)
     }
-    expected_summary = _summary_snapshot(target_book[SUMMARY_SHEET_NAME])
-    save_workbook_atomically(
-        target_book,
+    expected_summary = _summary_snapshot(report.summary_rows)
+    write_xlsx_atomically(
         OUTPUT_FILE,
+        lambda path: write_workbook(path, report),
         lambda path: validate_output(path, expectations, expected_summary),
     )
     print(f"处理完成：{OUTPUT_FILE}")

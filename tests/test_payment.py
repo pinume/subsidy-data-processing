@@ -53,7 +53,8 @@ class DetailProcessingTests(unittest.TestCase):
         target = workbook.create_sheet("target")
 
         rows, unidentified = payment._collect_normalized_detail(
-            source,
+            payment._iter_actual_rows_with_numbers(source),
+            source.title,
             profile=profile,
             merchant_id="ABC123",
         )
@@ -74,7 +75,8 @@ class DetailProcessingTests(unittest.TestCase):
         target = workbook.create_sheet("target")
 
         rows, unidentified = payment._collect_normalized_detail(
-            source,
+            payment._iter_actual_rows_with_numbers(source),
+            source.title,
             profile=profile,
             merchant_id="ABC123",
         )
@@ -87,20 +89,19 @@ class DetailProcessingTests(unittest.TestCase):
         self.assertEqual(target.cell(2, len(profile.detail_headers) + 2).value, "格力")
 
     def test_summary_uses_decimal_and_signed_count(self) -> None:
-        workbook = Workbook()
-        detail = workbook.active
-        detail.append(["财务大类", "品牌", "补贴金额"])
-        detail.append(["空调", "格力", "0.10"])
-        detail.append(["空调", "格力", "0.20"])
-        detail.append(["空调", "格力", "-0.05"])
-        summary = workbook.create_sheet("汇总")
+        detail_rows = [
+            ["财务大类", "品牌", "补贴金额"],
+            ["空调", "格力", "0.10"],
+            ["空调", "格力", "0.20"],
+            ["空调", "格力", "-0.05"],
+        ]
 
-        groups, bold_rows = payment._build_summary_sheet(
-            summary, [("家电", [detail], payment.APPLIANCE_CATEGORY_MAP)]
+        rows, bold_rows, groups = payment._build_summary_rows(
+            [("家电", [("明细", detail_rows)], payment.APPLIANCE_CATEGORY_MAP)]
         )
 
         self.assertEqual(groups, 1)
-        rows = [tuple(row) for row in summary.iter_rows(values_only=True)]
+        rows = [tuple(row) for row in rows]
         self.assertEqual(
             rows,
             [
@@ -138,7 +139,14 @@ class DetailProcessingTests(unittest.TestCase):
                         "read-only aggregation must not use random cell access"
                     ),
                 ):
-                    groups = payment._sum_detail_groups([read_only_detail])
+                    groups = payment._sum_detail_groups(
+                        [
+                            (
+                                read_only_detail.title,
+                                payment._worksheet_rows(read_only_detail),
+                            )
+                        ]
+                    )
             finally:
                 read_only_book.close()
 
@@ -149,22 +157,36 @@ class DetailProcessingTests(unittest.TestCase):
 
 
 class WorkbookLoadingTests(unittest.TestCase):
-    def test_process_sources_reads_cached_formula_values(self) -> None:
-        # This checks the loader contract without requiring Excel to calculate a file.
-        source = Path("source.xlsx")
+    def test_process_sources_opens_formula_workbook_lazily_and_uncached(
+        self,
+    ) -> None:
+        # The main source read is calamine, which has no formula view — a
+        # blank subsidy cell still needs an openpyxl, data_only=False read of
+        # the same file to check for an uncached formula, but only once that
+        # blank cell is actually encountered.
         profile = payment.PROFILES["家电"]
-        calls = []
 
-        def recording_loader(path, **kwargs):
-            calls.append((path, kwargs))
-            raise RuntimeError("stop after loader call")
+        with TemporaryDirectory(dir=".") as temporary_dir:
+            source = Path(temporary_dir).resolve() / "source.xlsx"
+            workbook = Workbook()
+            detail = workbook.active
+            detail.append(profile.detail_headers)
+            detail.append(_detail_row(profile, "A04-空调", "格力空调", None))
+            workbook.save(source)
 
-        with patch.object(payment, "load_workbook", recording_loader):
-            with self.assertRaisesRegex(RuntimeError, "stop after loader call"):
-                payment._process_sources([source], profile, "ABC123", Workbook())
+            calls = []
+            original_load_workbook = load_workbook
 
+            def recording_loader(path, **kwargs):
+                calls.append((path, kwargs))
+                return original_load_workbook(path, **kwargs)
+
+            with patch.object(payment, "load_workbook", recording_loader):
+                payment._process_sources([source], profile, "ABC123")
+
+        self.assertEqual(len(calls), 1)
         self.assertTrue(calls[0][1]["read_only"])
-        self.assertTrue(calls[0][1]["data_only"])
+        self.assertFalse(calls[0][1]["data_only"])
 
     def test_process_sources_rejects_uncached_formula_subsidy_amount(self) -> None:
         profile = payment.PROFILES["家电"]
@@ -180,41 +202,94 @@ class WorkbookLoadingTests(unittest.TestCase):
             workbook.save(source)
 
             with self.assertRaisesRegex(ValueError, "公式但没有缓存计算结果"):
-                payment._process_sources([source], profile, "ABC123", Workbook())
+                payment._process_sources([source], profile, "ABC123")
             self.assertTrue(source.exists())
 
-    def test_process_sources_sorts_records_before_creating_cells(self) -> None:
+    def test_process_sources_rejects_excel_error_subsidy_amount(self) -> None:
+        profile = payment.PROFILES["家电"]
+
+        with TemporaryDirectory(dir=".") as temporary_dir:
+            source = Path(temporary_dir).resolve() / "source.xlsx"
+            workbook = Workbook()
+            detail = workbook.active
+            detail.append(profile.detail_headers)
+            detail.append(
+                _detail_row(profile, "A04-空调", "格力空调", "#DIV/0!")
+            )
+            workbook.save(source)
+
+            with self.assertRaisesRegex(ValueError, "Excel 错误值.*#DIV/0!"):
+                payment._process_sources([source], profile, "ABC123")
+            self.assertTrue(source.exists())
+
+    def test_process_sources_skips_other_merchants_without_error(self) -> None:
+        """Another merchant's rows are excluded silently, never raised on.
+
+        The source carries every merchant's sales, so this is the common case,
+        not an anomaly — including when 商户编号 holds an Excel error value
+        (the 数码 source has one). See the comment at the merchant filter.
+        """
+        profile = payment.PROFILES["家电"]
+
+        with TemporaryDirectory(dir=".") as temporary_dir:
+            source = Path(temporary_dir).resolve() / "source.xlsx"
+            workbook = Workbook()
+            detail = workbook.active
+            detail.append(profile.detail_headers)
+            detail.append(_detail_row(profile, "A04-空调", "格力空调", "10.00"))
+            other = _detail_row(profile, "A04-空调", "格力空调", "10.00")
+            other[profile.detail_headers.index("商户编号")] = "OTHER99"
+            detail.append(other)
+            workbook.save(source)
+
+            section = payment._process_sources([source], profile, "ABC123")
+
+            self.assertEqual(len(section.rows), 1)
+
+    def test_process_sources_returns_final_rows_without_creating_a_workbook(
+        self,
+    ) -> None:
+        """Brand inference and sorting must be done before anything is written.
+
+        This used to be checked by counting the cells already created on the
+        target worksheet when each step ran. _process_sources no longer builds
+        a worksheet at all — it returns rows, and the writer runs afterwards —
+        so the invariant is now that no workbook exists while it works, and
+        that the rows it hands back are already inferred and sorted.
+        """
         profile = payment.PROFILES["家电"]
         with TemporaryDirectory(dir=".") as temporary_dir:
             source = Path(temporary_dir).resolve() / "source.xlsx"
             _write_source(source, profile, "A04-空调", "格力空调", "10.00")
-            target_book = Workbook()
-            target_book.remove(target_book.active)
+            observed = []
             original_infer = payment._infer_missing_brands
             original_sort = payment._sort_detail_rows
-            observed = []
 
-            def infer_before_write(rows, headers):
-                sheet = target_book[profile.detail_sheet_name]
-                observed.append(("infer", len(sheet._cells)))
+            def recording_infer(rows, headers):
+                observed.append("infer")
                 return original_infer(rows, headers)
 
-            def sort_before_write(rows, headers, category_map):
-                sheet = target_book[profile.detail_sheet_name]
-                observed.append(("sort", len(sheet._cells)))
+            def recording_sort(rows, headers, category_map):
+                observed.append("sort")
                 return original_sort(rows, headers, category_map)
 
-            with (
-                patch.object(payment, "_infer_missing_brands", infer_before_write),
-                patch.object(payment, "_sort_detail_rows", sort_before_write),
-            ):
-                sheet = payment._process_sources(
-                    [source], profile, "ABC123", target_book
+            def forbidden_workbook(*args, **kwargs):
+                raise AssertionError(
+                    "_process_sources must not create a workbook; the writer does"
                 )
 
-            self.assertEqual(observed, [("infer", 0), ("sort", 0)])
-            self.assertEqual(sheet.max_row, 2)
-            target_book.close()
+            with (
+                patch.object(payment, "_infer_missing_brands", recording_infer),
+                patch.object(payment, "_sort_detail_rows", recording_sort),
+                patch.object(payment, "Workbook", forbidden_workbook),
+            ):
+                section = payment._process_sources([source], profile, "ABC123")
+
+            self.assertEqual(observed, ["infer", "sort"])
+            self.assertEqual(section.name, profile.detail_sheet_name)
+            self.assertEqual(section.header, profile.detail_headers + payment.DERIVED_HEADERS)
+            self.assertEqual(len(section.rows), 1)
+            self.assertEqual(section.rows[0][-1], "格力")
 
     def _write_detail_workbook(self, path: Path, headers) -> None:
         workbook = Workbook()
@@ -362,6 +437,15 @@ class PaymentPipelineTests(unittest.TestCase):
                     Decimal(str(summary.cell(summary.max_row, 3).value)),
                     Decimal("35"),
                 )
+                self.assertTrue(
+                    all(
+                        "," not in cell.number_format
+                        for sheet in result.worksheets
+                        for row in sheet.iter_rows()
+                        for cell in row
+                    )
+                )
+                self.assertEqual(summary["C2"].number_format, "0.00")
             finally:
                 result.close()
 
@@ -431,7 +515,9 @@ class PaymentPipelineTests(unittest.TestCase):
             )
 
             saved = load_workbook(output_file)
-            expected_summary = payment._summary_snapshot(saved["汇总"])
+            expected_summary = payment._summary_snapshot(
+                payment._worksheet_rows(saved["汇总"])
+            )
             saved["汇总"].cell(saved["汇总"].max_row, 3).value = 999
             saved.save(output_file)
             saved.close()

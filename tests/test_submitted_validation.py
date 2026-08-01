@@ -280,7 +280,7 @@ class StyleReuseTest(unittest.TestCase):
         self.assertEqual(source.number_format, "General")
 
     def test_format_sheet_keeps_a_number_format_set_beforehand(self) -> None:
-        """payment's 汇总 sets #,##0.00 before formatting; it must survive.
+        """A number format set before generic formatting must survive.
 
         Only outside the 补贴金额 column, which format_sheet has always
         rewritten to 0.00 whatever it held before.
@@ -289,13 +289,13 @@ class StyleReuseTest(unittest.TestCase):
         measurement_font = load_measurement_font(font_path)
         _, sheet = self.build_sheet()
         preserved = sheet.cell(row=2, column=1)
-        preserved.number_format = "#,##0.00"
+        preserved.number_format = "0.000"
         overwritten = sheet.cell(row=3, column=2)
-        overwritten.number_format = "#,##0.00"
+        overwritten.number_format = "0.000"
 
         format_sheet(sheet, font_name, measurement_font)
 
-        self.assertEqual(preserved.number_format, "#,##0.00")
+        self.assertEqual(preserved.number_format, "0.000")
         self.assertEqual(overwritten.number_format, "0.00")
 
     def test_format_sheet_leaves_later_fills_isolated(self) -> None:
@@ -363,7 +363,7 @@ class SubmittedHeaderValidationTest(unittest.TestCase):
                 header,
             )
             submitted.configure_data_dir(data_dir)
-            return submitted.build_workbook(profile_name)
+            return submitted.build_report(profile_name)
 
     def test_missing_required_fields_are_reported_by_name(self) -> None:
         for profile_name in ("家电", "数码"):
@@ -380,15 +380,12 @@ class SubmittedHeaderValidationTest(unittest.TestCase):
     def test_valid_header_is_accepted(self) -> None:
         for profile_name in ("家电", "数码"):
             with self.subTest(profile_name=profile_name):
-                workbook, file_count, data_rows = self.run_build(
+                report = self.run_build(
                     profile_name,
                     SUBMITTED_HEADER,
                 )
-                try:
-                    self.assertEqual(file_count, 1)
-                    self.assertEqual(data_rows, 1)
-                finally:
-                    workbook.close()
+                self.assertEqual(report.file_count, 1)
+                self.assertEqual(report.data_row_count, 1)
 
 
 class ValidatorRejectsBadOutputTest(unittest.TestCase):
@@ -405,12 +402,9 @@ class ValidatorRejectsBadOutputTest(unittest.TestCase):
                 SUBMITTED_HEADER,
             )
             submitted.configure_data_dir(data_dir)
-            workbook, _, data_rows = submitted.build_workbook(profile_name)
-            try:
-                workbook.save(path)
-            finally:
-                workbook.close()
-            return data_rows
+            report = submitted.build_report(profile_name)
+            submitted.write_workbook(path, report)
+            return report.data_row_count
 
     def test_accepts_the_workbook_it_just_built(self) -> None:
         for profile_name in ("家电", "数码"):
@@ -419,6 +413,16 @@ class ValidatorRejectsBadOutputTest(unittest.TestCase):
                     output = Path(directory) / "已上传.xlsx"
                     data_rows = self.build_valid_output(profile_name, output)
                     submitted.validate_output(output, data_rows, profile_name)
+
+                    workbook = load_workbook(output)
+                    try:
+                        sheet = workbook["Summary"]
+                        self.assertEqual(sheet.freeze_panes, "A2")
+                        self.assertEqual(sheet.auto_filter.ref, "A1:L2")
+                        self.assertEqual(sheet["A1"].fill.fgColor.rgb[-6:], "000000")
+                        self.assertEqual(sheet["D2"].number_format, "0.00")
+                    finally:
+                        workbook.close()
 
     def test_rejects_wrong_row_count(self) -> None:
         for profile_name in ("家电", "数码"):

@@ -7,7 +7,9 @@ requires-python = ">=3.12"
 dependencies = [
     "openpyxl>=3.1.5",
     "pillow>=12.2.0",
+    "python-calamine>=0.8.2",
     "pyyaml>=6.0.2",
+    "xlsxwriter>=3.2.9",
 ]
 
 [dependency-groups]

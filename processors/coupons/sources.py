@@ -18,6 +18,7 @@ from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
 from openpyxl import load_workbook
+from python_calamine import CalamineWorkbook
 
 from processors.common.config import load_brand_mapping
 from processors.common.dates import (
@@ -25,6 +26,7 @@ from processors.common.dates import (
     normalize_document_number,
     normalize_receipt_identifier,
 )
+from processors.common.excel import calamine_rows
 from processors.common.paths import find_data_files, resolve_unique_file
 from processors.coupons.matching import COUPON_REFERENCE_RE
 
@@ -118,12 +120,13 @@ def load_coupon_remark_lookup(source: Path) -> dict[tuple[str, date], str]:
     if not source.exists():
         raise FileNotFoundError(f"未找到备注匹配文件：{source}")
 
-    workbook = load_workbook(source, read_only=True, data_only=True)
+    workbook = CalamineWorkbook.from_path(str(source))
     try:
-        if "Sheet1" not in workbook.sheetnames:
+        if "Sheet1" not in workbook.sheet_names:
             raise ValueError(f"{source.name} 缺少 Sheet1 工作表")
-        sheet = workbook["Sheet1"]
-        header = [cell.value for cell in sheet[1]]
+        sheet = workbook.get_sheet_by_name("Sheet1")
+        rows_iter = calamine_rows(sheet)
+        header = next(rows_iter, [])
         required_headers = ("单据号", "日期", "备注")
         missing_headers = [
             required_header
@@ -139,10 +142,7 @@ def load_coupon_remark_lookup(source: Path) -> dict[tuple[str, date], str]:
         date_index = header.index("日期")
         remark_index = header.index("备注")
         lookup: dict[tuple[str, date], str] = {}
-        for row_number, row in enumerate(
-            sheet.iter_rows(min_row=2, values_only=True),
-            start=2,
-        ):
+        for row_number, row in enumerate(rows_iter, start=2):
             document_number = normalize_document_number(row[document_index])
             remark = str(row[remark_index] or "").strip()
             if not document_number or not remark:
@@ -171,12 +171,13 @@ def load_uploaded_summary(source: Path) -> tuple[dict[str, str], int, Decimal]:
     if not source.exists():
         raise FileNotFoundError(f"未找到已上传匹配文件：{source}")
 
-    workbook = load_workbook(source, read_only=True, data_only=True)
+    workbook = CalamineWorkbook.from_path(str(source))
     try:
-        if "Summary" not in workbook.sheetnames:
+        if "Summary" not in workbook.sheet_names:
             raise ValueError(f"{source.name} 缺少 Summary 工作表")
-        sheet = workbook["Summary"]
-        header = [cell.value for cell in sheet[1]]
+        sheet = workbook.get_sheet_by_name("Summary")
+        rows_iter = calamine_rows(sheet)
+        header = next(rows_iter, [])
         required_headers = ("检索参考号", "状态", "描述", "补贴金额")
         missing_headers = [
             required_header
@@ -195,10 +196,7 @@ def load_uploaded_summary(source: Path) -> tuple[dict[str, str], int, Decimal]:
         lookup: dict[str, str] = {}
         subsidy_count = 0
         subsidy_total = Decimal("0")
-        for row_number, row in enumerate(
-            sheet.iter_rows(min_row=2, values_only=True),
-            start=2,
-        ):
+        for row_number, row in enumerate(rows_iter, start=2):
             reference = normalize_receipt_identifier(
                 row[reference_index]
             ).upper()
@@ -243,12 +241,12 @@ def _read_header_row(path: Path) -> tuple[object, ...]:
     per data row on a 10000+ row export. Every reader in this module goes
     through iter_rows() instead, exactly once per full pass.
     """
-    workbook = load_workbook(path, read_only=True, data_only=True)
+    workbook = CalamineWorkbook.from_path(str(path))
     try:
-        sheet = workbook.worksheets[0]
-        rows_iter = sheet.iter_rows(values_only=True)
+        sheet = workbook.get_sheet_by_index(0)
+        rows_iter = calamine_rows(sheet)
         next(rows_iter, None)  # title row
-        return next(rows_iter, None) or ()
+        return tuple(next(rows_iter, None) or ())
     finally:
         workbook.close()
 
@@ -315,12 +313,10 @@ def read_coupon_export(
     once per row instead of once per row per profile.
     """
     owns_workbook = source_workbook is None
-    workbook = source_workbook or load_workbook(
-        source, read_only=True, data_only=True
-    )
+    workbook = source_workbook or CalamineWorkbook.from_path(str(source))
     try:
-        sheet = workbook.worksheets[0]
-        all_rows = list(sheet.iter_rows(values_only=True))
+        sheet = workbook.get_sheet_by_index(0)
+        all_rows = list(calamine_rows(sheet))
         if len(all_rows) < 3:
             raise ValueError(f"{source.name} 缺少标题行、字段标题行或合计行")
         required_columns = max(
@@ -364,6 +360,51 @@ def read_coupon_export(
 
         family_column = COUPON_FAMILY_SUBSIDY_COLUMN - 1
         digital_column = COUPON_DIGITAL_SUBSIDY_COLUMN - 1
+        blank_subsidy_cells = {
+            (row_number, column)
+            for row_number, values in enumerate(all_rows[2:-1], start=3)
+            for column in (family_column, digital_column)
+            if column >= len(values) or values[column] in (None, "")
+        }
+        if blank_subsidy_cells:
+            source_type_book = load_workbook(
+                source, read_only=True, data_only=False
+            )
+            try:
+                source_type_sheet = source_type_book.worksheets[0]
+                if hasattr(source_type_sheet, "reset_dimensions"):
+                    source_type_sheet.reset_dimensions()
+                for row_number, cells in enumerate(
+                    source_type_sheet.iter_rows(
+                        min_col=COUPON_FAMILY_SUBSIDY_COLUMN,
+                        max_col=COUPON_DIGITAL_SUBSIDY_COLUMN,
+                    ),
+                    start=1,
+                ):
+                    for column, cell, header in zip(
+                        (family_column, digital_column),
+                        cells,
+                        (
+                            COUPON_FAMILY_SUBSIDY_HEADER,
+                            COUPON_DIGITAL_SUBSIDY_HEADER,
+                        ),
+                        strict=True,
+                    ):
+                        if (row_number, column) not in blank_subsidy_cells:
+                            continue
+                        if cell.data_type == "e":
+                            raise ValueError(
+                                f"{source.name} 第 {row_number} 行字段 {header!r} "
+                                f"是 Excel 错误值：{cell.value!r}"
+                            )
+                        if cell.data_type == "f":
+                            raise ValueError(
+                                f"{source.name} 第 {row_number} 行字段 {header!r} "
+                                "是公式但没有缓存计算结果；请先用 Excel/WPS "
+                                "打开并保存，或将公式转换为数值"
+                            )
+            finally:
+                source_type_book.close()
         appliance_rows: list[list[object]] = [list(APPLIANCE_PROFILE.output_header)]
         digital_rows: list[list[object]] = [list(DIGITAL_PROFILE.output_header)]
         for row_number, values in enumerate(all_rows[2:-1], start=3):
