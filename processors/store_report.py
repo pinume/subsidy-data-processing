@@ -25,8 +25,9 @@ from zoneinfo import ZoneInfo
 from openpyxl import load_workbook
 from openpyxl.styles import Alignment, Font
 from openpyxl.workbook.workbook import Workbook
+from python_calamine import CalamineWorkbook
 
-from processors.common.excel import save_workbook_atomically
+from processors.common.excel import calamine_rows, save_workbook_atomically
 from processors.common.paths import find_data_files, resolve_unique_file
 from processors.coupon_report import OUTPUT_FILE as UPLOAD_FILE
 from processors.coupon_report import SUMMARY_HEADER as UPLOAD_HEADER
@@ -315,27 +316,43 @@ def widen_currency_columns(sheet) -> None:
         sheet.column_dimensions[column].width = CURRENCY_COLUMN_WIDTH
 
 
-def _open_source_workbook(path: Path, business_name: str, processing_mode: str) -> Workbook:
+def _open_source_workbook(path: Path, business_name: str, processing_mode: str):
+    """Open one of this program's own outputs with calamine, not openpyxl.
+
+    Both inputs are read for one small summary sheet each, but openpyxl parses
+    the whole shared string table up front no matter which sheet is wanted and
+    no matter that read_only was asked for. Since these files are written by
+    XlsxWriter, which shares strings rather than inlining them the way openpyxl
+    did, that table now holds every string of the thousands of detail rows
+    neither loader looks at — 0.17s to reach a 48-row sheet. calamine parses it
+    in Rust and the cost disappears.
+    """
     if not path.exists():
         raise FileNotFoundError(
             f"未找到{business_name}：{path}，请先运行“{processing_mode}”处理模式生成该文件"
         )
-    return load_workbook(path, read_only=True, data_only=True)
+    return CalamineWorkbook.from_path(str(path))
 
 
-def _sheet_or_raise(workbook: Workbook, sheet_name: str, source_name: str, business_name: str):
-    try:
-        return workbook[sheet_name]
-    except KeyError as error:
+def _sheet_rows_or_raise(
+    workbook, sheet_name: str, source_name: str, business_name: str
+) -> list[list[object]]:
+    if sheet_name not in workbook.sheet_names:
         raise ValueError(
             f"{source_name} 缺少工作表 {sheet_name!r}，文件可能不是本程序生成的{business_name}"
-        ) from error
+        )
+    return list(calamine_rows(workbook.get_sheet_by_name(sheet_name)))
 
 
-def _validate_header(sheet, expected_header: tuple[str, ...], source_name: str, business_name: str) -> None:
+def _validate_header(
+    rows: list[list[object]],
+    expected_header: tuple[str, ...],
+    source_name: str,
+    business_name: str,
+) -> None:
     """Check the first row by field name, not just position, so a column reorder or a
     year-label change upstream fails clearly instead of silently misreading data."""
-    actual_header = next(sheet.iter_rows(min_row=1, max_row=1, values_only=True), ())
+    actual_header = tuple(rows[0][: len(expected_header)]) if rows else ()
     if actual_header != tuple(expected_header):
         raise ValueError(
             f"{source_name} 的{business_name}表头不符合预期：预期 {tuple(expected_header)}，实际 {actual_header}"
@@ -351,8 +368,9 @@ def load_upload_data(
 ]:
     workbook = _open_source_workbook(upload_file, "审核明细", "审核明细（销售用券情况统计）")
     try:
-        sheet = _sheet_or_raise(workbook, UPLOAD_SHEET_NAME, upload_file.name, "审核明细")
-        _validate_header(sheet, UPLOAD_HEADER, upload_file.name, "审核明细")
+        rows = _sheet_rows_or_raise(workbook, UPLOAD_SHEET_NAME, upload_file.name, "审核明细")
+        _validate_header(rows, UPLOAD_HEADER, upload_file.name, "审核明细")
+        header_width = len(UPLOAD_HEADER)
 
         amounts: dict[tuple[str, str], dict[str, Decimal]] = {}
         current_category = ""
@@ -365,7 +383,7 @@ def load_upload_data(
             "数码": {},
         }
 
-        for row in sheet.iter_rows(min_row=2, values_only=True):
+        for row in (r[:header_width] for r in rows[1:]):
             category_raw, brand_raw, status_raw, count_raw, amount_raw = row
             if category_raw:
                 current_category = normalize_text(category_raw)
@@ -437,8 +455,9 @@ def load_payment_data(
 ]:
     workbook = _open_source_workbook(payment_file, "回款明细", "回款明细（家电+数码）")
     try:
-        sheet = _sheet_or_raise(workbook, PAYMENT_SHEET_NAME, payment_file.name, "回款明细")
-        _validate_header(sheet, PAYMENT_HEADER, payment_file.name, "回款明细")
+        rows = _sheet_rows_or_raise(workbook, PAYMENT_SHEET_NAME, payment_file.name, "回款明细")
+        _validate_header(rows, PAYMENT_HEADER, payment_file.name, "回款明细")
+        header_width = len(PAYMENT_HEADER)
 
         amounts: dict[tuple[str, str], Decimal] = {}
         current_category = ""
@@ -448,7 +467,7 @@ def load_payment_data(
             "数码": CountAmount(0, Decimal("0")),
         }
 
-        for row in sheet.iter_rows(min_row=2, values_only=True):
+        for row in (r[:header_width] for r in rows[1:]):
             category_raw, brand_raw, amount_raw, count_raw = row
             if category_raw:
                 current_category = normalize_text(category_raw)
