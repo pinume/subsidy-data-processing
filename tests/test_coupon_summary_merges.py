@@ -2,19 +2,16 @@
 
 merge_coupon_summary_groups used to walk the built sheet with sheet.cell(),
 comparing each row against the one below it. XlsxWriter cannot be read back
-that way, so the ranges are now derived from the summary rows themselves and
-the openpyxl writer consumes the same result. These tests pin the ranges, so
-the two writers cannot drift apart on which cells get merged.
+that way, so the ranges are derived from the summary rows themselves and the
+writer is handed the result. These tests pin the ranges, which are now the
+only statement of which cells get merged.
 """
 
 import unittest
 
-from openpyxl import Workbook
-
 from processors.coupons.appliance import (
     coupon_summary_group_merges,
     coupon_summary_project_merges,
-    merge_coupon_summary_groups,
     project_summary_blocks,
 )
 
@@ -68,23 +65,3 @@ class ProjectMergeRangesTest(unittest.TestCase):
         blocks = project_summary_blocks(SUMMARY_ROWS)
         self.assertEqual(blocks, [(6, 7)])
         self.assertEqual(coupon_summary_project_merges(blocks), [(8, 9, 1, 2)])
-
-
-class OpenpyxlWriterUsesTheSameRangesTest(unittest.TestCase):
-    def test_written_merges_equal_the_computed_ranges(self) -> None:
-        """The openpyxl path must not diverge from what the pure function says."""
-        workbook = Workbook()
-        sheet = workbook.active
-        sheet.append(["财务大类", "品牌", "a", "b", "c"])
-        for row in SUMMARY_ROWS:
-            sheet.append(list(row))
-
-        merge_coupon_summary_groups(sheet, SUMMARY_ROWS, 6)
-
-        expected = {
-            f"{chr(ord('A') + column - 1)}{first}"
-            f":{chr(ord('A') + column - 1)}{last}"
-            for first, last, column in coupon_summary_group_merges(SUMMARY_ROWS, 6)
-        }
-        self.assertEqual({str(r) for r in sheet.merged_cells.ranges}, expected)
-        workbook.close()

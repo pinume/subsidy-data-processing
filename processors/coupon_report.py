@@ -23,7 +23,6 @@ from python_calamine import CalamineWorkbook
 from xlsxwriter import Workbook as XlsxWorkbook
 
 from processors.common.excel import (
-    format_sheet,
     load_measurement_font,
     resolve_font,
     write_xlsx_atomically,
@@ -85,26 +84,6 @@ def merged_reference_decisions(
         )
     )
     return decisions
-
-
-def build_reference_report_sheet(
-    workbook: Workbook,
-    decisions: list[tuple[object, ...]],
-    font_name: str,
-    measurement_font: object,
-) -> None:
-    report_sheet = workbook.create_sheet(REFERENCE_REPORT_SHEET)
-    report_sheet.append(REFERENCE_REPORT_HEADER)
-    for decision in decisions:
-        report_sheet.append(decision)
-    format_sheet(report_sheet, font_name, measurement_font, ("说明",))
-    document_column = REFERENCE_REPORT_HEADER.index("单据号") + 1
-    date_column = REFERENCE_REPORT_HEADER.index("单据日期") + 1
-    for row_number in range(2, report_sheet.max_row + 1):
-        report_sheet.cell(row_number, document_column).number_format = "@"
-        date_cell = report_sheet.cell(row_number, date_column)
-        if date_cell.value not in (None, ""):
-            date_cell.number_format = "yyyy-mm-dd"
 
 
 def report_source_total_gap(

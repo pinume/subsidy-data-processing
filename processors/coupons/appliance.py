@@ -18,7 +18,7 @@ from pathlib import Path
 
 from openpyxl import Workbook
 from openpyxl.cell.cell import MergedCell
-from openpyxl.styles import Alignment, Border, PatternFill, Side
+from openpyxl.styles import Border, Side
 from python_calamine import CalamineWorkbook
 
 from processors.common.dates import (
@@ -28,9 +28,6 @@ from processors.common.dates import (
 )
 from processors.common.excel import (
     calamine_rows,
-    format_sheet,
-    load_measurement_font,
-    resolve_font,
 )
 from processors.receipts import OUTPUT_FILE as RECEIPTS_OUTPUT_FILE
 from processors.receipts import RECEIPTS_REMARK_SAME_MODEL_REPLACEMENT
@@ -475,29 +472,6 @@ def coupon_summary_group_merges(
     return merges
 
 
-def merge_coupon_summary_groups(
-    sheet,
-    rows: list[tuple[object, ...]],
-    row_count: int,
-    header_rows: int = 1,
-) -> None:
-    centered = Alignment(horizontal="center", vertical="center")
-    for first_row, last_row, column in coupon_summary_group_merges(
-        rows, row_count, header_rows
-    ):
-        sheet.merge_cells(
-            start_row=first_row,
-            start_column=column,
-            end_row=last_row,
-            end_column=column,
-        )
-    # Every run's top cell is centered, including the single-row runs that
-    # produce no merge at all.
-    for column in (1, 2):
-        for row_number in range(1 + header_rows, row_count + 1 + header_rows):
-            sheet.cell(row_number, column).alignment = centered
-
-
 def project_summary_blocks(
     rows: list[tuple[object, ...]],
 ) -> list[tuple[int, int]]:
@@ -541,24 +515,6 @@ def coupon_summary_project_merges(
     ]
 
 
-def merge_coupon_summary_projects(
-    sheet,
-    blocks: list[tuple[int, int]],
-    header_rows: int = 1,
-) -> None:
-    centered = Alignment(horizontal="center", vertical="center")
-    for first_row, last_row, first_column, last_column in (
-        coupon_summary_project_merges(blocks, header_rows)
-    ):
-        sheet.merge_cells(
-            start_row=first_row,
-            start_column=first_column,
-            end_row=last_row,
-            end_column=last_column,
-        )
-        sheet.cell(first_row, first_column).alignment = centered
-
-
 def merged_coupon_summary_values(
     rows: list[tuple[object, ...]],
 ) -> list[tuple[object, ...]]:
@@ -584,24 +540,6 @@ def merged_coupon_summary_values(
         previous_category = category
         previous_brand = brand
     return merged_rows
-
-
-def apply_coupon_summary_borders(
-    sheet,
-    *,
-    min_row: int,
-    max_row: int,
-    min_column: int,
-    max_column: int,
-) -> None:
-    for row in sheet.iter_rows(
-        min_row=min_row,
-        max_row=max_row,
-        min_col=min_column,
-        max_col=max_column,
-    ):
-        for cell in row:
-            cell.border = COUPON_SUMMARY_BORDER
 
 
 @dataclass
@@ -769,106 +707,6 @@ def compute_coupon_data(
         summary_rows=summary_rows,
         group_sheets=group_sheets,
     )
-
-
-def build_summary_and_details_sheets(
-    workbook: Workbook,
-    computation: CouponComputation,
-    extra_summary_rows: list[tuple[object, ...]] = (),
-) -> tuple[str, object, PatternFill]:
-    """Create 数据汇总 (index 0) and 家电-明细总表. Returns (font_name,
-    measurement_font, matched_fill) so the caller can reuse them for sheets
-    appended later (digital's detail sheet, this project's group sheets and
-    Processing Report) without reloading the font."""
-    rows = computation.rows
-    matched_count = computation.matched_count
-    combined_summary_rows = [*computation.summary_rows, *extra_summary_rows]
-
-    sheet = workbook.create_sheet(DETAILS_SHEET_NAME)
-    for row in rows:
-        sheet.append(row)
-
-    font_name, font_path = resolve_font()
-    measurement_font = load_measurement_font(font_path)
-    format_sheet(
-        sheet,
-        font_name,
-        measurement_font,
-        ("商品名称", "详细情况"),
-    )
-    for cell in sheet["A"][1:]:
-        cell.number_format = "@"
-    for cell in sheet["B"][1:]:
-        if cell.value not in (None, ""):
-            cell.number_format = "yyyy-mm-dd"
-    matched_fill = PatternFill("solid", fgColor=COUPON_MATCH_FILL_COLOR)
-    matched_start_row = sheet.max_row - matched_count + 1
-    for row in sheet.iter_rows(
-        min_row=matched_start_row,
-        max_row=sheet.max_row,
-    ):
-        for cell in row:
-            cell.fill = matched_fill
-
-    summary_sheet = workbook.create_sheet(SUMMARY_SHEET_NAME, 0)
-    summary_sheet.append(COUPON_SUMMARY_HEADER)
-    for summary_row in combined_summary_rows:
-        summary_sheet.append(summary_row)
-    format_sheet(summary_sheet, font_name, measurement_font)
-    # The per-project blocks get one 财务大类+品牌 cell each, so the row-wise
-    # 财务大类/品牌 merging has to stop before them or the two would overlap.
-    project_blocks = project_summary_blocks(combined_summary_rows)
-    brand_rows_end = (
-        project_blocks[0][0] if project_blocks else len(combined_summary_rows)
-    )
-    if brand_rows_end:
-        merge_coupon_summary_groups(
-            summary_sheet, combined_summary_rows, brand_rows_end
-        )
-    merge_coupon_summary_projects(summary_sheet, project_blocks)
-    apply_coupon_summary_borders(
-        summary_sheet,
-        min_row=1,
-        max_row=len(combined_summary_rows) + 1,
-        min_column=1,
-        max_column=5,
-    )
-    for cell in summary_sheet["E"][1:len(combined_summary_rows) + 1]:
-        cell.number_format = "0.00"
-
-    return font_name, measurement_font, matched_fill
-
-
-def build_group_sheets(
-    workbook: Workbook,
-    computation: CouponComputation,
-    font_name: str,
-    measurement_font: object,
-    matched_fill: PatternFill,
-) -> None:
-    """Append this project's 财务大类-品牌 group sheets after whatever sheets
-    already exist in the workbook. The Processing Report is written separately
-    by processors/coupon_report.py, which merges both projects' decisions."""
-    for sheet_name, _, _, grouped_rows in computation.group_sheets:
-        group_sheet = workbook.create_sheet(sheet_name)
-        group_sheet.append(COUPON_GROUP_HEADER)
-        for row, _ in grouped_rows:
-            group_sheet.append(select_coupon_group_columns(row))
-        format_sheet(
-            group_sheet,
-            font_name,
-            measurement_font,
-            ("商品名称", "详细情况"),
-        )
-        for cell in group_sheet["A"][1:]:
-            cell.number_format = "@"
-        for cell in group_sheet["B"][1:]:
-            if cell.value not in (None, ""):
-                cell.number_format = "yyyy-mm-dd"
-        for row_number, (_, is_pink) in enumerate(grouped_rows, start=2):
-            if is_pink:
-                for column in range(1, len(COUPON_GROUP_HEADER) + 1):
-                    group_sheet.cell(row_number, column).fill = matched_fill
 
 
 def validate_summary_and_details_sheets(

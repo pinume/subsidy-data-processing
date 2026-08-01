@@ -3,14 +3,11 @@ import shutil
 import stat
 import time
 from collections.abc import Callable, Iterator
-from copy import copy
 from datetime import date, datetime
 from pathlib import Path
 from tempfile import NamedTemporaryFile
 
 from openpyxl import Workbook
-from openpyxl.styles import Alignment, Font, PatternFill
-from openpyxl.utils import get_column_letter
 from PIL import ImageFont
 from python_calamine import CalamineSheet
 
@@ -303,110 +300,6 @@ def pixels_to_column_pixels(pixels: float) -> int:
 # that does; StyleReuseTest pins their behaviour so that an openpyxl upgrade
 # which changes the attribute fails loudly instead of silently corrupting
 # styles or quietly losing the speedup.
-def style_snapshot(cell) -> tuple | None:
-    """An immutable key describing the cell's style right now.
-
-    Deliberately not the StyleArray itself: it is mutable and the assignments
-    that follow keep writing to it, so a live reference used as a dict key
-    would change value underneath the dict.
-    """
-    style = cell._style
-    return tuple(style) if style is not None else None
-
-
-def capture_style(cell):
-    """Detach a finished style so later cells can reuse it."""
-    return copy(cell._style)
-
-
-def reuse_style(cell, style) -> None:
-    """Give the cell its own copy of a previously computed style.
-
-    A copy, never the shared instance. StyleArray is mutable, so cells sharing
-    one instance are not merely equal but linked: code that later sets a fill
-    or a number format on any one of them would change all of them.
-    """
-    cell._style = copy(style)
-
-
-def create_sheet_styles(font_name: str):
-    normal_font = Font(name=font_name, size=FONT_SIZE, color="000000")
-    header_font = Font(name=font_name, size=FONT_SIZE, bold=True, color="FFFFFF")
-    header_fill = PatternFill("solid", fgColor="000000")
-    centered = Alignment(horizontal="center", vertical="center")
-    return normal_font, header_font, header_fill, centered
-
-
-def format_sheet(
-    sheet,
-    font_name: str,
-    measurement_font,
-    left_aligned_headers: tuple[str, ...] = ("描述",),
-) -> None:
-    column_count = sheet.max_column
-    normal_font, header_font, header_fill, centered = create_sheet_styles(font_name)
-    left_aligned = Alignment(horizontal="left", vertical="center")
-    left_aligned_columns: set[int] = set()
-    subsidy_column = None
-    for cell in sheet[1]:
-        if cell.value in left_aligned_headers:
-            left_aligned_columns.add(cell.column)
-        if cell.value == "补贴金额":
-            subsidy_column = cell.column
-        cell.font = header_font
-        cell.fill = header_fill
-        cell.alignment = centered
-
-    measure = width_measurer(measurement_font)
-    maximum_pixel_widths = [measure(cell.value) for cell in sheet[1]]
-    # Setting font/alignment/number_format re-registers each value in the
-    # workbook's style tables, and that lookup hashes the whole style object —
-    # by far the most expensive thing this function does on a large sheet. The
-    # body cells only ever produce a handful of distinct results, so each
-    # distinct one is computed once, by the ordinary assignments below, and
-    # afterwards reused. Two separate hazards shape how that is done:
-    #
-    # Styles set before this function runs (such as payment's summary number
-    # formats) must survive, because the per-cell assignments would have left
-    # them alone. That is why the cell's incoming style is part of the key
-    # rather than something to overwrite.
-    #
-    # Styles set after this function returns (the coupon pipelines' pink fill)
-    # must not leak between cells. That is why reuse_style hands out a copy: a
-    # shared StyleArray would make one later fill assignment repaint every cell
-    # that shares it.
-    styles: dict[tuple, object] = {}
-
-    for row_number, row in enumerate(
-        sheet.iter_rows(min_row=2, max_row=sheet.max_row), start=2
-    ):
-        sheet.row_dimensions[row_number].height = ROW_HEIGHT
-        for cell in row:
-            is_left_aligned = cell.column in left_aligned_columns
-            is_subsidy = cell.column == subsidy_column and cell.value is not None
-            key = (style_snapshot(cell), is_left_aligned, is_subsidy)
-            style = styles.get(key)
-            if style is None:
-                cell.font = normal_font
-                cell.alignment = left_aligned if is_left_aligned else centered
-                if is_subsidy:
-                    cell.number_format = "0.00"
-                styles[key] = capture_style(cell)
-            else:
-                reuse_style(cell, style)
-            width = measure(cell.value)
-            if width > maximum_pixel_widths[cell.column - 1]:
-                maximum_pixel_widths[cell.column - 1] = width
-
-    sheet.row_dimensions[1].height = ROW_HEIGHT
-    sheet.freeze_panes = "A2"
-    sheet.auto_filter.ref = f"A1:{get_column_letter(column_count)}{sheet.max_row}"
-    for column, maximum_pixels in enumerate(maximum_pixel_widths, start=1):
-        sheet.column_dimensions[get_column_letter(column)].width = (
-            pixels_to_excel_width(maximum_pixels)
-        )
-
-
 # What openpyxl assigned to a cell on its own when given a date or datetime.
 DATE_NUMBER_FORMAT = "yyyy-mm-dd"
 DATETIME_NUMBER_FORMAT = "yyyy-mm-dd h:mm:ss"
