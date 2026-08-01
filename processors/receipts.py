@@ -14,6 +14,13 @@ from openpyxl import Workbook, load_workbook
 from openpyxl.styles import PatternFill
 
 from processors.common.config import load_receipt_special_remark_keys
+from processors.common.dates import (
+    is_valid_original_invoice_number,
+    normalize_document_number,
+    normalize_receipt_date,
+    normalize_receipt_identifier,
+    receipt_match_key,
+)
 from processors.common.excel import (
     capture_style,
     create_sheet_styles,
@@ -25,15 +32,7 @@ from processors.common.excel import (
     save_workbook_atomically,
     width_measurer,
 )
-from processors.common.dates import (
-    is_valid_original_invoice_number,
-    normalize_document_number,
-    normalize_receipt_date,
-    normalize_receipt_identifier,
-    receipt_match_key,
-)
 from processors.common.paths import find_data_files, resolve_unique_file
-
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 OUTPUT_DIR = BASE_DIR / "output"

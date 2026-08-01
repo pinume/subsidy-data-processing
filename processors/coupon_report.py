@@ -25,7 +25,6 @@ from processors.coupons import appliance, digital, matching, sources
 from processors.coupons.report_contract import SUMMARY_HEADER, SUMMARY_SHEET_NAME
 from processors.coupons.sources import load_coupon_remark_lookup
 
-
 # Not unused despite the lack of a local reference: re-exported for
 # store_report.py, which imports SUMMARY_SHEET_NAME/SUMMARY_HEADER from this
 # module rather than reaching into processors.coupons.report_contract itself.

@@ -1,7 +1,6 @@
 import re
 from datetime import date, datetime
 
-
 RECEIPT_DATE_FORMATS = ("%Y-%m-%d", "%Y/%m/%d", "%Y%m%d")
 
 

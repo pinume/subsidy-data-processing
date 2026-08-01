@@ -14,13 +14,12 @@ import re
 from collections import Counter
 from dataclasses import dataclass
 from datetime import date
-from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
+from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 
 from processors.common.dates import (
     normalize_document_number,
     normalize_receipt_identifier,
 )
-
 
 COUPON_REFERENCE_RE = re.compile(r"\d{11}[A-Z]")
 

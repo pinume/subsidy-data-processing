@@ -20,8 +20,8 @@ from unittest.mock import patch
 
 from openpyxl import Workbook
 
-from processors.coupons import sources
 from processors import receipts
+from processors.coupons import sources
 from processors.receipts import read_receipt_rows
 
 
@@ -136,8 +136,9 @@ class ReadReceiptRowsTest(unittest.TestCase):
             try:
                 # read_receipt_rows opens its own workbook internally; count
                 # via monkeypatching load_workbook to hand back the wrapper.
-                import processors.receipts as receipts_module
                 from unittest.mock import patch
+
+                import processors.receipts as receipts_module
 
                 with patch.object(
                     receipts_module, "load_workbook", return_value=wrapped

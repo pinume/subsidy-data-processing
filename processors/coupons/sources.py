@@ -11,11 +11,11 @@ digital.py / large_appliances/_shared.py each ran their own
 find_data_files + header match against the same keyword).
 """
 
+import re
 from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
-import re
 
 from openpyxl import load_workbook
 
@@ -27,7 +27,6 @@ from processors.common.dates import (
 )
 from processors.common.paths import find_data_files, resolve_unique_file
 from processors.coupons.matching import COUPON_REFERENCE_RE
-
 
 BASE_DIR = Path(__file__).resolve().parent.parent.parent
 OUTPUT_DIR = BASE_DIR / "output"

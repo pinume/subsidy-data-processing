@@ -10,7 +10,6 @@ from openpyxl.utils import column_index_from_string
 
 from processors import submitted
 from processors.common.config import load_merchants, submitted_file_marker
-from processors.submitted import STATUS_ORDER
 from processors.common.excel import (
     capture_style,
     format_sheet,
@@ -22,6 +21,7 @@ from processors.common.excel import (
     width_measurer,
     widths_are_additive,
 )
+from processors.submitted import STATUS_ORDER
 
 
 def text_pixel_width(value: object, font) -> float:

@@ -1,8 +1,8 @@
 import io
 import tempfile
 import unittest
-from contextlib import redirect_stdout
 from collections import Counter
+from contextlib import redirect_stdout
 from decimal import Decimal
 from pathlib import Path
 

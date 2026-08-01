@@ -8,7 +8,7 @@ near-identical modules.
 """
 
 from dataclasses import dataclass
-from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
+from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from pathlib import Path
 
 from openpyxl import Workbook, load_workbook
@@ -24,7 +24,6 @@ from processors.common.excel import (
     save_workbook_atomically,
 )
 from processors.common.paths import find_data_files
-
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 OUTPUT_DIR = BASE_DIR / "output"

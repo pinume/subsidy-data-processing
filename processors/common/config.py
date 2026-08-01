@@ -6,7 +6,6 @@ import yaml
 
 from processors.common.dates import is_valid_original_invoice_number
 
-
 BASE_DIR = Path(__file__).resolve().parents[2]
 CONFIG_DIR = BASE_DIR / "config"
 BRAND_MAPPING_FILE = CONFIG_DIR / "brand_mapping.yaml"

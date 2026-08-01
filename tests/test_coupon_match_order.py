@@ -14,7 +14,6 @@ from datetime import date
 from processors.coupons import appliance, matching
 from processors.coupons import digital as coupons_digital
 
-
 SUBMITTED_REFERENCE = "12345678901N"
 SUPPLEMENT_REFERENCE = "22222222222N"
 CORRECTABLE_REFERENCE = "33333333333N"
