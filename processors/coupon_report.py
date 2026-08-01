@@ -14,15 +14,15 @@ module's public surface instead of reaching into
 processors.coupons.appliance's internals.
 """
 
-from datetime import datetime
+from datetime import date, datetime
 from decimal import Decimal
 from pathlib import Path
 
-from openpyxl import Workbook, load_workbook
 from python_calamine import CalamineWorkbook
 from xlsxwriter import Workbook as XlsxWorkbook
 
 from processors.common.excel import (
+    calamine_rows,
     load_measurement_font,
     resolve_font,
     write_xlsx_atomically,
@@ -251,6 +251,11 @@ def process_coupon_sales() -> None:
         appliance_computation,
         digital_computation,
     )
+    appliance.validate_computation(
+        appliance_computation,
+        extra_summary_rows,
+    )
+    digital.validate_computation(digital_computation)
     write_xlsx_atomically(
         OUTPUT_FILE,
         lambda path: write_coupon_workbook(
@@ -333,47 +338,109 @@ def process_coupon_sales() -> None:
     print(f"Output file: {OUTPUT_FILE}")
 
 
-def validate_reference_report_sheet(
-    workbook: Workbook,
-    decisions: list[tuple[object, ...]],
+def _comparable_output_value(value: object) -> object:
+    """Normalize harmless XLSX round trips before comparing written values."""
+    if value in (None, ""):
+        return None
+    if isinstance(value, datetime):
+        return value.date()
+    if isinstance(value, date):
+        return value
+    if isinstance(value, Decimal):
+        return round(float(value), 9)
+    if isinstance(value, float):
+        return round(value, 9)
+    return value
+
+
+def _validate_sheet_rows(
+    sheet_name: str,
+    actual_rows: list[tuple[object, ...]],
+    expected_rows,
 ) -> None:
-    report_sheet = workbook[REFERENCE_REPORT_SHEET]
-    report_header = tuple(cell.value for cell in report_sheet[1])
-    if report_header != REFERENCE_REPORT_HEADER:
+    expected_rows = [tuple(row) for row in expected_rows]
+    if len(actual_rows) != len(expected_rows):
         raise RuntimeError(
-            f"参考号处理报告字段标题校验失败：实际为 {report_header}"
+            f"{sheet_name}行数校验失败：预期 {len(expected_rows)} 行，"
+            f"实际 {len(actual_rows)} 行"
         )
-
-    def comparable(values) -> tuple:
-        result = []
-        for value in values:
-            if isinstance(value, datetime):
-                value = value.date()
-            result.append("" if value is None else value)
-        return tuple(result)
-
-    actual = [
-        comparable(row)
-        for row in report_sheet.iter_rows(
-            min_row=2,
-            max_col=len(REFERENCE_REPORT_HEADER),
-            values_only=True,
+    for row_number, (actual, expected) in enumerate(
+        zip(actual_rows, expected_rows), start=1
+    ):
+        comparable_actual = tuple(
+            _comparable_output_value(value) for value in actual
         )
+        comparable_expected = tuple(
+            _comparable_output_value(value) for value in expected
+        )
+        if comparable_actual != comparable_expected:
+            raise RuntimeError(
+                f"{sheet_name}第 {row_number} 行输出校验失败："
+                f"实际 {comparable_actual!r}，预期 {comparable_expected!r}"
+            )
+
+
+def _expected_coupon_output(
+    appliance_computation: appliance.CouponComputation,
+    digital_computation: digital.CouponComputation,
+    extra_summary_rows: list[tuple[object, ...]],
+    decisions: list[tuple[object, ...]],
+) -> tuple[
+    dict[str, list[tuple[object, ...]]],
+    dict[str, set[tuple[tuple[int, int], tuple[int, int]]]],
+]:
+    combined_summary_rows = [
+        *appliance_computation.summary_rows,
+        *extra_summary_rows,
     ]
-    expected = [comparable(decision) for decision in decisions]
-    if actual != expected:
-        first_difference = next(
-            (
-                (index, a, e)
-                for index, (a, e) in enumerate(zip(actual, expected), start=2)
-                if a != e
+    expected_rows = {
+        appliance.SUMMARY_SHEET_NAME: [
+            appliance.COUPON_SUMMARY_HEADER,
+            *appliance.merged_coupon_summary_values(combined_summary_rows),
+        ],
+        appliance.DETAILS_SHEET_NAME: [
+            tuple(row) for row in appliance_computation.rows
+        ],
+        digital.DETAILS_SHEET_NAME: [
+            tuple(row) for row in digital_computation.rows
+        ],
+    }
+    for sheet_name, _, _, grouped_rows in appliance_computation.group_sheets:
+        expected_rows[sheet_name] = [
+            appliance.COUPON_GROUP_HEADER,
+            *(
+                appliance.select_coupon_group_columns(row)
+                for row, _ in grouped_rows
             ),
-            None,
+        ]
+    expected_rows[REFERENCE_REPORT_SHEET] = [
+        REFERENCE_REPORT_HEADER,
+        *decisions,
+    ]
+
+    project_blocks = appliance.project_summary_blocks(combined_summary_rows)
+    brand_rows_end = (
+        project_blocks[0][0] if project_blocks else len(combined_summary_rows)
+    )
+    summary_merges = {
+        ((first - 1, column - 1), (last - 1, column - 1))
+        for first, last, column in (
+            appliance.coupon_summary_group_merges(
+                combined_summary_rows, brand_rows_end
+            )
+            if brand_rows_end
+            else []
         )
-        raise RuntimeError(
-            f"参考号处理报告内容校验失败：预期 {len(expected)} 条，"
-            f"实际 {len(actual)} 条；首个差异 {first_difference}"
+    }
+    summary_merges.update(
+        ((first - 1, first_column - 1), (last - 1, last_column - 1))
+        for first, last, first_column, last_column in (
+            appliance.coupon_summary_project_merges(project_blocks)
         )
+    )
+    expected_merges = {name: set() for name in expected_rows}
+    expected_merges[appliance.SUMMARY_SHEET_NAME] = summary_merges
+    return expected_rows, expected_merges
 
 
 def validate_merged_coupon_output(
@@ -383,33 +450,34 @@ def validate_merged_coupon_output(
     extra_summary_rows: list[tuple[object, ...]],
     decisions: list[tuple[object, ...]],
 ) -> None:
-    workbook = load_workbook(path, data_only=True)
+    expected_rows, expected_merges = _expected_coupon_output(
+        appliance_computation,
+        digital_computation,
+        extra_summary_rows,
+        decisions,
+    )
+    workbook = CalamineWorkbook.from_path(str(path))
     try:
-        expected_sheet_names = [
-            appliance.SUMMARY_SHEET_NAME,
-            appliance.DETAILS_SHEET_NAME,
-            digital.DETAILS_SHEET_NAME,
-            *(
-                group[0]
-                for group in appliance_computation.group_sheets
-            ),
-            REFERENCE_REPORT_SHEET,
-        ]
-        if workbook.sheetnames != expected_sheet_names:
+        expected_sheet_names = list(expected_rows)
+        if list(workbook.sheet_names) != expected_sheet_names:
             raise RuntimeError(
                 "审核明细工作表校验失败："
-                f"预期 {expected_sheet_names}，实际 {workbook.sheetnames}"
+                f"预期 {expected_sheet_names}，实际 {workbook.sheet_names}"
             )
-        appliance.validate_summary_and_details_sheets(
-            workbook,
-            appliance_computation,
-            extra_summary_rows,
-        )
-        digital.validate_detail_sheet(workbook, digital_computation)
-        appliance.validate_group_sheets(
-            workbook,
-            appliance_computation,
-        )
-        validate_reference_report_sheet(workbook, decisions)
+        for sheet_name in expected_sheet_names:
+            sheet = workbook.get_sheet_by_name(sheet_name)
+            actual_rows = [tuple(row) for row in calamine_rows(sheet)]
+            _validate_sheet_rows(
+                sheet_name,
+                actual_rows,
+                expected_rows[sheet_name],
+            )
+            actual_merges = set(sheet.merged_cell_ranges)
+            if actual_merges != expected_merges[sheet_name]:
+                raise RuntimeError(
+                    f"{sheet_name}合并范围校验失败："
+                    f"实际 {sorted(actual_merges)!r}，"
+                    f"预期 {sorted(expected_merges[sheet_name])!r}"
+                )
     finally:
         workbook.close()

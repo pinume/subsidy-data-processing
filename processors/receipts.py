@@ -52,6 +52,15 @@ RECEIPTS_REMARK_SPECIAL = r"退换货\倒票"
 RECEIPTS_SPECIAL_REMARK_KEYS = load_receipt_special_remark_keys()
 RECEIPTS_ROW_HEIGHT = 20
 RECEIPTS_DUPLICATE_FILL_COLOR = "FFC7CE"
+# The same colour as openpyxl may report it: bare, alpha-prefixed by the reader,
+# or alpha-prefixed by XlsxWriter on the way out.
+RECEIPTS_DUPLICATE_FILL_SPELLINGS = frozenset(
+    {
+        RECEIPTS_DUPLICATE_FILL_COLOR,
+        f"00{RECEIPTS_DUPLICATE_FILL_COLOR}",
+        f"FF{RECEIPTS_DUPLICATE_FILL_COLOR}",
+    }
+)
 RECEIPTS_EXCLUDED_PRODUCT_KEYWORD = "北国"
 RECEIPTS_SAME_MODEL_REPLACEMENT_KEYWORD = "同型号换货"
 
@@ -542,11 +551,14 @@ def validate_receipts_output(
                 )
                 match_key_counts[match_key] = match_key_counts.get(match_key, 0) + 1
 
+            # openpyxl does not promise a str here: a fill this program wrote
+            # yields one, but a theme-coloured cell yields an RGB object that
+            # cannot be sliced. Comparing against the three spellings of the
+            # colour works for either, and matches how the coupon validators
+            # already do it.
             pink_cells = tuple(
                 cell.fill.fill_type == "solid"
-                and cell.fill.fgColor.rgb is not None
-                and cell.fill.fgColor.rgb[-6:]
-                == RECEIPTS_DUPLICATE_FILL_COLOR[-6:]
+                and cell.fill.fgColor.rgb in RECEIPTS_DUPLICATE_FILL_SPELLINGS
                 for cell in row
             )
             snapshots.append(

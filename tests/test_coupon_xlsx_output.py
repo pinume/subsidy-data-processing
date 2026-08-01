@@ -1,20 +1,23 @@
-"""The XlsxWriter audit writers must produce what the openpyxl ones did.
+"""Contracts for the XlsxWriter audit output and its calamine validator.
 
-Each test states the contract as a fact about the written file, read back with
-openpyxl. The rules were not inferred from the writer code — they were read off
-the audit output the openpyxl writers actually produce, because several of them
-are positional rather than named (数据汇总's currency column is the last one,
-and its header differs per project).
+Style tests read the file with openpyxl; runtime validation tests exercise the
+calamine path that checks every value and merge. The format rules were read off
+the original openpyxl output because several are positional rather than named
+(数据汇总's currency column is the last one, and its header differs per project).
 """
 
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 
 from openpyxl import load_workbook
+from openpyxl.styles import Font
 from xlsxwriter import Workbook
 
+from processors import coupon_report
 from processors.common.excel import load_measurement_font, resolve_font
+from processors.coupons import appliance, digital
 from processors.coupons.xlsx_output import (
     CouponFormatCache,
     FormatKey,
@@ -131,3 +134,70 @@ class WriterContractTest(unittest.TestCase):
             self.assertIs(first, second)
             self.assertIsNot(first, third)
             workbook.add_worksheet("x")
+
+
+class CouponOutputValidationTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self._directory = tempfile.TemporaryDirectory()
+        self.path = Path(self._directory.name) / "audit.xlsx"
+        self.addCleanup(self._directory.cleanup)
+        self.appliance_computation = SimpleNamespace(
+            summary_rows=[
+                ("空调", "格力", "已上传", 1, 1.5),
+                ("空调", "格力", "未上传", 1, 2.5),
+            ],
+            rows=[list(appliance.COUPON_OUTPUT_HEADER)],
+            matched_count=0,
+            group_sheets=[],
+        )
+        self.digital_computation = SimpleNamespace(
+            rows=[list(digital.COUPON_OUTPUT_HEADER)],
+            matched_count=0,
+        )
+        self.extra_summary_rows = []
+        self.decisions = []
+        coupon_report.write_coupon_workbook(
+            self.path,
+            self.appliance_computation,
+            self.digital_computation,
+            self.extra_summary_rows,
+            self.decisions,
+        )
+
+    def validate(self) -> None:
+        coupon_report.validate_merged_coupon_output(
+            self.path,
+            self.appliance_computation,
+            self.digital_computation,
+            self.extra_summary_rows,
+            self.decisions,
+        )
+
+    def test_calamine_validation_accepts_the_written_contract(self) -> None:
+        self.validate()
+
+    def test_calamine_validation_rejects_a_changed_value(self) -> None:
+        workbook = load_workbook(self.path)
+        workbook[appliance.DETAILS_SHEET_NAME]["A1"] = "错误表头"
+        workbook.save(self.path)
+        workbook.close()
+
+        with self.assertRaisesRegex(RuntimeError, "输出校验失败"):
+            self.validate()
+
+    def test_calamine_validation_rejects_a_missing_merge(self) -> None:
+        workbook = load_workbook(self.path)
+        workbook[appliance.SUMMARY_SHEET_NAME].unmerge_cells("A2:A3")
+        workbook.save(self.path)
+        workbook.close()
+
+        with self.assertRaisesRegex(RuntimeError, "合并范围校验失败"):
+            self.validate()
+
+    def test_runtime_validation_does_not_treat_font_as_business_data(self) -> None:
+        workbook = load_workbook(self.path)
+        workbook[appliance.DETAILS_SHEET_NAME]["A1"].font = Font(bold=False)
+        workbook.save(self.path)
+        workbook.close()
+
+        self.validate()

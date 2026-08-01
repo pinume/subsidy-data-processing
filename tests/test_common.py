@@ -14,7 +14,6 @@ from processors.common.dates import (
 )
 from processors.common.excel import (
     load_measurement_font,
-    pixels_to_excel_width,
     remove_stale_temporary_files,
     resolve_font,
     run_with_output_rollback,
@@ -300,9 +299,6 @@ class WriteFormattedSheetTest(unittest.TestCase):
 
 
 class ExcelHelpersTest(unittest.TestCase):
-    def test_excel_column_width_is_capped_at_format_limit(self) -> None:
-        self.assertEqual(pixels_to_excel_width(100_000), 255)
-
     def test_resolve_font_uses_first_existing_candidate(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             missing = Path(directory) / "missing.ttf"

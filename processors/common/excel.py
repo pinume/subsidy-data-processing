@@ -273,33 +273,19 @@ def width_measurer(value_font) -> Callable[[object], float]:
     return measure
 
 
-def pixels_to_excel_width(pixels: float) -> float:
-    return min(round(((pixels * 1.1) + 16) / 7, 2), 255)
-
-
-# 255 character units is Excel's widest column; set_column_pixels() divides by
-# the same 7 pixels per unit that pixels_to_excel_width does.
+# 255 character units is Excel's widest column, at 7 pixels per unit.
 MAX_COLUMN_PIXELS = 255 * 7
 
 
 def pixels_to_column_pixels(pixels: float) -> int:
     """Padded pixel width for XlsxWriter's set_column_pixels().
 
-    pixels_to_excel_width folds Excel's cell padding into the character width
-    it returns, and openpyxl writes that number to the file verbatim.
-    XlsxWriter's set_column() adds padding of its own, so passing it the same
-    number would widen every column by about 0.7 units. set_column_pixels()
-    reverses XlsxWriter's own conversion instead, reproducing the widths the
-    openpyxl writer produced to within a rounding step.
+    The padding calculation reproduces the widths from the former openpyxl
+    writer to within a rounding step without XlsxWriter adding extra padding.
     """
     return min(round((pixels * 1.1) + 16), MAX_COLUMN_PIXELS)
 
 
-# Reusing an already-computed cell style has no public openpyxl API, so these
-# three helpers reach into Cell._style. They are the only place in the project
-# that does; StyleReuseTest pins their behaviour so that an openpyxl upgrade
-# which changes the attribute fails loudly instead of silently corrupting
-# styles or quietly losing the speedup.
 # What openpyxl assigned to a cell on its own when given a date or datetime.
 DATE_NUMBER_FORMAT = "yyyy-mm-dd"
 DATETIME_NUMBER_FORMAT = "yyyy-mm-dd h:mm:ss"
