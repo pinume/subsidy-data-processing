@@ -440,40 +440,62 @@ def build_coupon_group_sheets(
     ]
 
 
+def coupon_summary_group_merges(
+    rows: list[tuple[object, ...]],
+    row_count: int,
+    header_rows: int = 1,
+) -> list[tuple[int, int, int]]:
+    """Vertical runs of 财务大类 and 品牌 worth merging.
+
+    Returns (first_row, last_row, column) in 1-based sheet coordinates, for
+    runs longer than one row only. Computing the ranges instead of merging in
+    place lets a writer that cannot read back what it has written — XlsxWriter
+    — produce the same sheet as openpyxl did.
+    """
+    merges: list[tuple[int, int, int]] = []
+    category_column = 1
+    brand_column = 2
+    for column in (brand_column, category_column):
+        index = 0
+        while index < row_count:
+            category = rows[index][0]
+            value = rows[index][column - 1]
+            end = index
+            while (
+                end + 1 < row_count
+                and rows[end + 1][0] == category
+                and rows[end + 1][column - 1] == value
+            ):
+                end += 1
+            if end > index:
+                merges.append(
+                    (index + 1 + header_rows, end + 1 + header_rows, column)
+                )
+            index = end + 1
+    return merges
+
+
 def merge_coupon_summary_groups(
     sheet,
-    start_row: int,
-    end_row: int,
-    start_column: int = 1,
+    rows: list[tuple[object, ...]],
+    row_count: int,
+    header_rows: int = 1,
 ) -> None:
     centered = Alignment(horizontal="center", vertical="center")
-    category_column = start_column
-    brand_column = start_column + 1
-    for column in (brand_column, category_column):
-        group_start = start_row
-        while group_start <= end_row:
-            category = sheet.cell(group_start, category_column).value
-            value = sheet.cell(group_start, column).value
-            group_end = group_start
-            while (
-                group_end + 1 <= end_row
-                and sheet.cell(
-                    group_end + 1,
-                    category_column,
-                ).value
-                == category
-                and sheet.cell(group_end + 1, column).value == value
-            ):
-                group_end += 1
-            if group_end > group_start:
-                sheet.merge_cells(
-                    start_row=group_start,
-                    start_column=column,
-                    end_row=group_end,
-                    end_column=column,
-                )
-            sheet.cell(group_start, column).alignment = centered
-            group_start = group_end + 1
+    for first_row, last_row, column in coupon_summary_group_merges(
+        rows, row_count, header_rows
+    ):
+        sheet.merge_cells(
+            start_row=first_row,
+            start_column=column,
+            end_row=last_row,
+            end_column=column,
+        )
+    # Every run's top cell is centered, including the single-row runs that
+    # produce no merge at all.
+    for column in (1, 2):
+        for row_number in range(1 + header_rows, row_count + 1 + header_rows):
+            sheet.cell(row_number, column).alignment = centered
 
 
 def project_summary_blocks(
@@ -504,20 +526,37 @@ def project_summary_blocks(
     return blocks
 
 
+def coupon_summary_project_merges(
+    blocks: list[tuple[int, int]],
+    header_rows: int = 1,
+) -> list[tuple[int, int, int, int]]:
+    """Each project block as (first_row, last_row, first_column, last_column).
+
+    The 财务大类/品牌 split is meaningless on these trailing 已上传/未上传/合计
+    rows, so both columns become one cell.
+    """
+    return [
+        (start + 1 + header_rows, end + 1 + header_rows, 1, 2)
+        for start, end in blocks
+    ]
+
+
 def merge_coupon_summary_projects(
     sheet,
     blocks: list[tuple[int, int]],
     header_rows: int = 1,
 ) -> None:
     centered = Alignment(horizontal="center", vertical="center")
-    for start, end in blocks:
+    for first_row, last_row, first_column, last_column in (
+        coupon_summary_project_merges(blocks, header_rows)
+    ):
         sheet.merge_cells(
-            start_row=start + 1 + header_rows,
-            start_column=1,
-            end_row=end + 1 + header_rows,
-            end_column=2,
+            start_row=first_row,
+            start_column=first_column,
+            end_row=last_row,
+            end_column=last_column,
         )
-        sheet.cell(start + 1 + header_rows, 1).alignment = centered
+        sheet.cell(first_row, first_column).alignment = centered
 
 
 def merged_coupon_summary_values(
@@ -783,7 +822,9 @@ def build_summary_and_details_sheets(
         project_blocks[0][0] if project_blocks else len(combined_summary_rows)
     )
     if brand_rows_end:
-        merge_coupon_summary_groups(summary_sheet, 2, brand_rows_end + 1)
+        merge_coupon_summary_groups(
+            summary_sheet, combined_summary_rows, brand_rows_end
+        )
     merge_coupon_summary_projects(summary_sheet, project_blocks)
     apply_coupon_summary_borders(
         summary_sheet,
