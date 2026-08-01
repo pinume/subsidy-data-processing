@@ -73,13 +73,37 @@ class RemoveStaleTemporaryFilesTest(unittest.TestCase):
             self.assertTrue(in_flight.exists())
 
 
+SOURCE_NAME = "收款单统计.xlsx"
+
+
 class DateHelpersTest(unittest.TestCase):
     def test_normalize_receipt_date_accepts_supported_formats(self) -> None:
         expected = date(2026, 7, 6)
-        self.assertEqual(normalize_receipt_date("2026-07-06", 3), expected)
-        self.assertEqual(normalize_receipt_date("2026/07/06", 3), expected)
-        self.assertEqual(normalize_receipt_date("20260706", 3), expected)
-        self.assertEqual(normalize_receipt_date(datetime(2026, 7, 6), 3), expected)
+        for value in ("2026-07-06", "2026/07/06", "20260706"):
+            with self.subTest(value=value):
+                self.assertEqual(
+                    normalize_receipt_date(value, 3, SOURCE_NAME), expected
+                )
+        self.assertEqual(
+            normalize_receipt_date(datetime(2026, 7, 6), 3, SOURCE_NAME), expected
+        )
+        self.assertEqual(
+            normalize_receipt_date(date(2026, 7, 6), 3, SOURCE_NAME), expected
+        )
+
+    def test_normalize_receipt_date_treats_blank_as_missing(self) -> None:
+        self.assertIsNone(normalize_receipt_date(None, 3, SOURCE_NAME))
+        self.assertIsNone(normalize_receipt_date("", 3, SOURCE_NAME))
+
+    def test_normalize_receipt_date_error_names_file_row_and_value(self) -> None:
+        with self.assertRaises(ValueError) as caught:
+            normalize_receipt_date("2026.7.6", 128, SOURCE_NAME)
+
+        message = str(caught.exception)
+        self.assertIn(SOURCE_NAME, message)
+        self.assertIn("128", message)
+        self.assertIn("2026.7.6", message)
+        self.assertIn("YYYY-MM-DD", message)
 
     def test_normalize_coupon_date_rejects_invalid_value(self) -> None:
         with self.assertRaisesRegex(ValueError, "row 9"):

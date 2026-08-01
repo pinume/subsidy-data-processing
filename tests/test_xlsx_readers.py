@@ -76,13 +76,21 @@ def _write_receipt_source(path: Path, rows: list[list[object]]) -> None:
 
 
 class ReadReceiptRowsTest(unittest.TestCase):
-    def test_合计行被跳过且数据原样透传(self) -> None:
+    def test_合计行与空白行保留在原位置(self) -> None:
+        """Filtering is prepare_receipt_data's job, not this function's.
+
+        Dropping rows here would renumber every row after them, and the
+        reported Excel row number of a problem row is derived from position
+        in this list — so the rows stay, blanks and 合计 included.
+        """
         with tempfile.TemporaryDirectory() as directory:
             source = Path(directory) / "收款单统计.xlsx"
             _write_receipt_source(
                 source,
                 [
                     ["收款ZH0001", "2026-01-24", "", "", "海尔冰箱"],
+                    [None, None, None, None, None],
+                    ["收款ZH0002", "2026-01-25", "", "", "美的空调"],
                     ["合计", "合计", "", "", ""],
                 ],
             )
@@ -94,6 +102,9 @@ class ReadReceiptRowsTest(unittest.TestCase):
                 [
                     ["单据号", "日期", "原票号", "摘要", "商品名称"],
                     ["收款ZH0001", "2026-01-24", None, None, "海尔冰箱"],
+                    [None, None, None, None, None],
+                    ["收款ZH0002", "2026-01-25", None, None, "美的空调"],
+                    ["合计", "合计", None, None, None],
                 ],
             )
 

@@ -4,6 +4,8 @@ from pathlib import Path
 
 import yaml
 
+from processors.common.dates import is_valid_original_invoice_number
+
 
 BASE_DIR = Path(__file__).resolve().parents[2]
 CONFIG_DIR = BASE_DIR / "config"
@@ -26,13 +28,43 @@ def load_brand_mapping() -> dict[str, str]:
 
 @lru_cache(maxsize=1)
 def load_receipt_special_remark_keys() -> frozenset[str]:
+    """Load the 收款单 match keys that always get the 退换货\\倒票 remark.
+
+    Every key is format-checked here rather than at point of use: a typo'd
+    or wrongly-typed key silently matches no row, so the special case it was
+    added for would quietly stop being applied with nothing to notice. The
+    format is validated with is_valid_original_invoice_number — despite the
+    name, what it checks is the shared "6-digit YYMMDD + 单据号" shape, which
+    is exactly what a match key is (see receipt_match_key).
+    """
     if not RECEIPT_SPECIAL_REMARKS_FILE.exists():
         return frozenset()
 
     with RECEIPT_SPECIAL_REMARKS_FILE.open("r", encoding="utf-8") as file:
         config = yaml.safe_load(file) or {}
 
-    return frozenset(config.get("match_keys", []))
+    match_keys = config.get("match_keys")
+    if match_keys is None:
+        return frozenset()
+    if not isinstance(match_keys, list):
+        raise ValueError(
+            f"{RECEIPT_SPECIAL_REMARKS_FILE.name} 的 match_keys 应为列表，"
+            f"实际为 {type(match_keys).__name__}"
+        )
+
+    for match_key in match_keys:
+        if not isinstance(match_key, str) or not match_key.strip():
+            raise ValueError(
+                f"{RECEIPT_SPECIAL_REMARKS_FILE.name} 中的特殊匹配键必须为"
+                f"非空字符串：{match_key!r}"
+            )
+        if not is_valid_original_invoice_number(match_key.strip()):
+            raise ValueError(
+                f"{RECEIPT_SPECIAL_REMARKS_FILE.name} 中的特殊匹配键格式无效："
+                f"{match_key!r}；应为6位有效日期加单据号。"
+            )
+
+    return frozenset(match_key.strip() for match_key in match_keys)
 
 
 @lru_cache(maxsize=1)
