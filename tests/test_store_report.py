@@ -13,7 +13,6 @@ from openpyxl.styles import Font
 from processors import store_report
 from processors.common.excel import run_with_output_rollback
 
-
 FONT = Font(name="微软雅黑", size=12)
 
 

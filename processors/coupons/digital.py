@@ -14,14 +14,14 @@ from decimal import Decimal, InvalidOperation
 from openpyxl import Workbook
 from openpyxl.styles import PatternFill
 
+from processors.common.dates import (
+    normalize_document_number,
+    normalize_receipt_identifier,
+)
 from processors.common.excel import (
     format_sheet,
     load_measurement_font,
     resolve_font,
-)
-from processors.common.dates import (
-    normalize_document_number,
-    normalize_receipt_identifier,
 )
 from processors.receipts import OUTPUT_FILE as RECEIPTS_OUTPUT_FILE
 from processors.submitted import PROFILES as SUBMITTED_PROFILES
@@ -39,7 +39,6 @@ from .validation import (
     validate_remark_and_detail,
     validate_uploaded_and_unmatched_counts,
 )
-
 
 COUPON_SUBSIDY_HEADER = sources.COUPON_DIGITAL_SUBSIDY_HEADER
 COUPON_REMARK_SOURCE_FILE = RECEIPTS_OUTPUT_FILE

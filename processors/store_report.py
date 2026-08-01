@@ -35,7 +35,6 @@ from processors.payment import OUTPUT_FILE as PAYMENT_FILE
 from processors.payment import SUMMARY_HEADERS as PAYMENT_HEADER
 from processors.payment import SUMMARY_SHEET_NAME as PAYMENT_SHEET_NAME
 
-
 BASE_DIR = Path(__file__).resolve().parent.parent
 OUTPUT_DIR = BASE_DIR / "output"
 OUTPUT_FILE = OUTPUT_DIR / "2026年门店国补上传及回款情况表（益庄店）.xlsx"

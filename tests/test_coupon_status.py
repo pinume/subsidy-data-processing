@@ -4,10 +4,9 @@ from pathlib import Path
 
 from openpyxl import Workbook
 
-from processors.coupons.sources import load_uploaded_summary
 from processors.coupons import appliance, matching
 from processors.coupons import digital as coupons_digital
-
+from processors.coupons.sources import load_uploaded_summary
 
 HEADERS = (coupons_digital.COUPON_OUTPUT_HEADER, appliance.COUPON_OUTPUT_HEADER)
 

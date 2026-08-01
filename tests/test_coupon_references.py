@@ -1,10 +1,9 @@
 import unittest
 from datetime import date
 
-from processors.coupons.matching import reference_correction_candidates
 from processors.coupons import appliance, matching
 from processors.coupons import digital as coupons_digital
-
+from processors.coupons.matching import reference_correction_candidates
 
 HEADERS = (coupons_digital.COUPON_OUTPUT_HEADER, appliance.COUPON_OUTPUT_HEADER)
 DOCUMENT_DATE = date(2026, 7, 6)

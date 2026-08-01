@@ -20,15 +20,15 @@ from openpyxl import Workbook, load_workbook
 from openpyxl.cell.cell import MergedCell
 from openpyxl.styles import Alignment, Border, PatternFill, Side
 
+from processors.common.dates import (
+    normalize_coupon_date,
+    normalize_document_number,
+    normalize_receipt_identifier,
+)
 from processors.common.excel import (
     format_sheet,
     load_measurement_font,
     resolve_font,
-)
-from processors.common.dates import (
-    normalize_document_number,
-    normalize_coupon_date,
-    normalize_receipt_identifier,
 )
 from processors.receipts import OUTPUT_FILE as RECEIPTS_OUTPUT_FILE
 from processors.receipts import RECEIPTS_REMARK_SAME_MODEL_REPLACEMENT
@@ -52,7 +52,6 @@ from .validation import (
     validate_remark_and_detail,
     validate_uploaded_and_unmatched_counts,
 )
-
 
 DETAILS_SHEET_NAME = "家电-明细总表"
 # Owned here only to keep this module's own group-sheet titles from

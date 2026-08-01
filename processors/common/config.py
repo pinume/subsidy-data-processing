@@ -4,7 +4,6 @@ from pathlib import Path
 
 import yaml
 
-
 BASE_DIR = Path(__file__).resolve().parents[2]
 CONFIG_DIR = BASE_DIR / "config"
 BRAND_MAPPING_FILE = CONFIG_DIR / "brand_mapping.yaml"
