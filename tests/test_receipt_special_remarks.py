@@ -64,6 +64,16 @@ class SpecialRemarkConfigValidationTest(unittest.TestCase):
     def test_absent_match_keys_yields_empty_set(self) -> None:
         self.assertEqual(load_from("# no match_keys here\n"), frozenset())
 
+    def test_top_level_list_is_rejected(self) -> None:
+        # The keys written without the "match_keys:" header — a plain YAML
+        # list, which has no .get() to read a key out of.
+        with self.assertRaisesRegex(ValueError, "顶层应为映射"):
+            load_from('- "2605030233000049"\n')
+
+    def test_top_level_scalar_is_rejected(self) -> None:
+        with self.assertRaisesRegex(ValueError, "顶层应为映射"):
+            load_from('"2605030233000049"\n')
+
     def test_non_list_match_keys_is_rejected(self) -> None:
         with self.assertRaisesRegex(ValueError, "应为列表"):
             load_from('match_keys: "2605030233000049"\n')

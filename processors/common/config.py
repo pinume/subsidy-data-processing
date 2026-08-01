@@ -43,6 +43,15 @@ def load_receipt_special_remark_keys() -> frozenset[str]:
     with RECEIPT_SPECIAL_REMARKS_FILE.open("r", encoding="utf-8") as file:
         config = yaml.safe_load(file) or {}
 
+    # Checked before .get(): a file written as a bare YAML list (the keys
+    # without the match_keys: header) would otherwise fail with an
+    # AttributeError naming neither the file nor what was wrong with it.
+    if not isinstance(config, dict):
+        raise ValueError(
+            f"{RECEIPT_SPECIAL_REMARKS_FILE.name} 顶层应为映射，"
+            f"实际为 {type(config).__name__}"
+        )
+
     match_keys = config.get("match_keys")
     if match_keys is None:
         return frozenset()
