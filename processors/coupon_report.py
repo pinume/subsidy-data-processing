@@ -20,9 +20,15 @@ from pathlib import Path
 
 from openpyxl import Workbook, load_workbook
 from python_calamine import CalamineWorkbook
+from xlsxwriter import Workbook as XlsxWorkbook
 
-from processors.common.excel import format_sheet, save_workbook_atomically
-from processors.coupons import appliance, digital, matching, sources
+from processors.common.excel import (
+    format_sheet,
+    load_measurement_font,
+    resolve_font,
+    write_xlsx_atomically,
+)
+from processors.coupons import appliance, digital, matching, sources, xlsx_output
 from processors.coupons.report_contract import SUMMARY_HEADER, SUMMARY_SHEET_NAME
 from processors.coupons.sources import load_coupon_remark_lookup
 
@@ -138,6 +144,99 @@ def digital_extra_summary_rows(
     ]
 
 
+def write_coupon_workbook(
+    path: Path,
+    appliance_computation: appliance.CouponComputation,
+    digital_computation: digital.CouponComputation,
+    extra_summary_rows: list[tuple[object, ...]],
+    decisions: list[tuple[object, ...]],
+) -> None:
+    """Write all 30 sheets in workbook order: 数据汇总, the two 明细总表, the
+    group sheets, then the Processing Report."""
+    combined_summary_rows = [
+        *appliance_computation.summary_rows,
+        *extra_summary_rows,
+    ]
+    project_blocks = appliance.project_summary_blocks(combined_summary_rows)
+    brand_rows_end = (
+        project_blocks[0][0] if project_blocks else len(combined_summary_rows)
+    )
+    font_name, font_path = resolve_font()
+    measurement_font = load_measurement_font(font_path)
+
+    with XlsxWorkbook(
+        str(path),
+        {
+            # No constant_memory: 数据汇总 merges after its rows are written.
+            "strings_to_urls": False,
+            # 商品名称 and 备注 are free text; a leading "=" is data.
+            "strings_to_formulas": False,
+        },
+    ) as workbook:
+        formats = xlsx_output.CouponFormatCache(
+            workbook, font_name, appliance.COUPON_MATCH_FILL_COLOR
+        )
+        xlsx_output.write_summary_sheet(
+            workbook,
+            appliance.SUMMARY_SHEET_NAME,
+            appliance.COUPON_SUMMARY_HEADER,
+            combined_summary_rows,
+            formats,
+            measurement_font,
+            group_merges=(
+                appliance.coupon_summary_group_merges(
+                    combined_summary_rows, brand_rows_end
+                )
+                if brand_rows_end
+                else []
+            ),
+            project_merges=appliance.coupon_summary_project_merges(
+                project_blocks
+            ),
+        )
+        # computation.rows already opens with the header row; the openpyxl
+        # writer appended the whole list, header included.
+        xlsx_output.write_detail_sheet(
+            workbook,
+            appliance.DETAILS_SHEET_NAME,
+            appliance.COUPON_OUTPUT_HEADER,
+            appliance_computation.rows[1:],
+            formats,
+            measurement_font,
+            left_aligned_headers=("商品名称", "详细情况"),
+            matched_count=appliance_computation.matched_count,
+        )
+        xlsx_output.write_detail_sheet(
+            workbook,
+            digital.DETAILS_SHEET_NAME,
+            digital.COUPON_OUTPUT_HEADER,
+            digital_computation.rows[1:],
+            formats,
+            measurement_font,
+            left_aligned_headers=("商品名称",),
+            matched_count=digital_computation.matched_count,
+        )
+        for sheet_name, _, _, grouped_rows in appliance_computation.group_sheets:
+            xlsx_output.write_group_sheet(
+                workbook,
+                sheet_name,
+                appliance.COUPON_GROUP_HEADER,
+                grouped_rows,
+                appliance.select_coupon_group_columns,
+                formats,
+                measurement_font,
+                left_aligned_headers=("商品名称", "详细情况"),
+            )
+        xlsx_output.write_reference_report(
+            workbook,
+            REFERENCE_REPORT_SHEET,
+            REFERENCE_REPORT_HEADER,
+            decisions,
+            formats,
+            measurement_font,
+        )
+
+
 def process_coupon_sales() -> None:
     coupon_source = sources.COUPON_SOURCE_FILE
     if coupon_source is None:
@@ -169,38 +268,19 @@ def process_coupon_sales() -> None:
     )
     extra_summary_rows = digital_extra_summary_rows(digital_computation)
 
-    workbook = Workbook()
-    workbook.remove(workbook.active)
-
-    font_name, measurement_font, matched_fill = (
-        appliance.build_summary_and_details_sheets(
-            workbook,
-            appliance_computation,
-            extra_summary_rows,
-        )
-    )
-    digital.build_detail_sheet(workbook, digital_computation)
-    appliance.build_group_sheets(
-        workbook,
-        appliance_computation,
-        font_name,
-        measurement_font,
-        matched_fill,
-    )
     decisions = merged_reference_decisions(
         appliance_computation,
         digital_computation,
     )
-    build_reference_report_sheet(
-        workbook,
-        decisions,
-        font_name,
-        measurement_font,
-    )
-
-    save_workbook_atomically(
-        workbook,
+    write_xlsx_atomically(
         OUTPUT_FILE,
+        lambda path: write_coupon_workbook(
+            path,
+            appliance_computation,
+            digital_computation,
+            extra_summary_rows,
+            decisions,
+        ),
         lambda path: validate_merged_coupon_output(
             path,
             appliance_computation,
