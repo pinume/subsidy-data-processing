@@ -70,7 +70,15 @@ def configure_data_dir(data_dir: Path) -> None:
 
 
 def read_receipt_rows(source: Path) -> list[list[object]]:
-    """Read the 收款单统计 .xlsx export: title row, header row, data, 合计."""
+    """Read the 收款单统计 .xlsx export: title row, header row, data, 合计.
+
+    Returns every source row at its original position, including blank rows
+    and the 合计 row. Dropping them here would renumber everything after
+    them, and prepare_receipt_data derives each row's Excel row number from
+    its position in this list — so an operator chasing a reported problem
+    row would be sent to the wrong line. Filtering happens there instead,
+    inside the loop that already knows the true row number.
+    """
     workbook = load_workbook(source, read_only=True, data_only=True)
     try:
         sheet = workbook.worksheets[0]
@@ -105,10 +113,7 @@ def read_receipt_rows(source: Path) -> list[list[object]]:
 
         rows: list[list[object]] = [select(header_row)]
         for source_row in rows_iter:
-            row = select(source_row)
-            if str(row[1]).strip() == "合计":
-                continue
-            rows.append(row)
+            rows.append(select(source_row))
 
         actual_header = tuple(
             str(value).strip() if value is not None else ""
@@ -122,6 +127,31 @@ def read_receipt_rows(source: Path) -> list[list[object]]:
         return rows
     finally:
         workbook.close()
+
+
+def is_empty_receipt_row(row: list[object]) -> bool:
+    """Whether every kept field is blank.
+
+    A row is only blank when all five are: a row carrying just one value is
+    real, incomplete data that still belongs in the output and in 问题明细.
+    The comparison is against the stripped string so a formatting-only row
+    Excel left behind counts as blank, while a numeric 0 does not.
+    """
+    return all(value is None or str(value).strip() == "" for value in row)
+
+
+def is_receipt_total_row(row: list[object]) -> bool:
+    """Whether this is the export's own 合计 row.
+
+    Only 单据号 and 日期 are examined, and only for an exact match: "合计"
+    appearing inside a 摘要 or 商品名称 is ordinary business text, and
+    treating it as a total row would silently delete a real sale. Which of
+    the two columns carries the word has varied between exports, so both
+    are accepted.
+    """
+    document_number = str(row[0] or "").strip()
+    receipt_date = str(row[1] or "").strip()
+    return document_number == "合计" or receipt_date == "合计"
 
 
 def receipt_remark(
@@ -143,21 +173,36 @@ def receipt_remark(
     return None
 
 
-def prepare_receipt_data(kept_rows: list[list[object]]):
+def prepare_receipt_data(kept_rows: list[list[object]], source_name: str):
     records: list[dict[str, object]] = []
     key_rows: dict[str, list[int]] = {}
     referenced_original_invoice_numbers: set[str] = set()
     same_model_replacement_original_invoice_numbers: set[str] = set()
     excluded_product_count = 0
+    blank_row_count = 0
+    total_row_count = 0
 
+    # start=3 because kept_rows[0] is the field header (Excel row 2) and the
+    # export opens with a title row; every row read stays at its original
+    # index, so source_row is the real Excel row number even when rows above
+    # it are skipped below.
     for source_row, row in enumerate(kept_rows[1:], start=3):
+        if is_empty_receipt_row(row):
+            blank_row_count += 1
+            continue
+        if is_receipt_total_row(row):
+            total_row_count += 1
+            continue
+
         product_name = normalize_receipt_identifier(row[4])
         if RECEIPTS_EXCLUDED_PRODUCT_KEYWORD in product_name:
             excluded_product_count += 1
             continue
 
         document_number = normalize_document_number(row[0])
-        receipt_date = normalize_receipt_date(row[1], source_row=source_row)
+        receipt_date = normalize_receipt_date(
+            row[1], source_row=source_row, source_name=source_name
+        )
         original_invoice_number = normalize_receipt_identifier(row[2])
         match_key = (
             receipt_match_key(receipt_date, document_number)
@@ -207,6 +252,8 @@ def prepare_receipt_data(kept_rows: list[list[object]]):
     unmatched_original_count = 0
     invalid_original_count = 0
     missing_match_key_count = 0
+    remark_count = 0
+    special_remark_count = 0
     output_rows: list[list[object]] = []
     for record in records:
         source_row = int(record["source_row"])
@@ -264,6 +311,21 @@ def prepare_receipt_data(kept_rows: list[list[object]]):
         elif is_referenced or is_same_model_replacement:
             only_original_count += 1
 
+        # Counted from the remark actually written, not by re-adding the
+        # three 退单/原单 tallies: a row whose remark comes only from a
+        # special match key belongs to none of them, so summing those three
+        # silently understated the total.
+        remark = receipt_remark(
+            has_original,
+            is_referenced,
+            is_same_model_replacement,
+            is_special,
+        )
+        if remark:
+            remark_count += 1
+        if is_special:
+            special_remark_count += 1
+
         output_rows.append(
             [
                 record["document_number"],
@@ -271,28 +333,31 @@ def prepare_receipt_data(kept_rows: list[list[object]]):
                 original_invoice_number or None,
                 record["summary"],
                 record["product_name"],
-                receipt_remark(
-                    has_original,
-                    is_referenced,
-                    is_same_model_replacement,
-                    is_special,
-                ),
+                remark,
             ]
         )
 
+    applied_special_keys = RECEIPTS_SPECIAL_REMARK_KEYS & key_rows.keys()
     stats = {
         "总数据量": len(records),
         "删除北国商品行数": excluded_product_count,
+        "跳过空白行数": blank_row_count,
+        "跳过合计行数": total_row_count,
         "仅退单数量": only_return_count,
         "仅原单数量": only_original_count,
         "退单及原单数量": both_count,
-        "备注总数": only_return_count + only_original_count + both_count,
+        "备注总数": remark_count,
+        "特殊备注数量": special_remark_count,
         "未匹配原票号数量": unmatched_original_count,
         "重复匹配键数量": sum(
             1 for source_rows in key_rows.values() if len(source_rows) > 1
         ),
         "原票号格式异常数量": invalid_original_count,
         "缺少匹配键数量": missing_match_key_count,
+        "生效特殊匹配键": sorted(applied_special_keys),
+        "未找到特殊匹配键": sorted(
+            RECEIPTS_SPECIAL_REMARK_KEYS - applied_special_keys
+        ),
     }
     duplicate_match_keys = {
         match_key
@@ -572,7 +637,7 @@ def process_receipts() -> None:
 
     kept_rows = read_receipt_rows(RECEIPTS_SOURCE_FILE)
     output_rows, stats, issues, duplicate_match_keys = prepare_receipt_data(
-        kept_rows
+        kept_rows, source_name=RECEIPTS_SOURCE_FILE.name
     )
     workbook = Workbook()
     sheet = workbook.active
@@ -599,9 +664,28 @@ def process_receipts() -> None:
     )
     print(f"Receipt statistics complete: {row_count} rows")
     print(
-        f"Remarks: {stats['备注总数']}; "
+        f"Remarks: {stats['备注总数']} "
+        f"(special: {stats['特殊备注数量']}); "
         f"unmatched original invoices: {stats['未匹配原票号数量']}; "
         f"duplicate match keys: {stats['重复匹配键数量']}"
     )
+    if stats["跳过空白行数"] or stats["跳过合计行数"]:
+        print(
+            f"Skipped blank rows: {stats['跳过空白行数']}; "
+            f"total rows: {stats['跳过合计行数']}"
+        )
+    print(
+        f"Excluded rows containing "
+        f"'{RECEIPTS_EXCLUDED_PRODUCT_KEYWORD}': {stats['删除北国商品行数']}"
+    )
+    print(f"Special receipt remarks applied: {len(stats['生效特殊匹配键'])}")
+    # Reported, never fatal: the configured keys are one-off exceptions, and
+    # a run covering a different date range legitimately contains none of
+    # them. Silence would instead hide a key typo'd into never matching.
+    if stats["未找到特殊匹配键"]:
+        print(
+            "未在本次收款单中找到特殊匹配键："
+            + "、".join(stats["未找到特殊匹配键"])
+        )
     print(f"Issues logged in '{ISSUES_SHEET_NAME}': {len(issues)}")
     print(f"Output file: {OUTPUT_FILE}")
