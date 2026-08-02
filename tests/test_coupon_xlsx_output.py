@@ -135,6 +135,15 @@ class WriterContractTest(unittest.TestCase):
             self.assertIsNot(first, third)
             workbook.add_worksheet("x")
 
+    def test_width_measurer_is_shared_across_workbook_sheets(self) -> None:
+        with Workbook(str(self.path)) as workbook:
+            formats = CouponFormatCache(workbook, self.font_name, FILL_COLOR)
+            first = formats.get_width_measurer(self.measurement_font)
+            second = formats.get_width_measurer(self.measurement_font)
+
+            self.assertIs(first, second)
+            workbook.add_worksheet("x")
+
 
 class CouponOutputValidationTest(unittest.TestCase):
     def setUp(self) -> None:

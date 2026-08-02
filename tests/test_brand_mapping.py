@@ -46,6 +46,14 @@ class BrandMappingTest(unittest.TestCase):
 
 
 class BrandConfigValidationTest(unittest.TestCase):
+    def test_payment_brand_keywords_preserve_boundary_spaces(self) -> None:
+        loaded = load_from(
+            'brand_keywords:\n  appliance:\n    - brand: LG\n      keywords: ["LG "]\n',
+            payment=True,
+        )
+
+        self.assertEqual(loaded.appliance_brand_keywords, (("LG", ("LG ",)),))
+
     def test_brand_mapping_rejects_invalid_shapes(self) -> None:
         cases = (
             ('- "海尔"\n', "顶层应为映射"),

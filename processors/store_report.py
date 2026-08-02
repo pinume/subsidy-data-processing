@@ -27,7 +27,11 @@ from openpyxl.styles import Alignment, Font
 from openpyxl.workbook.workbook import Workbook
 from python_calamine import CalamineWorkbook
 
-from processors.common.excel import calamine_rows, save_workbook_atomically
+from processors.common.excel import (
+    calamine_rows,
+    resolve_font,
+    save_workbook_atomically,
+)
 from processors.common.paths import find_data_files, resolve_unique_file
 from processors.coupon_report import OUTPUT_FILE as UPLOAD_FILE
 from processors.coupon_report import SUMMARY_HEADER as UPLOAD_HEADER
@@ -43,7 +47,6 @@ TEMPLATE_FILE_KEYWORD = "门店国补上传及回款情况表"
 DATA_DIR: Path
 
 SHANGHAI_TZ = ZoneInfo("Asia/Shanghai")
-REPORT_FONT_NAME = "微软雅黑"
 FILLED_ALIGNMENT = Alignment(horizontal="left", vertical="center")
 DATA_NUMBER_FORMAT = "General"
 PERCENT_NUMBER_FORMAT = "0.00%"
@@ -301,13 +304,11 @@ def apply_data_number_format(sheet, coords: tuple[str, ...]) -> None:
         sheet[coord].number_format = DATA_NUMBER_FORMAT
 
 
-def apply_report_font(sheet) -> None:
+def apply_report_font(sheet, font_name: str) -> None:
     for row in sheet.iter_rows():
         for cell in row:
-            if cell.value in (None, ""):
-                continue
             font = copy(cell.font)
-            font.name = REPORT_FONT_NAME
+            font.name = font_name
             cell.font = font
 
 
@@ -965,6 +966,7 @@ def validate_output(
 
 def process_store_report() -> None:
     timestamp = current_timestamp()
+    font_name, _ = resolve_font()
     upload_data, digital_upload, upload_metrics = load_upload_data(UPLOAD_FILE)
     payment_data, digital_payment, payment_metrics = load_payment_data(PAYMENT_FILE)
     validate_rule_coverage(upload_data, payment_data)
@@ -974,7 +976,7 @@ def process_store_report() -> None:
     try:
         validate_template(workbook)
         sheet = workbook[workbook.sheetnames[0]]
-        font = Font(name=REPORT_FONT_NAME, size=12)
+        font = Font(name=font_name, size=12)
 
         expected_cells: dict[str, object] = dict(TEMPLATE_STRUCTURE_CELLS)
 
@@ -998,7 +1000,7 @@ def process_store_report() -> None:
         )
         widen_currency_columns(sheet)
         update_header(sheet, timestamp, expected_cells)
-        apply_report_font(sheet)
+        apply_report_font(sheet, font_name)
     except BaseException:
         # save_workbook_atomically (below) takes ownership of closing the
         # workbook once writing succeeds; anything raised before that point —

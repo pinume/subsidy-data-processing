@@ -58,10 +58,11 @@ class ProcessorOrderTest(unittest.TestCase):
             app_main.store_report.configure_data_dir(data_dir)
 
             labels = [label for label, _, _ in app_main.build_processors()]
+            coupon_report_index = labels.index("审核明细（销售用券情况统计）")
             store_report_index = labels.index("门店国补上传及回款情况表")
 
-            self.assertLess(labels.index("审核明细（销售用券情况统计）"), store_report_index)
-            self.assertLess(labels.index("回款明细（家电+数码）"), store_report_index)
+            self.assertLess(labels.index("回款明细（家电+数码）"), coupon_report_index)
+            self.assertLess(coupon_report_index, store_report_index)
 
 
 class AllModeRollbackTest(unittest.TestCase):

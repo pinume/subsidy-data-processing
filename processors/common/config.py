@@ -59,6 +59,24 @@ def _string_list(value: object, location: str) -> tuple[str, ...]:
     return tuple(result)
 
 
+def _keyword_list(value: object, location: str) -> tuple[str, ...]:
+    """Validate brand keywords without trimming meaningful boundary spaces."""
+    if value is None:
+        return ()
+    if not isinstance(value, list):
+        raise ValueError(
+            f"{location} 应为列表，实际为 {type(value).__name__}"
+        )
+    result: list[str] = []
+    for index, item in enumerate(value):
+        if not isinstance(item, str) or not item.strip():
+            raise ValueError(
+                f"{location}[{index}] 必须为非空字符串：{item!r}"
+            )
+        result.append(item)
+    return tuple(result)
+
+
 @lru_cache(maxsize=1)
 def load_brand_mapping() -> dict[str, str]:
     if not BRAND_MAPPING_FILE.exists():
@@ -150,7 +168,7 @@ def _brand_keywords(value: object, location: str) -> BrandKeywords:
         brand = entry.get("brand")
         if not isinstance(brand, str) or not brand.strip():
             raise ValueError(f"{entry_location}.brand 必须为非空字符串")
-        keywords = _string_list(
+        keywords = _keyword_list(
             entry.get("keywords"),
             f"{entry_location}.keywords",
         )

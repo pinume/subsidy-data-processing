@@ -68,14 +68,14 @@ RECEIPTS_REMARK_BOTH = "退换货/倒票（退单及原单）"
 # 销售金额 — but the pairing is not verified: a category naming one of these
 # is taken at its word even if its counterpart row is missing.
 #
-# Neither row is a return to report, and the 原票号 they carry points at a sale
-# that was replaced rather than returned, so they stay out of the remark rules
-# entirely along with the original they name. Remarking them would push that
-# original out of the 已上传 accounting in 审核明细 while the replacement sale
-# carrying its subsidy is absent from the coupon export altogether, dropping
-# the subsidy from the report. A later ordinary 退货 naming one of these rows
-# is unaffected: it is a 退单 like any other, and simply gets no 原单 partner.
+# Neither row is itself a return to report, and the 原票号 they carry normally
+# points at a sale that was replaced rather than returned, so they stay out of
+# the remark rules. Both categories can nevertheless be intermediate links:
+# when a later ordinary 退货 names one of them, follow its 原票号 back to the
+# terminal original sale. This keeps the bridge rows blank while pairing the
+# actual return with the subsidy-bearing original in 审核明细.
 RECEIPTS_UNREMARKED_SALE_CATEGORIES = frozenset({"零售补差", "同型号换货"})
+RECEIPTS_REFERENCE_BRIDGE_CATEGORIES = frozenset({"零售补差", "同型号换货"})
 RECEIPTS_REMARKS = frozenset(
     {
         RECEIPTS_REMARK_RETURN,
@@ -243,6 +243,23 @@ def _receipt_remark_flags(
     return has_original, is_referenced
 
 
+def _expand_referenced_original_invoice_numbers(
+    referenced_original_invoice_numbers: set[str],
+    bridge_originals_by_match_key: dict[str, set[str]],
+) -> None:
+    """Follow referenced bridge documents back to their original sales."""
+    pending = list(referenced_original_invoice_numbers)
+    while pending:
+        referenced_match_key = pending.pop()
+        for original_invoice_number in bridge_originals_by_match_key.get(
+            referenced_match_key, ()
+        ):
+            if original_invoice_number in referenced_original_invoice_numbers:
+                continue
+            referenced_original_invoice_numbers.add(original_invoice_number)
+            pending.append(original_invoice_number)
+
+
 def receipt_output_sort_key(
     remark: object,
     receipt_date: object,
@@ -277,6 +294,7 @@ def prepare_receipt_data(kept_rows: list[list[object]], source_name: str):
     records: list[dict[str, object]] = []
     key_rows: dict[str, list[int]] = {}
     referenced_original_invoice_numbers: set[str] = set()
+    bridge_originals_by_match_key: dict[str, set[str]] = {}
     excluded_product_count = 0
     blank_row_count = 0
     total_row_count = 0
@@ -316,6 +334,14 @@ def prepare_receipt_data(kept_rows: list[list[object]], source_name: str):
             key_rows.setdefault(match_key, []).append(source_row)
         if original_invoice_number and not is_unremarked_sale_category:
             referenced_original_invoice_numbers.add(original_invoice_number)
+        if (
+            match_key
+            and original_invoice_number
+            and sale_category in RECEIPTS_REFERENCE_BRIDGE_CATEGORIES
+        ):
+            bridge_originals_by_match_key.setdefault(match_key, set()).add(
+                original_invoice_number
+            )
         records.append(
             {
                 "document_number": document_number,
@@ -327,10 +353,18 @@ def prepare_receipt_data(kept_rows: list[list[object]], source_name: str):
             }
         )
 
-    # Remarks depend on the complete set of original-invoice references, so
-    # compute them only after every source row has been scanned. Sorting then
-    # uses the final remark as its primary key.
-    #
+    # A later return can reference an exchange or price-adjustment document
+    # rather than the subsidy-bearing original. Traverse those intermediate
+    # documents only after all rows have been indexed. The visited set also
+    # makes malformed cyclic references harmless.
+    _expand_referenced_original_invoice_numbers(
+        referenced_original_invoice_numbers,
+        bridge_originals_by_match_key,
+    )
+
+    # Remarks depend on the complete, expanded reference set, so compute them
+    # only after every source row has been scanned. Sorting then uses the final
+    # remark as its primary key.
     for record in records:
         if str(record["sale_category"]) in RECEIPTS_UNREMARKED_SALE_CATEGORIES:
             record["remark"] = None

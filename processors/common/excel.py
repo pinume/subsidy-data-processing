@@ -161,6 +161,12 @@ def _find_font_file(file_names: tuple[str, ...]) -> Path | None:
 
 
 def resolve_font() -> tuple[str, Path]:
+    """Resolve the Excel font name and a local font file used for measuring.
+
+    Excel output uses Maple Mono NF CN whenever its font file is available;
+    every other locally available measurement font maps to 微软雅黑 so that
+    machines without Maple produce the requested, consistent fallback name.
+    """
     configured_path = os.environ.get("UPLOAD_DATA_FONT_PATH")
     if configured_path:
         font_path = Path(configured_path).expanduser()
@@ -171,11 +177,17 @@ def resolve_font() -> tuple[str, Path]:
     for font_name, paths, file_names in FONT_CANDIDATES:
         for path in paths:
             if path.exists():
-                return font_name, path
+                return (
+                    FONT_NAME if font_name == FONT_NAME else FALLBACK_FONT_NAME,
+                    path,
+                )
 
         font_path = _find_font_file(file_names)
         if font_path is not None:
-            return font_name, font_path
+            return (
+                FONT_NAME if font_name == FONT_NAME else FALLBACK_FONT_NAME,
+                font_path,
+            )
 
     raise FileNotFoundError(
         "No supported font file was found. Install Maple Mono NF CN, Microsoft "

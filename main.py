@@ -47,14 +47,14 @@ def build_processors() -> tuple[tuple[str, Path, Callable[[], None]], ...]:
             receipts.process_receipts,
         ),
         (
-            "审核明细（销售用券情况统计）",
-            coupon_sources.COUPON_SOURCE_FILE or coupon_sources.DATA_DIR,
-            process_coupon_report,
-        ),
-        (
             "回款明细（家电+数码）",
             payment.DATA_DIR,
             payment.process_payment_files,
+        ),
+        (
+            "审核明细（销售用券情况统计）",
+            coupon_sources.COUPON_SOURCE_FILE or coupon_sources.DATA_DIR,
+            process_coupon_report,
         ),
         (
             "门店国补上传及回款情况表",

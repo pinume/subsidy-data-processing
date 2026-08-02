@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import re
 from collections import Counter, defaultdict
-from collections.abc import Iterator
 from dataclasses import dataclass
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from pathlib import Path
@@ -204,16 +203,6 @@ def configure_data_dir(data_dir: Path) -> None:
     )
 
 
-def _iter_actual_rows_with_numbers(worksheet):
-    """Yield non-empty rows without trusting the source's declared dimensions."""
-    if hasattr(worksheet, "reset_dimensions"):
-        worksheet.reset_dimensions()
-    for row_number, row in enumerate(worksheet.iter_rows(min_col=1, values_only=True), 1):
-        values = tuple(row)
-        if any(value not in (None, "") for value in values):
-            yield row_number, values
-
-
 def _iter_actual_cell_rows_with_numbers(worksheet):
     """Cell-preserving twin used only to recover types calamine discards."""
     if hasattr(worksheet, "reset_dimensions"):
@@ -224,13 +213,7 @@ def _iter_actual_cell_rows_with_numbers(worksheet):
 
 
 def _iter_actual_calamine_rows_with_numbers(sheet):
-    """calamine equivalent of _iter_actual_rows_with_numbers.
-
-    calamine already reports a sheet's real used range (no analogue of
-    openpyxl's reset_dimensions() workaround is needed — see
-    _iter_actual_rows_with_numbers), so this only needs to normalize values
-    and drop rows that are blank after normalization.
-    """
+    """Yield numbered non-empty rows from calamine's actual used range."""
     for row_number, row in enumerate(calamine_rows(sheet), 1):
         values = tuple(row)
         if any(value not in (None, "") for value in values):
@@ -357,7 +340,6 @@ def _collect_normalized_detail(
     source_positions: dict[str, int] = {}
     normalized_rows: list[list[object]] = []
     unidentified_brands = 0
-    merchant_index = profile.detail_headers.index("商户编号")
     category_index = profile.detail_headers.index("编码品类")
     product_index = profile.detail_headers.index("商品名称")
     subsidy_index_in_headers = profile.detail_headers.index("补贴金额")
@@ -386,11 +368,7 @@ def _collect_normalized_detail(
         if not source_positions:
             continue
 
-        normalized = [
-            _cell_value(row, source_positions[name]) if name in source_positions else None
-            for name in profile.detail_headers
-        ]
-        row_merchant_id = normalized[merchant_index]
+        row_merchant_id = _cell_value(row, source_positions["商户编号"])
         # Any row that is not this merchant's is skipped without comment — the
         # source carries every merchant's sales, so most rows are someone
         # else's. That deliberately includes a 商户编号 holding an Excel error
@@ -398,40 +376,46 @@ def _collect_normalized_detail(
         # and it was confirmed as data that legitimately does not belong to
         # this merchant. Raising on it, as the 补贴金额 column does, would stop
         # every run on a file that is fine.
-        if str(row_merchant_id).strip() == merchant_id:
-            subsidy_value = normalized[subsidy_index_in_headers]
-            if (
-                subsidy_value is None
-                and formula_workbook is not None
-                and subsidy_header in source_positions
-            ):
-                source_cell = _find_source_cell(
-                    row_number, source_positions[subsidy_header]
-                )
-                if source_cell is not None and source_cell.data_type == "e":
-                    raise ValueError(
-                        f"工作表 {sheet_name!r} 第 {row_number} 行字段 "
-                        f"{subsidy_header!r} 是 Excel 错误值：{source_cell.value!r}"
-                    )
-                if source_cell is not None and source_cell.data_type == "f":
-                    raise ValueError(
-                        f"工作表 {sheet_name!r} 第 {row_number} 行字段 "
-                        f"{subsidy_header!r} 是公式但没有缓存计算结果；"
-                        "请先用 Excel/WPS 打开并保存，或将公式转换为数值"
-                    )
-            encoded_category = normalized[category_index]
-            financial_category = profile.category_map.get(encoded_category)
-            if financial_category is None:
+        if str(row_merchant_id).strip() != merchant_id:
+            continue
+
+        normalized = [
+            _cell_value(row, source_positions[name]) if name in source_positions else None
+            for name in profile.detail_headers
+        ]
+        subsidy_value = normalized[subsidy_index_in_headers]
+        if (
+            subsidy_value is None
+            and formula_workbook is not None
+            and subsidy_header in source_positions
+        ):
+            source_cell = _find_source_cell(
+                row_number, source_positions[subsidy_header]
+            )
+            if source_cell is not None and source_cell.data_type == "e":
                 raise ValueError(
-                    f"工作表 {sheet_name!r} 第 {row_number} 行存在未配置的编码品类："
-                    f"{encoded_category!r}"
+                    f"工作表 {sheet_name!r} 第 {row_number} 行字段 "
+                    f"{subsidy_header!r} 是 Excel 错误值：{source_cell.value!r}"
                 )
-            product_name = normalized[product_index]
-            brand = _extract_brand(product_name, profile)
-            brand = _normalize_financial_brand(brand, financial_category)
-            if brand is None:
-                unidentified_brands += 1
-            normalized_rows.append(normalized + [financial_category, brand])
+            if source_cell is not None and source_cell.data_type == "f":
+                raise ValueError(
+                    f"工作表 {sheet_name!r} 第 {row_number} 行字段 "
+                    f"{subsidy_header!r} 是公式但没有缓存计算结果；"
+                    "请先用 Excel/WPS 打开并保存，或将公式转换为数值"
+                )
+        encoded_category = normalized[category_index]
+        financial_category = profile.category_map.get(encoded_category)
+        if financial_category is None:
+            raise ValueError(
+                f"工作表 {sheet_name!r} 第 {row_number} 行存在未配置的编码品类："
+                f"{encoded_category!r}"
+            )
+        product_name = normalized[product_index]
+        brand = _extract_brand(product_name, profile)
+        brand = _normalize_financial_brand(brand, financial_category)
+        if brand is None:
+            unidentified_brands += 1
+        normalized_rows.append(normalized + [financial_category, brand])
 
     if not source_positions:
         raise ValueError(f"工作表 {sheet_name!r} 未找到明细表头")
@@ -556,15 +540,6 @@ def _sort_detail_rows(
         ),
     )
     return data_row_count
-
-
-def _worksheet_rows(worksheet) -> Iterator[tuple]:
-    """Row values of an openpyxl worksheet, shaped like calamine_rows' output.
-
-    Lets the two helpers below serve both the in-memory workbook being built
-    and the saved file read back through calamine.
-    """
-    return worksheet.iter_rows(values_only=True)
 
 
 def _sum_detail_groups(detail_sections) -> dict[tuple[str, str], list]:

@@ -6,9 +6,8 @@ carries the small amount of real per-project variation (which column is
 "own" vs "the other side", the output header text, whether brand names get
 normalized through config/brand_mapping.yaml) so this module reads the file
 exactly once and hands each project its own classified rows, rather than
-each project separately locating and re-parsing the same file (the previous
-digital.py / large_appliances/_shared.py each ran their own
-find_data_files + header match against the same keyword).
+each project separately locating and re-parsing the same file as the previous
+project-specific implementations did.
 """
 
 import re
@@ -48,6 +47,10 @@ DATA_DIR: Path
 COUPON_SOURCE_FILE: Path | None
 COUPON_REFERENCE_SUPPLEMENT_FILE: Path
 COUPON_REFERENCE_SUPPLEMENT_KEYWORD = "新建 Microsoft Excel 工作表"
+PAYMENT_DETAIL_SHEETS = {
+    "家电": "家电明细",
+    "数码": "数码明细",
+}
 
 
 @dataclass(frozen=True)
@@ -77,6 +80,7 @@ class CouponSourceProfile:
             self.subsidy_header,
             "备注",
             "详细情况",
+            "回款情况",
         )
 
 
@@ -230,6 +234,61 @@ def load_uploaded_summary(source: Path) -> tuple[dict[str, str], int, Decimal]:
         return lookup, subsidy_count, subsidy_total
     finally:
         workbook.close()
+
+
+def load_payment_reference_locations(
+    source: Path,
+) -> dict[str, dict[str, str]]:
+    """Read authoritative payment references once, separated by project."""
+    if not source.exists():
+        raise FileNotFoundError(f"未找到回款匹配文件：{source}")
+
+    workbook = CalamineWorkbook.from_path(str(source))
+    try:
+        result: dict[str, dict[str, str]] = {}
+        for project, sheet_name in PAYMENT_DETAIL_SHEETS.items():
+            if sheet_name not in workbook.sheet_names:
+                raise ValueError(f"{source.name} 缺少 {sheet_name} 工作表")
+            sheet = workbook.get_sheet_by_name(sheet_name)
+            rows_iter = calamine_rows(sheet)
+            header = next(rows_iter, [])
+            if "交易参考号" not in header:
+                raise ValueError(f"{source.name} 的 {sheet_name} 缺少字段：交易参考号")
+            reference_index = header.index("交易参考号")
+            locations: dict[str, str] = {}
+            for row_number, row in enumerate(rows_iter, start=2):
+                location = f"{source.name} 的 {sheet_name} 第 {row_number} 行"
+                raw_reference = (
+                    row[reference_index]
+                    if reference_index < len(row)
+                    else None
+                )
+                if raw_reference in (None, ""):
+                    raise ValueError(f"{location}交易参考号为空")
+                reference = validated_reference(raw_reference, location)
+                locations.setdefault(reference, location)
+            result[project] = locations
+        return result
+    finally:
+        workbook.close()
+
+
+def validate_payment_reference_subset(
+    project: str,
+    payment_reference_locations: dict[str, str],
+    submitted_references: set[str],
+) -> None:
+    missing = sorted(set(payment_reference_locations) - submitted_references)
+    if not missing:
+        return
+    examples = "；".join(
+        f"{reference}（{payment_reference_locations[reference]}）"
+        for reference in missing[:10]
+    )
+    raise ValueError(
+        f"{project}回款参考号子集校验失败：共 {len(missing)} 个交易参考号"
+        f"未出现在{project}已上传数据中，示例：{examples}"
+    )
 
 
 def _read_header_row(path: Path) -> tuple[object, ...]:
@@ -452,7 +511,14 @@ def read_coupon_export(
             document_date = normalize_coupon_date(
                 row_values[1], row_number, source.name
             )
-            result_row = [document_number, document_date, *row_values[2:], None, None]
+            result_row = [
+                document_number,
+                document_date,
+                *row_values[2:],
+                None,
+                None,
+                None,
+            ]
             if profile.normalize_brand:
                 brand = str(result_row[3] or "").strip()
                 result_row[3] = COUPON_BRAND_REPLACEMENTS.get(brand, result_row[3])
