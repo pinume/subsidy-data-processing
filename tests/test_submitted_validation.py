@@ -366,6 +366,42 @@ class SubmittedRowValidationTest(unittest.TestCase):
             submitted.configure_data_dir(data_dir)
             return submitted.build_report(profile_name)
 
+    def test_unknown_statuses_are_counted_not_dropped(self) -> None:
+        """核销成功 and 待同步 appear in real exports but have no status sheet.
+
+        Such rows still belong in Summary, so they must be reported rather
+        than silently missing from every status tab.
+        """
+        rows = []
+        for status, count in (("核销成功", 2), ("待同步", 1), ("", 1)):
+            for index in range(count):
+                row = submitted_row(
+                    SUBMITTED_HEADER,
+                    reference=f"1234567890{len(rows)}A",
+                )
+                row[column_index_from_string(STATUS_COLUMN) - 1] = status
+                rows.append(row)
+        rows.append(submitted_row(SUBMITTED_HEADER, reference="12345678999A"))
+
+        report = self.build_from_rows(rows)
+
+        self.assertEqual(report.data_row_count, 5)
+        self.assertEqual(
+            report.unknown_status_counts,
+            {"核销成功": 2, "待同步": 1, "": 1},
+        )
+        # The known-status row is the only one reaching a status sheet, but
+        # every row is still carried in Summary.
+        self.assertEqual(len(report.summary_rows), 5)
+        self.assertEqual(
+            sum(len(rows) for rows in report.status_rows.values()), 1
+        )
+
+    def test_no_unknown_statuses_reports_nothing(self) -> None:
+        report = self.build_from_rows([submitted_row(SUBMITTED_HEADER)])
+
+        self.assertEqual(report.unknown_status_counts, {})
+
     def test_invalid_reference_reports_source_location(self) -> None:
         row = submitted_row(SUBMITTED_HEADER, reference="not-valid")
 

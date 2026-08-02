@@ -76,6 +76,10 @@ class SubmittedReport:
     status_rows: dict[str, list[list[object]]]
     file_count: int
     data_row_count: int
+    # Statuses the export carried that STATUS_ORDER does not name, counted per
+    # status. Those rows reach Summary but no status sheet, so without this
+    # they are invisible to an operator working from the status tabs.
+    unknown_status_counts: dict[str, int]
 
 
 # Household appliances and digital both take 15% of the transaction; the two
@@ -280,10 +284,13 @@ def build_report(profile_name: str) -> SubmittedReport:
     rows_by_status: dict[str, list[list[object]]] = {
         status: [] for status in STATUS_ORDER
     }
+    unknown_status_counts: Counter[str] = Counter()
     for row in data_rows:
         status = str(row[status_column_index] or "")
         if status in rows_by_status:
             rows_by_status[status].append(row)
+        else:
+            unknown_status_counts[status] += 1
 
     for status in STATUS_ORDER:
         status_rows = rows_by_status[status]
@@ -301,6 +308,7 @@ def build_report(profile_name: str) -> SubmittedReport:
         status_rows=rows_by_status,
         file_count=len(files),
         data_row_count=data_row_count,
+        unknown_status_counts=dict(unknown_status_counts),
     )
 
 
@@ -491,6 +499,24 @@ def process_submitted_files(profile_name: str) -> None:
         "Submitted data complete: "
         f"merged {report.file_count} files, {report.data_row_count} rows"
     )
+    # Reported, never fatal: an unrecognised status is still uploaded data and
+    # belongs in Summary; it just has no status sheet of its own, so silence
+    # would hide it from an operator reading the status tabs. A status new to
+    # this program shows up here rather than as a row count that does not add
+    # up.
+    if report.unknown_status_counts:
+        unknown_total = sum(report.unknown_status_counts.values())
+        detail = "、".join(
+            f"{status or '(空)'}×{count}"
+            for status, count in sorted(
+                report.unknown_status_counts.items(),
+                key=lambda item: (-item[1], item[0]),
+            )
+        )
+        print(
+            f"未归入状态工作表的行：{unknown_total}（仅在 Summary 中）；"
+            f"状态为 {detail}"
+        )
     print(f"Output file: {output_file}")
 
 
