@@ -62,9 +62,9 @@ class PrepareReceiptDataIssuesTest(unittest.TestCase):
 
     def test_duplicate_match_keys_are_not_reported_as_issues(self) -> None:
         """Same 单据号/日期 with two line items is a normal suite sale (e.g.
-        烟机+灶具 sold together), not a data problem — it must still count
-        towards 重复匹配键数量 and duplicate_match_keys (for highlighting),
-        just never appear in 问题明细."""
+        烟机+灶具 sold together), not a data problem — it still counts
+        towards 重复匹配键数量 for diagnostics, but is neither highlighted
+        nor written to 问题明细."""
         kept_rows = [
             HEADER,
             ["ZH0001", "2026-01-24", "", "", "老板-欧式烟机-K1L"],
@@ -86,8 +86,12 @@ class PrepareReceiptDataIssuesTest(unittest.TestCase):
             ["ZH0001", "2026-01-24", "250101ZH9999", "", "海尔冰箱"],
         ]
 
-        _output_rows, stats, issues, _duplicates = prepare(kept_rows)
+        output_rows, stats, issues, _duplicates = prepare(kept_rows)
 
+        self.assertEqual(
+            output_rows[0][-1],
+            receipts.RECEIPTS_REMARK_RETURN,
+        )
         self.assertEqual(issues, [])
         self.assertEqual(stats["未匹配原票号数量"], 0)
 
@@ -291,6 +295,97 @@ class SpecialRemarkStatsTest(unittest.TestCase):
         self.assertEqual(stats["特殊备注数量"], 0)
 
 
+class ReceiptRemarkFillTest(unittest.TestCase):
+    @staticmethod
+    def _is_pink(cell) -> bool:
+        return (
+            cell.fill.patternType == "solid"
+            and str(cell.fill.fgColor.rgb)[-6:]
+            == receipts.RECEIPTS_REMARK_FILL_COLOR
+        )
+
+    def _write_and_read(self, kept_rows):
+        output_rows, _stats, issues, _duplicates = prepare(kept_rows)
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        path = Path(directory.name) / "收款单统计.xlsx"
+        receipts._write_receipts_workbook(path, output_rows, issues)
+        workbook = load_workbook(path)
+        self.addCleanup(workbook.close)
+        receipts.validate_receipts_output(path, len(output_rows), issues)
+        return output_rows, issues, workbook
+
+    def test_suite_sale_duplicate_without_return_is_not_filled(self) -> None:
+        output_rows, issues, workbook = self._write_and_read(
+            [
+                HEADER,
+                ["ZH0001", "2026-01-24", "", "", "老板-欧式烟机-K1L"],
+                ["ZH0001", "2026-01-24", "", "", "老板-嵌入式灶-9B5-B1"],
+            ]
+        )
+
+        self.assertEqual([row[-1] for row in output_rows], [None, None])
+        self.assertEqual(issues, [])
+        self.assertEqual(workbook.sheetnames, ["Sheet1"])
+        for row in workbook["Sheet1"].iter_rows(min_row=2):
+            self.assertFalse(any(self._is_pink(cell) for cell in row))
+
+    def test_return_referencing_suite_sale_marks_every_related_row(self) -> None:
+        output_rows, issues, workbook = self._write_and_read(
+            [
+                HEADER,
+                ["ZH0001", "2026-01-24", "", "", "老板-欧式烟机-K1L"],
+                ["ZH0001", "2026-01-24", "", "", "老板-嵌入式灶-9B5-B1"],
+                [
+                    "ZH0002",
+                    "2026-01-25",
+                    "260124ZH0001",
+                    "",
+                    "老板烟灶套装退货",
+                ],
+            ]
+        )
+
+        self.assertEqual(
+            [row[-1] for row in output_rows],
+            [
+                receipts.RECEIPTS_REMARK_ORIGINAL,
+                receipts.RECEIPTS_REMARK_ORIGINAL,
+                receipts.RECEIPTS_REMARK_RETURN,
+            ],
+        )
+        self.assertEqual(issues, [])
+        for row in workbook["Sheet1"].iter_rows(min_row=2):
+            self.assertTrue(all(self._is_pink(cell) for cell in row))
+
+    def test_prior_year_original_invoice_is_return_and_is_filled(self) -> None:
+        output_rows, issues, workbook = self._write_and_read(
+            [
+                HEADER,
+                [
+                    "ZH0001",
+                    "2026-01-24",
+                    "250101ZH9999",
+                    "",
+                    "海尔冰箱",
+                ],
+            ]
+        )
+
+        self.assertEqual(
+            output_rows[0][-1],
+            receipts.RECEIPTS_REMARK_RETURN,
+        )
+        self.assertEqual(issues, [])
+        self.assertEqual(workbook.sheetnames, ["Sheet1"])
+        self.assertTrue(
+            all(
+                self._is_pink(cell)
+                for cell in workbook["Sheet1"][2]
+            )
+        )
+
+
 class IssuesSheetRoundTripTest(unittest.TestCase):
     def test_issues_sheet_is_written_and_validated(self) -> None:
         issues = [
@@ -302,7 +397,6 @@ class IssuesSheetRoundTripTest(unittest.TestCase):
                 path,
                 [],
                 issues,
-                duplicate_match_keys=set(),
             )
 
             workbook = load_workbook(path)
@@ -337,8 +431,7 @@ class IssuesSheetRoundTripTest(unittest.TestCase):
             receipts._write_receipts_workbook(
                 path,
                 [],
-                [],
-                duplicate_match_keys=set(),
+                [("缺少匹配键", "5", "", "错误说明")],
             )
 
             with self.assertRaisesRegex(RuntimeError, "问题明细工作表内容校验失败"):
