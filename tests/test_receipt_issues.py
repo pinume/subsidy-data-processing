@@ -1,5 +1,6 @@
 import tempfile
 import unittest
+from datetime import date
 from pathlib import Path
 
 from openpyxl import load_workbook
@@ -309,7 +310,7 @@ class ReceiptOutputSortTest(unittest.TestCase):
                 remarks,
                 key=lambda remark: receipts.receipt_output_sort_key(
                     remark,
-                    "2026-01-01",
+                    date(2026, 1, 1),
                     "ZH0001",
                     "商品",
                 ),
