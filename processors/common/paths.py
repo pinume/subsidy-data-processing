@@ -4,7 +4,6 @@ from pathlib import Path
 def resolve_data_dir() -> Path | None:
     current_data_dir = (Path.cwd() / "data").resolve()
     if current_data_dir.is_dir():
-        print(f"Found data directory: {current_data_dir}")
         return current_data_dir
 
     if current_data_dir.exists():
@@ -12,15 +11,9 @@ def resolve_data_dir() -> Path | None:
             f"Cannot create data directory; the path is a file: {current_data_dir}"
         )
 
+    # Returning None ends the run: main() has nothing to offer until the
+    # operator has put the exports into the directory just created.
     current_data_dir.mkdir()
-    print(f"Created data directory: {current_data_dir}")
-    print(
-        "Add the required files directly into this directory (no subfolders); "
-        "each project identifies its files by filename keywords: "
-        "MER_<商户编号>_*.xlsx（已上传数据）、收款单统计、销售用券情况统计、"
-        "补贴明细、门店国补上传及回款情况表。"
-    )
-    print("This run has ended.")
     return None
 
 
