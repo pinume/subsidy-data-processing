@@ -489,6 +489,31 @@ class ValidatorRejectsBadOutputTest(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "检索参考号格式无效"):
                 submitted.validate_output(output, data_rows, "家电")
 
+    def tamper_with_subsidy(self, sheet_name: str) -> None:
+        """Overwrite one 补贴金额 cell and assert the validator refuses it."""
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "已上传.xlsx"
+            data_rows = self.build_valid_output("家电", output)
+            workbook = load_workbook(output)
+            try:
+                sheet = workbook[sheet_name]
+                header = [cell.value for cell in sheet[1]]
+                sheet.cell(2, header.index("补贴金额") + 1, 99999.99)
+                workbook.save(output)
+            finally:
+                workbook.close()
+
+            with self.assertRaises(RuntimeError):
+                submitted.validate_output(output, data_rows, "家电")
+
+    def test_rejects_wrong_subsidy_in_summary(self) -> None:
+        self.tamper_with_subsidy("Summary")
+
+    def test_rejects_wrong_subsidy_in_status_sheet(self) -> None:
+        """Summary and the status sheets are written by separate calls, so a
+        subsidy that is only wrong on the status sheet must still be caught."""
+        self.tamper_with_subsidy("审核通过")
+
 
 if __name__ == "__main__":
     unittest.main()

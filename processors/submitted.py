@@ -7,6 +7,7 @@ SubmittedProfile instances sharing one pipeline rather than two
 near-identical modules.
 """
 
+from collections import Counter
 from dataclasses import dataclass
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from pathlib import Path
@@ -461,6 +462,29 @@ def validate_output(path: Path, expected_data_rows: int, profile_name: str) -> N
             raise RuntimeError(
                 f"状态工作表校验失败：预期共 {known_status_total} 条，"
                 f"实际共 {status_total} 条"
+            )
+
+        # The six status sheets are written by six calls separate from the
+        # Summary one, so matching counts do not prove matching content.
+        # Comparing them as multisets checks every column of every row —
+        # 补贴金额 included — against the Summary rows already recomputed
+        # above, which is cheaper than recomputing the subsidy per sheet.
+        # Counter rather than set: one 检索参考号 may legitimately carry
+        # several identical detail rows, and a status sheet that dropped one
+        # of them must not pass.
+        expected_status_rows = Counter(
+            tuple(row)
+            for row in summary_rows[1:]
+            if row[status_column] in STATUS_ORDER
+        )
+        actual_status_rows = Counter(
+            tuple(row)
+            for status in STATUS_ORDER
+            for row in sheet_rows[status][1:]
+        )
+        if actual_status_rows != expected_status_rows:
+            raise RuntimeError(
+                "状态工作表校验失败：数据行内容与 Summary 不一致"
             )
 
         for status in STATUS_ORDER:
