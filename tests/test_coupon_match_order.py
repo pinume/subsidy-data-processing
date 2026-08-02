@@ -9,9 +9,14 @@ Required order:
 Digital data must never consult the supplement file.
 """
 import unittest
+from contextlib import ExitStack
 from datetime import date
+from decimal import Decimal
+from inspect import signature
+from pathlib import Path
+from unittest.mock import patch
 
-from processors.coupons import appliance, matching
+from processors.coupons import appliance, matching, sources
 from processors.coupons import digital as coupons_digital
 
 SUBMITTED_REFERENCE = "12345678901N"
@@ -132,6 +137,91 @@ class LargeApplianceMatchOrderTest(unittest.TestCase):
         remark_index = appliance.COUPON_OUTPUT_HEADER.index("备注")
         self.assertEqual(count, 1)
         self.assertEqual(row[remark_index], "未上传")
+
+
+class PinkBlockIsLeftAloneTest(unittest.TestCase):
+    """The 退换货 block is settled by the receipt remark and must stay that way.
+
+    Both projects pin those rows at the bottom and colour them pink; the
+    reference passes have to skip them, or the remark that made a row pink is
+    overwritten with an upload status and the sheet ends up with pink rows
+    labelled 已上传.
+    """
+
+    def compute(self, module, rows, remark_lookup):
+        """Run one project's whole pipeline over rows the test controls.
+
+        Asserting on compute_coupon_data rather than on the matching helpers
+        is the point: the helpers always honoured excluded_bottom_rows, and
+        the fault was 数码 never passing it to them.
+        """
+        detail_lookup = {SUBMITTED_REFERENCE: "审核通过：同意"}
+        with ExitStack() as stack:
+            stack.enter_context(
+                patch.object(
+                    sources,
+                    "COUPON_SOURCE_FILE",
+                    Path("销售用券情况统计.xlsx"),
+                    create=True,
+                )
+            )
+            stack.enter_context(
+                patch.object(
+                    module,
+                    "load_uploaded_summary",
+                    return_value=(detail_lookup, 1, Decimal("0")),
+                )
+            )
+            # 家电 alone reads the optional supplement file; the path is
+            # only set by configure_data_dir, which this test does not run.
+            if hasattr(module, "load_coupon_reference_supplement"):
+                stack.enter_context(
+                    patch.object(
+                        sources,
+                        "COUPON_REFERENCE_SUPPLEMENT_FILE",
+                        Path("参考号补充.xlsx"),
+                        create=True,
+                    )
+                )
+                stack.enter_context(
+                    patch.object(
+                        module,
+                        "load_coupon_reference_supplement",
+                        return_value={},
+                    )
+                )
+            kwargs = {"rows": rows, "remark_lookup": remark_lookup}
+            if "source_total" in signature(module.compute_coupon_data).parameters:
+                # 家电 would otherwise re-read the export for its 合计 row.
+                kwargs["source_total"] = None
+            return module.compute_coupon_data(**kwargs)
+
+    def test_the_pink_block_keeps_its_remark(self) -> None:
+        for name, module in (
+            ("家电", appliance),
+            ("数码", coupons_digital),
+        ):
+            with self.subTest(name):
+                header = module.COUPON_OUTPUT_HEADER
+                day = date(2026, 1, 24)
+                rows = [
+                    list(header),
+                    coupon_row(header, SUBMITTED_REFERENCE, "001", day),
+                    coupon_row(header, SUBMITTED_REFERENCE, "002", day),
+                ]
+                remark_index = header.index("备注")
+
+                computation = self.compute(
+                    module, rows, {("002", day): "退换货/倒票（退单）"}
+                )
+
+                self.assertEqual(computation.matched_count, 1)
+                result = computation.rows
+                # The pink block sits at the bottom; row 1 is the plain sale.
+                self.assertEqual(result[1][remark_index], "已上传")
+                self.assertEqual(
+                    result[-1][remark_index], "退换货/倒票（退单）"
+                )
 
 
 class DigitalSkipsSupplementTest(unittest.TestCase):

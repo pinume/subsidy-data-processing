@@ -11,18 +11,25 @@ HEADER = list(receipts.RECEIPTS_SOURCE_HEADER)
 SOURCE_NAME = "收款单统计.xlsx"
 
 
+def pad(row):
+    """Fixture rows name the leading five fields; widen them to the header."""
+    return [*row, *[None] * (len(HEADER) - len(row))]
+
+
 def prepare(kept_rows):
-    return receipts.prepare_receipt_data(kept_rows, source_name=SOURCE_NAME)
+    return receipts.prepare_receipt_data(
+        [pad(row) for row in kept_rows], source_name=SOURCE_NAME
+    )
 
 
 class PrepareReceiptDataIssuesTest(unittest.TestCase):
     def test_issues_cover_duplicate_missing_and_invalid_original(self) -> None:
         kept_rows = [
             HEADER,
-            ["ZH0001", "2026-01-24", "", "", "海尔冰箱"],
-            ["ZH0001", "2026-01-24", "", "", "美的空调"],
-            ["ZH0002", None, "", "", "格力空调"],
-            ["ZH0003", "2026-01-25", "notvalid", "", "小米手机"],
+            ["ZH0001", "2026-01-24", "", "海尔冰箱"],
+            ["ZH0001", "2026-01-24", "", "美的空调"],
+            ["ZH0002", None, "", "格力空调"],
+            ["ZH0003", "2026-01-25", "notvalid", "小米手机"],
         ]
 
         _output_rows, stats, issues = prepare(kept_rows)
@@ -67,8 +74,8 @@ class PrepareReceiptDataIssuesTest(unittest.TestCase):
         nor written to 问题明细."""
         kept_rows = [
             HEADER,
-            ["ZH0001", "2026-01-24", "", "", "老板-欧式烟机-K1L"],
-            ["ZH0001", "2026-01-24", "", "", "老板-嵌入式灶-9B5-B1"],
+            ["ZH0001", "2026-01-24", "", "老板-欧式烟机-K1L"],
+            ["ZH0001", "2026-01-24", "", "老板-嵌入式灶-9B5-B1"],
         ]
 
         _output_rows, stats, issues = prepare(kept_rows)
@@ -76,13 +83,108 @@ class PrepareReceiptDataIssuesTest(unittest.TestCase):
         self.assertEqual(issues, [])
         self.assertEqual(stats["重复匹配键数量"], 1)
 
+
+class UnremarkedSaleCategoryTest(unittest.TestCase):
+    """零售补差 / 同型号换货 are left out of the remark rules entirely.
+
+    They are booked as a pair sharing one 单据号/日期 whose 销售金额 cancel —
+    the original was replaced, not returned — so neither the pair nor the
+    original it names is a return to report.
+    """
+
+    def rows(self, category: str) -> list[list[object]]:
+        return [
+            HEADER,
+            ["ZFP3000067", "2026-01-07", "", "美的空调", "正常销售"],
+            ["0233000588", "2026-01-23", "260107ZFP3000067", "美的空调", category],
+            ["0233000588", "2026-01-23", "260107ZFP3000067", "美的空调", category],
+        ]
+
+    def test_neither_the_pair_nor_its_original_is_remarked(self) -> None:
+        for category in ("零售补差", "同型号换货"):
+            with self.subTest(category):
+                output_rows, stats, issues = prepare(self.rows(category))
+
+                self.assertEqual([row[-1] for row in output_rows], [None] * 3)
+                self.assertEqual(stats["备注总数"], 0)
+                self.assertEqual(issues, [])
+                # Every one of these rows carries an 原票号, so the tallies
+                # would claim them as 退单 while their 备注 stayed blank.
+                self.assertEqual(
+                    (
+                        stats["仅退单数量"],
+                        stats["仅原单数量"],
+                        stats["退单及原单数量"],
+                    ),
+                    (0, 0, 0),
+                )
+
+    def test_a_later_return_of_a_replaced_sale_is_a_plain_return(self) -> None:
+        """A 退货 naming one of these rows is a 退单 like any other.
+
+        Its 原单 partner stays unremarked — the sale it points at was
+        replaced, not returned — so the return is reported on its own.
+        """
+        kept_rows = [
+            *self.rows("同型号换货"),
+            # 原票号 names the 2026-01-23 换货 row: yymmdd + 单据号.
+            [
+                "0233000901",
+                "2026-02-01",
+                "2601230233000588",
+                "美的空调",
+                "退货",
+            ],
+        ]
+
+        output_rows, stats, _issues = prepare(kept_rows)
+
+        self.assertEqual(
+            {(row[0], row[-1]) for row in output_rows},
+            {
+                ("ZFP3000067", None),
+                ("0233000588", None),
+                ("0233000901", receipts.RECEIPTS_REMARK_RETURN),
+            },
+        )
+        self.assertEqual(stats["备注总数"], 1)
+        self.assertEqual(
+            (
+                stats["仅退单数量"],
+                stats["仅原单数量"],
+                stats["退单及原单数量"],
+            ),
+            (1, 0, 0),
+        )
+
+    def test_an_ordinary_return_of_the_same_original_still_reports(self) -> None:
+        """The exclusion is by 销售类别, not by 原票号: a real 退货 row naming
+        the same original must still produce the 退单/原单 pairing."""
+        kept_rows = [
+            *self.rows("零售补差"),
+            ["0233000900", "2026-01-24", "260107ZFP3000067", "美的空调", "退货"],
+        ]
+
+        output_rows, stats, _issues = prepare(kept_rows)
+
+        self.assertEqual(
+            {(row[0], row[-1]) for row in output_rows},
+            {
+                ("ZFP3000067", receipts.RECEIPTS_REMARK_ORIGINAL),
+                ("0233000588", None),
+                ("0233000900", receipts.RECEIPTS_REMARK_RETURN),
+            },
+        )
+        self.assertEqual(stats["备注总数"], 2)
+
+class PrepareReceiptDataOriginalInvoiceTest(unittest.TestCase):
     def test_original_invoice_from_before_the_file_is_not_reported(self) -> None:
         """收款单统计 only ever covers one year's receipts, so an 原票号
         pointing at an earlier year can never resolve to a match_key in this
         file by construction — that is not a data problem either."""
         kept_rows = [
             HEADER,
-            ["ZH0001", "2026-01-24", "250101ZH9999", "", "海尔冰箱"],
+            ["ZH0001", "2026-01-24", "250101ZH9999", "海尔冰箱"],
         ]
 
         output_rows, stats, issues = prepare(kept_rows)
@@ -97,7 +199,7 @@ class PrepareReceiptDataIssuesTest(unittest.TestCase):
     def test_original_invoice_from_the_same_year_is_still_reported(self) -> None:
         kept_rows = [
             HEADER,
-            ["ZH0001", "2026-01-24", "260101ZH9999", "", "海尔冰箱"],
+            ["ZH0001", "2026-01-24", "260101ZH9999", "海尔冰箱"],
         ]
 
         _output_rows, stats, issues = prepare(kept_rows)
@@ -118,7 +220,7 @@ class PrepareReceiptDataIssuesTest(unittest.TestCase):
     def test_no_issues_yields_empty_list(self) -> None:
         kept_rows = [
             HEADER,
-            ["ZH0001", "2026-01-24", "", "", "海尔冰箱"],
+            ["ZH0001", "2026-01-24", "", "海尔冰箱"],
         ]
 
         _output_rows, _stats, issues = prepare(kept_rows)
@@ -128,8 +230,8 @@ class PrepareReceiptDataIssuesTest(unittest.TestCase):
     def test_invalid_date_error_names_source_file_and_real_row(self) -> None:
         kept_rows = [
             HEADER,
-            ["ZH0001", "2026-01-24", "", "", "海尔冰箱"],
-            ["ZH0002", "2026.1.25", "", "", "美的空调"],
+            ["ZH0001", "2026-01-24", "", "海尔冰箱"],
+            ["ZH0002", "2026.1.25", "", "美的空调"],
         ]
 
         with self.assertRaises(ValueError) as caught:
@@ -145,9 +247,9 @@ class BlankAndTotalRowTest(unittest.TestCase):
     def test_fully_blank_row_is_skipped(self) -> None:
         kept_rows = [
             HEADER,
-            ["ZH0001", "2026-01-24", "", "", "海尔冰箱"],
-            [None, None, None, None, None],
-            ["", "  ", "", "", ""],
+            ["ZH0001", "2026-01-24", "", "海尔冰箱"],
+            [None, None, None, None],
+            ["", "  ", "", ""],
         ]
 
         output_rows, stats, issues = prepare(kept_rows)
@@ -160,7 +262,7 @@ class BlankAndTotalRowTest(unittest.TestCase):
     def test_row_with_any_value_is_kept(self) -> None:
         kept_rows = [
             HEADER,
-            [None, None, None, None, "海尔冰箱"],
+            [None, None, None, "海尔冰箱"],
         ]
 
         output_rows, stats, issues = prepare(kept_rows)
@@ -173,7 +275,7 @@ class BlankAndTotalRowTest(unittest.TestCase):
     def test_numeric_zero_is_not_blank(self) -> None:
         kept_rows = [
             HEADER,
-            [0, None, None, None, None],
+            [0, None, None, None],
         ]
 
         output_rows, stats, _issues = prepare(kept_rows)
@@ -183,14 +285,14 @@ class BlankAndTotalRowTest(unittest.TestCase):
 
     def test_total_row_is_skipped_in_either_column(self) -> None:
         for total_row in (
-            ["合计", "合计", "", "", ""],
-            ["合计", None, "", "", ""],
-            [None, "合计", "", "", ""],
+            ["合计", "合计", "", ""],
+            ["合计", None, "", ""],
+            [None, "合计", "", ""],
         ):
             with self.subTest(total_row=total_row):
                 kept_rows = [
                     HEADER,
-                    ["ZH0001", "2026-01-24", "", "", "海尔冰箱"],
+                    ["ZH0001", "2026-01-24", "", "海尔冰箱"],
                     total_row,
                 ]
 
@@ -202,7 +304,7 @@ class BlankAndTotalRowTest(unittest.TestCase):
     def test_合计_inside_text_fields_is_not_a_total_row(self) -> None:
         kept_rows = [
             HEADER,
-            ["ZH0001", "2026-01-24", "", "合计说明", "合计套装"],
+            ["ZH0001", "2026-01-24", "", "合计套装"],
         ]
 
         output_rows, stats, _issues = prepare(kept_rows)
@@ -213,14 +315,14 @@ class BlankAndTotalRowTest(unittest.TestCase):
     def test_skipped_rows_shift_the_reported_output_row(self) -> None:
         kept_rows = [
             HEADER,
-            ["ZH0001", "2026-01-24", "", "", "海尔冰箱"],
-            [None, None, None, None, None],
-            ["合计", "合计", "", "", ""],
+            ["ZH0001", "2026-01-24", "", "海尔冰箱"],
+            [None, None, None, None],
+            ["合计", "合计", "", ""],
             # Source Excel row 6, but the blank and 合计 rows above never
             # reach the output sheet — this is only its second data row,
             # so 问题明细 must report 3 (an operator's coordinate in
             # Sheet1), not 6 (its position in the raw import).
-            ["ZH0002", None, "", "", "格力空调"],
+            ["ZH0002", None, "", "格力空调"],
         ]
 
         _output_rows, _stats, issues = prepare(kept_rows)
@@ -272,19 +374,37 @@ class SpecialRemarkStatsTest(unittest.TestCase):
 
     def test_missing_special_keys_are_reported_not_fatal(self) -> None:
         _output_rows, stats, _issues = prepare(
-            [HEADER, ["ZH0001", "2026-01-24", "", "", "海尔冰箱"]]
+            [HEADER, ["ZH0001", "2026-01-24", "", "海尔冰箱"]]
         )
 
         self.assertEqual(stats["生效特殊匹配键"], [])
         self.assertEqual(
-            stats["未找到特殊匹配键"],
+            stats["未生效特殊匹配键"],
             sorted(receipts.RECEIPTS_SPECIAL_REMARK_KEYS),
         )
+
+    def test_a_special_key_on_an_unremarked_row_reports_as_ineffective(
+        self,
+    ) -> None:
+        """The key is in the file, yet its row never takes a remark.
+
+        Counting it as 生效 would hide that the configured override was
+        dropped, which is the only signal an operator gets.
+        """
+        match_key, row = self._special_key_row()
+        row[4] = "同型号换货"
+
+        output_rows, stats, _issues = prepare([HEADER, row])
+
+        self.assertIsNone(output_rows[0][-1])
+        self.assertEqual(stats["生效特殊匹配键"], [])
+        self.assertIn(match_key, stats["未生效特殊匹配键"])
+        self.assertEqual(stats["特殊备注数量"], 0)
 
     def test_ordinary_remarks_still_counted(self) -> None:
         kept_rows = [
             HEADER,
-            ["ZH0001", "2026-01-24", "260101ZH9999", "", "海尔冰箱"],
+            ["ZH0001", "2026-01-24", "260101ZH9999", "海尔冰箱"],
         ]
 
         _output_rows, stats, _issues = prepare(kept_rows)
@@ -301,7 +421,6 @@ class ReceiptOutputSortTest(unittest.TestCase):
             receipts.RECEIPTS_REMARK_BOTH,
             receipts.RECEIPTS_REMARK_RETURN,
             receipts.RECEIPTS_REMARK_ORIGINAL,
-            receipts.RECEIPTS_REMARK_SAME_MODEL_REPLACEMENT,
             None,
         ]
 
@@ -317,7 +436,6 @@ class ReceiptOutputSortTest(unittest.TestCase):
             ),
             [
                 None,
-                receipts.RECEIPTS_REMARK_SAME_MODEL_REPLACEMENT,
                 receipts.RECEIPTS_REMARK_ORIGINAL,
                 receipts.RECEIPTS_REMARK_RETURN,
                 receipts.RECEIPTS_REMARK_BOTH,
@@ -325,27 +443,42 @@ class ReceiptOutputSortTest(unittest.TestCase):
             ],
         )
 
+    def test_product_name_breaks_ties(self) -> None:
+        """商品名称 is still the last sort key even though it is not written.
+
+        Two rows alike in remark, date and 单据号 are indistinguishable in the
+        output, so this is the only place the tie-break can be asserted.
+        """
+        key = receipts.receipt_output_sort_key
+        self.assertLess(
+            key(None, date(2026, 1, 1), "ZH0001", "A商品"),
+            key(None, date(2026, 1, 1), "ZH0001", "Z商品"),
+        )
+
     def test_rows_are_sorted_by_remark_date_document_and_product(self) -> None:
         output_rows, _stats, issues = prepare(
             [
                 HEADER,
-                ["ZH0002", "2026-01-02", "", "", "B商品"],
-                ["ZH0004", "2026-01-01", "250101OLD4", "", "D退货"],
-                ["ZH0001", "2026-01-01", "", "", "Z商品"],
-                ["ZH0001", "2026-01-01", "", "", "A商品"],
-                ["ZH0003", "2026-01-01", "250101OLD3", "", "C退货"],
+                ["ZH0002", "2026-01-02", "", "B商品"],
+                ["ZH0004", "2026-01-01", "250101OLD4", "D退货"],
+                ["ZH0001", "2026-01-01", "", "Z商品"],
+                ["ZH0001", "2026-01-01", "", "A商品"],
+                ["ZH0003", "2026-01-01", "250101OLD3", "C退货"],
             ]
         )
 
         self.assertEqual(issues, [])
         self.assertEqual(
-            [(row[0], row[4], row[5]) for row in output_rows],
+            [(row[0], row[-1]) for row in output_rows],
             [
-                ("ZH0001", "A商品", None),
-                ("ZH0001", "Z商品", None),
-                ("ZH0002", "B商品", None),
-                ("ZH0003", "C退货", receipts.RECEIPTS_REMARK_RETURN),
-                ("ZH0004", "D退货", receipts.RECEIPTS_REMARK_RETURN),
+                # 商品名称 is no longer written out, so the two ZH0001 lines are
+                # indistinguishable here; their A商品/Z商品 ordering is asserted
+                # on the sort key itself in test_product_name_breaks_ties.
+                ("ZH0001", None),
+                ("ZH0001", None),
+                ("ZH0002", None),
+                ("ZH0003", receipts.RECEIPTS_REMARK_RETURN),
+                ("ZH0004", receipts.RECEIPTS_REMARK_RETURN),
             ],
         )
 
@@ -353,8 +486,8 @@ class ReceiptOutputSortTest(unittest.TestCase):
         output_rows, _stats, issues = prepare(
             [
                 HEADER,
-                ["ZH0009", None, "", "", "缺少日期"],
-                ["ZH0001", "2026-01-01", "", "", "正常商品"],
+                ["ZH0009", None, "", "缺少日期"],
+                ["ZH0001", "2026-01-01", "", "正常商品"],
             ]
         )
 
@@ -368,14 +501,14 @@ class ReceiptOutputSortTest(unittest.TestCase):
         output_rows, _stats, issues = prepare(
             [
                 HEADER,
-                ["ZH0009", None, "250101OLD9", "", "缺少日期退货"],
-                ["ZH0001", "2026-01-01", "250101OLD1", "", "正常日期退货"],
+                ["ZH0009", None, "250101OLD9", "缺少日期退货"],
+                ["ZH0001", "2026-01-01", "250101OLD1", "正常日期退货"],
             ]
         )
 
         self.assertEqual([row[0] for row in output_rows], ["ZH0001", "ZH0009"])
         self.assertEqual(
-            [row[5] for row in output_rows],
+            [row[-1] for row in output_rows],
             [receipts.RECEIPTS_REMARK_RETURN] * 2,
         )
         self.assertEqual(
@@ -387,8 +520,8 @@ class ReceiptOutputSortTest(unittest.TestCase):
         output_rows, _stats, issues = prepare(
             [
                 HEADER,
-                ["ZH0002", "2026-01-02", "", "", "B商品"],
-                ["ZH0001", "2026-01-01", "", "", "A商品"],
+                ["ZH0002", "2026-01-02", "", "B商品"],
+                ["ZH0001", "2026-01-01", "", "A商品"],
             ]
         )
         output_rows.reverse()
@@ -398,7 +531,7 @@ class ReceiptOutputSortTest(unittest.TestCase):
             receipts._write_receipts_workbook(path, output_rows, issues)
 
             with self.assertRaisesRegex(RuntimeError, "收款单排序校验失败"):
-                receipts.validate_receipts_output(path, len(output_rows), issues)
+                receipts.validate_receipts_output(path, output_rows, issues)
 
 
 class ReceiptRemarkFillTest(unittest.TestCase):
@@ -418,15 +551,33 @@ class ReceiptRemarkFillTest(unittest.TestCase):
         receipts._write_receipts_workbook(path, output_rows, issues)
         workbook = load_workbook(path)
         self.addCleanup(workbook.close)
-        receipts.validate_receipts_output(path, len(output_rows), issues)
+        receipts.validate_receipts_output(path, output_rows, issues)
         return output_rows, issues, workbook
+
+    def test_validation_rejects_a_tampered_data_row(self) -> None:
+        """The remark can no longer be re-derived from 原票号/摘要 here, so the
+        read-back's remaining job is proving the writer wrote what was built."""
+        output_rows, _stats, issues = prepare(
+            [
+                HEADER,
+                ["ZH0001", "2026-01-24", "250101OLD1", "海尔冰箱"],
+            ]
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "收款单统计.xlsx"
+            receipts._write_receipts_workbook(path, output_rows, issues)
+            tampered = [list(output_rows[0])]
+            tampered[0][0] = "ZH9999"
+
+            with self.assertRaisesRegex(RuntimeError, "收款单数据行与生成结果不一致"):
+                receipts.validate_receipts_output(path, tampered, issues)
 
     def test_suite_sale_duplicate_without_return_is_not_filled(self) -> None:
         output_rows, issues, workbook = self._write_and_read(
             [
                 HEADER,
-                ["ZH0001", "2026-01-24", "", "", "老板-欧式烟机-K1L"],
-                ["ZH0001", "2026-01-24", "", "", "老板-嵌入式灶-9B5-B1"],
+                ["ZH0001", "2026-01-24", "", "老板-欧式烟机-K1L"],
+                ["ZH0001", "2026-01-24", "", "老板-嵌入式灶-9B5-B1"],
             ]
         )
 
@@ -440,8 +591,8 @@ class ReceiptRemarkFillTest(unittest.TestCase):
         output_rows, issues, workbook = self._write_and_read(
             [
                 HEADER,
-                ["ZH0001", "2026-01-24", "", "", "老板-欧式烟机-K1L"],
-                ["ZH0001", "2026-01-24", "", "", "老板-嵌入式灶-9B5-B1"],
+                ["ZH0001", "2026-01-24", "", "老板-欧式烟机-K1L"],
+                ["ZH0001", "2026-01-24", "", "老板-嵌入式灶-9B5-B1"],
                 [
                     "ZH0002",
                     "2026-01-25",
@@ -529,7 +680,7 @@ class IssuesSheetRoundTripTest(unittest.TestCase):
             finally:
                 workbook.close()
 
-            receipts.validate_receipts_output(path, 0, issues)
+            receipts.validate_receipts_output(path, [], issues)
 
     def test_validation_rejects_mismatched_issues(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -543,7 +694,7 @@ class IssuesSheetRoundTripTest(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "问题明细工作表内容校验失败"):
                 receipts.validate_receipts_output(
                     path,
-                    0,
+                    [],
                     [("缺少匹配键", "5", "", "说明")],
                 )
 

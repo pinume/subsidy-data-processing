@@ -101,8 +101,9 @@ def classify_coupon_row(
 ) -> str:
     """Classify a merged 销售用券情况统计 row as "家电" or "数码".
 
-    The merged export is documented (README) to carry exactly one of the two
-    国补 columns populated per row. Both populated is source data corruption
+    The merged export carries exactly one of the two 国补 columns populated
+    per row — that is what tells the two projects apart in a file where their
+    rows sit side by side. Both populated is source data corruption
     serious enough to stop the run rather than silently pick a side; neither
     populated defaults to 家电, where the existing zero-国补 warning already
     surfaces it to the operator as bad data.

@@ -158,17 +158,10 @@ def fill_coupon_remarks(
     rows: list[list[object]],
     remark_lookup: dict[tuple[str, date], str],
     subsidy_label: str,
-    *,
-    excluded_remark: str | None = None,
 ) -> tuple[int, Decimal, int]:
     """Fill 备注 from the receipt remark lookup and split rows into
     unmatched/matched order (matched rows sink to the bottom, to be pinned
     pink by the caller).
-
-    excluded_remark keeps a row out of the matched block even though it has
-    a remark: 家电 does this for "已做同型号换货处理" (a same-model
-    replacement is not a return/exchange pairing); 数码 has never had this
-    exception, so it leaves excluded_remark unset.
     """
     matched_rows: list[list[object]] = []
     unmatched_rows: list[list[object]] = []
@@ -180,7 +173,7 @@ def fill_coupon_remarks(
         row[REMARK_INDEX] = remark
         if remark:
             receipt_remark_count += 1
-        if remark and remark != excluded_remark:
+        if remark:
             matched_rows.append(row)
             subsidy = row[SUBSIDY_INDEX]
             if subsidy not in (None, ""):

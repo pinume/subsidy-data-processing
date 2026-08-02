@@ -134,9 +134,21 @@ def compute_coupon_data(
         unresolved_count,
         correction_collision_count,
         reference_decisions,
-    ) = matching.correct_coupon_references(rows, reference_universe)
-    uploaded_match_count = matching.fill_uploaded_details(rows, detail_lookup)
-    unmatched_count = matching.fill_unmatched_remarks(rows, reference_universe)
+    # matched_count is passed to every pass below for the same reason 家电
+    # passes it: those trailing rows are the 退换货 block, already settled by
+    # the receipt remark and pinned pink. Leaving it off let the reference
+    # passes overwrite their remarks with 已上传/未上传 and count them into
+    # the upload tallies, so the sheet ended up with pink rows labelled
+    # 已上传.
+    ) = matching.correct_coupon_references(
+        rows, reference_universe, matched_count
+    )
+    uploaded_match_count = matching.fill_uploaded_details(
+        rows, detail_lookup, matched_count
+    )
+    unmatched_count = matching.fill_unmatched_remarks(
+        rows, reference_universe, matched_count
+    )
     summary_rows = build_coupon_summary(
         rows,
         uploaded_subsidy_count,
@@ -206,23 +218,30 @@ def validate_computation(computation: CouponComputation) -> None:
         reference = normalize_receipt_identifier(
             row[summary_column]
         ).upper()
-        expected_detail = detail_lookup.get(reference, "")
-        if expected_detail:
-            expected_remark = "已上传"
-        elif reference not in reference_universe:
-            expected_remark = "未上传"
-        else:
+        in_matched_partition = (
+            expected_matched_rows > 0
+            and row_number - 1 >= matched_start
+        )
+        if in_matched_partition:
+            # The 退换货 block keeps the receipt remark and never gets a
+            # 详细情况: the reference passes skip it, so expecting an upload
+            # status here would be checking for something nothing writes.
+            expected_detail = ""
             expected_remark = receipt_remark
+        else:
+            expected_detail = detail_lookup.get(reference, "")
+            if expected_detail:
+                expected_remark = "已上传"
+            elif reference not in reference_universe:
+                expected_remark = "未上传"
+            else:
+                expected_remark = receipt_remark
         validate_remark_and_detail_values(
             row[remark_column],
             row[detail_column],
             expected_remark,
             expected_detail,
             row_number,
-        )
-        in_matched_partition = (
-            expected_matched_rows > 0
-            and row_number - 1 >= matched_start
         )
         if in_matched_partition:
             subsidy = row[subsidy_column]
