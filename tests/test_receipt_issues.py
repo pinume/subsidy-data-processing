@@ -1,5 +1,6 @@
 import tempfile
 import unittest
+from datetime import date
 from pathlib import Path
 
 from openpyxl import load_workbook
@@ -294,6 +295,36 @@ class SpecialRemarkStatsTest(unittest.TestCase):
 
 
 class ReceiptOutputSortTest(unittest.TestCase):
+    def test_remark_groups_follow_explicit_business_order(self) -> None:
+        remarks = [
+            receipts.RECEIPTS_REMARK_SPECIAL,
+            receipts.RECEIPTS_REMARK_BOTH,
+            receipts.RECEIPTS_REMARK_RETURN,
+            receipts.RECEIPTS_REMARK_ORIGINAL,
+            receipts.RECEIPTS_REMARK_SAME_MODEL_REPLACEMENT,
+            None,
+        ]
+
+        self.assertEqual(
+            sorted(
+                remarks,
+                key=lambda remark: receipts.receipt_output_sort_key(
+                    remark,
+                    date(2026, 1, 1),
+                    "ZH0001",
+                    "商品",
+                ),
+            ),
+            [
+                None,
+                receipts.RECEIPTS_REMARK_SAME_MODEL_REPLACEMENT,
+                receipts.RECEIPTS_REMARK_ORIGINAL,
+                receipts.RECEIPTS_REMARK_RETURN,
+                receipts.RECEIPTS_REMARK_BOTH,
+                receipts.RECEIPTS_REMARK_SPECIAL,
+            ],
+        )
+
     def test_rows_are_sorted_by_remark_date_document_and_product(self) -> None:
         output_rows, _stats, issues = prepare(
             [
@@ -328,6 +359,25 @@ class ReceiptOutputSortTest(unittest.TestCase):
         )
 
         self.assertEqual([row[0] for row in output_rows], ["ZH0001", "ZH0009"])
+        self.assertEqual(
+            issues,
+            [("缺少匹配键", "3", "", "日期或单据号为空，无法生成匹配键")],
+        )
+
+    def test_missing_date_sorts_last_inside_a_remark_group(self) -> None:
+        output_rows, _stats, issues = prepare(
+            [
+                HEADER,
+                ["ZH0009", None, "250101OLD9", "", "缺少日期退货"],
+                ["ZH0001", "2026-01-01", "250101OLD1", "", "正常日期退货"],
+            ]
+        )
+
+        self.assertEqual([row[0] for row in output_rows], ["ZH0001", "ZH0009"])
+        self.assertEqual(
+            [row[5] for row in output_rows],
+            [receipts.RECEIPTS_REMARK_RETURN] * 2,
+        )
         self.assertEqual(
             issues,
             [("缺少匹配键", "3", "", "日期或单据号为空，无法生成匹配键")],
