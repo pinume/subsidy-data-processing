@@ -208,6 +208,25 @@ def receipt_remark(
     return None
 
 
+def _receipt_remark_flags(
+    record: dict[str, object],
+    referenced_original_invoice_numbers: set[str],
+    same_model_replacement_original_invoice_numbers: set[str],
+) -> tuple[bool, bool, bool, bool]:
+    match_key = str(record["match_key"])
+    has_original = bool(record["original_invoice_number"])
+    is_referenced = bool(
+        match_key and match_key in referenced_original_invoice_numbers
+    )
+    is_same_model_replacement = bool(
+        match_key
+        and match_key in same_model_replacement_original_invoice_numbers
+        and not is_referenced
+    )
+    is_special = match_key in RECEIPTS_SPECIAL_REMARK_KEYS
+    return has_original, is_referenced, is_same_model_replacement, is_special
+
+
 def receipt_output_sort_key(
     remark: object,
     receipt_date: object,
@@ -230,7 +249,7 @@ def receipt_output_sort_key(
     has_no_date = not isinstance(normalized_date, date)
     return (
         RECEIPTS_REMARK_ORDER.get(normalized_remark, len(RECEIPTS_REMARK_ORDER)),
-        "" if known_remark else str(normalized_remark),
+        "" if known_remark else normalized_remark,
         has_no_date,
         date.max if has_no_date else normalized_date,
         normalize_receipt_identifier(document_number),
@@ -303,18 +322,16 @@ def prepare_receipt_data(kept_rows: list[list[object]], source_name: str):
     # compute them only after every source row has been scanned. Sorting then
     # uses the final remark as its primary key.
     for record in records:
-        original_invoice_number = str(record["original_invoice_number"])
-        match_key = str(record["match_key"])
-        has_original = bool(original_invoice_number)
-        is_referenced = bool(
-            match_key and match_key in referenced_original_invoice_numbers
+        (
+            has_original,
+            is_referenced,
+            is_same_model_replacement,
+            is_special,
+        ) = _receipt_remark_flags(
+            record,
+            referenced_original_invoice_numbers,
+            same_model_replacement_original_invoice_numbers,
         )
-        is_same_model_replacement = bool(
-            match_key
-            and match_key in same_model_replacement_original_invoice_numbers
-            and not is_referenced
-        )
-        is_special = match_key in RECEIPTS_SPECIAL_REMARK_KEYS
         record["remark"] = receipt_remark(
             has_original,
             is_referenced,
@@ -365,16 +382,16 @@ def prepare_receipt_data(kept_rows: list[list[object]], source_name: str):
         output_row = int(record["output_row"])
         original_invoice_number = str(record["original_invoice_number"])
         match_key = str(record["match_key"])
-        has_original = bool(original_invoice_number)
-        is_referenced = bool(
-            match_key and match_key in referenced_original_invoice_numbers
+        (
+            has_original,
+            is_referenced,
+            is_same_model_replacement,
+            is_special,
+        ) = _receipt_remark_flags(
+            record,
+            referenced_original_invoice_numbers,
+            same_model_replacement_original_invoice_numbers,
         )
-        is_same_model_replacement = bool(
-            match_key
-            and match_key in same_model_replacement_original_invoice_numbers
-            and not is_referenced
-        )
-        is_special = match_key in RECEIPTS_SPECIAL_REMARK_KEYS
 
         if not match_key:
             missing_match_key_count += 1
