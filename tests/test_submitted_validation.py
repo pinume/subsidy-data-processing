@@ -29,6 +29,7 @@ SOURCE_COLUMN_COUNT = 24
 # add_subsidy_column reads the amount from the third kept column, which is F.
 AMOUNT_COLUMN = "F"
 STATUS_COLUMN = "Q"
+REFERENCE_COLUMN = "S"
 DESCRIPTION_COLUMN = "U"
 
 
@@ -40,6 +41,7 @@ def build_header(**overrides: str) -> tuple[str, ...]:
     names = {
         AMOUNT_COLUMN: "交易金额",
         STATUS_COLUMN: "状态",
+        REFERENCE_COLUMN: "检索参考号",
         DESCRIPTION_COLUMN: "描述",
     }
     names.update(overrides)
@@ -51,17 +53,31 @@ def build_header(**overrides: str) -> tuple[str, ...]:
 SUBMITTED_HEADER = build_header()
 
 
-def write_submitted_source(path: Path, header: tuple[str, ...]) -> None:
+def submitted_row(
+    header: tuple[str, ...],
+    *,
+    reference: object = "12345678901A",
+) -> list[object]:
+    row: list[object] = ["v"] * len(header)
+    row[column_index_from_string(AMOUNT_COLUMN) - 1] = 1000
+    row[column_index_from_string(STATUS_COLUMN) - 1] = "审核通过"
+    row[column_index_from_string(REFERENCE_COLUMN) - 1] = reference
+    row[column_index_from_string(DESCRIPTION_COLUMN) - 1] = "说明"
+    return row
+
+
+def write_submitted_source(
+    path: Path,
+    header: tuple[str, ...],
+    rows: list[list[object]] | None = None,
+) -> None:
     """Write a source file shaped like the upload export: title row, then header."""
     workbook = Workbook()
     sheet = workbook.active
     sheet.append(["报表标题"])
     sheet.append(list(header))
-    row: list[object] = ["v"] * len(header)
-    row[column_index_from_string(AMOUNT_COLUMN) - 1] = 1000
-    row[column_index_from_string(STATUS_COLUMN) - 1] = "审核通过"
-    row[column_index_from_string(DESCRIPTION_COLUMN) - 1] = "说明"
-    sheet.append(row)
+    for row in rows if rows is not None else [submitted_row(header)]:
+        sheet.append(row)
     workbook.save(path)
     workbook.close()
 
@@ -287,12 +303,19 @@ class SubmittedHeaderValidationTest(unittest.TestCase):
     def test_missing_required_fields_are_reported_by_name(self) -> None:
         for profile_name in ("家电", "数码"):
             with self.subTest(profile_name=profile_name):
-                header = build_header(**{STATUS_COLUMN: "占位一", DESCRIPTION_COLUMN: "占位二"})
+                header = build_header(
+                    **{
+                        STATUS_COLUMN: "占位一",
+                        REFERENCE_COLUMN: "占位二",
+                        DESCRIPTION_COLUMN: "占位三",
+                    }
+                )
                 with self.assertRaises(ValueError) as raised:
                     self.run_build(profile_name, header)
 
                 message = str(raised.exception)
                 self.assertIn("export.xlsx", message)
+                self.assertIn("检索参考号", message)
                 self.assertIn("状态", message)
                 self.assertIn("描述", message)
 
@@ -305,6 +328,84 @@ class SubmittedHeaderValidationTest(unittest.TestCase):
                 )
                 self.assertEqual(report.file_count, 1)
                 self.assertEqual(report.data_row_count, 1)
+
+
+class SubmittedRowValidationTest(unittest.TestCase):
+    def build_from_rows(
+        self,
+        rows: list[list[object]],
+        *,
+        profile_name: str = "家电",
+    ) -> submitted.SubmittedReport:
+        with tempfile.TemporaryDirectory() as directory:
+            data_dir = Path(directory)
+            write_submitted_source(
+                data_dir / f"{submitted_file_marker(profile_name)}_export.xlsx",
+                SUBMITTED_HEADER,
+                rows,
+            )
+            submitted.configure_data_dir(data_dir)
+            return submitted.build_report(profile_name)
+
+    def test_invalid_reference_reports_source_location(self) -> None:
+        row = submitted_row(SUBMITTED_HEADER, reference="not-valid")
+
+        with self.assertRaisesRegex(
+            ValueError,
+            r"export\.xlsx 第 3 行检索参考号格式无效",
+        ):
+            self.build_from_rows([row])
+
+    def test_blank_reference_is_allowed(self) -> None:
+        row = submitted_row(SUBMITTED_HEADER, reference=None)
+
+        report = self.build_from_rows([row])
+
+        self.assertEqual(report.data_row_count, 1)
+
+    def test_row_populated_only_outside_kept_columns_is_skipped(self) -> None:
+        row: list[object] = [None] * len(SUBMITTED_HEADER)
+        row[0] = "非保留列中的值"
+
+        report = self.build_from_rows([row])
+
+        self.assertEqual(report.data_row_count, 0)
+        self.assertEqual(report.summary_rows, [])
+
+    def test_same_reference_with_same_detail_is_allowed(self) -> None:
+        first = submitted_row(SUBMITTED_HEADER)
+        second = submitted_row(SUBMITTED_HEADER)
+        second[column_index_from_string("D") - 1] = "另一条商品明细"
+
+        report = self.build_from_rows([first, second])
+
+        self.assertEqual(report.data_row_count, 2)
+
+    def test_same_reference_with_conflicting_detail_is_rejected(self) -> None:
+        first = submitted_row(SUBMITTED_HEADER)
+        second = submitted_row(SUBMITTED_HEADER)
+        second[column_index_from_string(DESCRIPTION_COLUMN) - 1] = "另一种说明"
+
+        with self.assertRaisesRegex(ValueError, "检索参考号存在冲突"):
+            self.build_from_rows([first, second])
+
+    def test_duplicate_row_across_files_is_rejected(self) -> None:
+        profile_name = "家电"
+        with tempfile.TemporaryDirectory() as directory:
+            data_dir = Path(directory)
+            marker = submitted_file_marker(profile_name)
+            for suffix in ("first", "second"):
+                write_submitted_source(
+                    data_dir / f"{marker}_{suffix}.xlsx",
+                    SUBMITTED_HEADER,
+                )
+            submitted.configure_data_dir(data_dir)
+
+            with self.assertRaisesRegex(
+                ValueError,
+                r"多个源文件包含完全相同的数据行.*first\.xlsx 第 3 行.*second\.xlsx 第 3 行",
+            ):
+                submitted.build_report(profile_name)
 
 
 class ValidatorRejectsBadOutputTest(unittest.TestCase):
@@ -370,6 +471,23 @@ class ValidatorRejectsBadOutputTest(unittest.TestCase):
 
                     with self.assertRaises(RuntimeError):
                         submitted.validate_output(output, data_rows, profile_name)
+
+    def test_rejects_invalid_reference_in_saved_summary(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "已上传.xlsx"
+            data_rows = self.build_valid_output("家电", output)
+            workbook = load_workbook(output)
+            try:
+                sheet = workbook["Summary"]
+                header = [cell.value for cell in sheet[1]]
+                reference_column = header.index("检索参考号") + 1
+                sheet.cell(2, reference_column, "invalid")
+                workbook.save(output)
+            finally:
+                workbook.close()
+
+            with self.assertRaisesRegex(RuntimeError, "检索参考号格式无效"):
+                submitted.validate_output(output, data_rows, "家电")
 
 
 if __name__ == "__main__":
