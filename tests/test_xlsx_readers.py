@@ -195,19 +195,16 @@ class ReceiptOutputPerformanceTest(unittest.TestCase):
             for index in range(row_count)
         ]
 
-    def test_duplicate_and_number_formats_are_written(self) -> None:
+    def test_remark_fill_and_number_formats_are_written(self) -> None:
         rows = self._build_output_rows()
-        duplicate_keys = {
-            receipts.receipt_match_key(date(2026, 1, 24), f"ZH{index:04d}")
-            for index in range(0, 100, 2)
-        }
+        for index in range(0, 100, 2):
+            rows[index][-1] = receipts.RECEIPTS_REMARK_RETURN
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "收款单统计.xlsx"
             receipts._write_receipts_workbook(
                 path,
                 rows,
                 [],
-                duplicate_match_keys=duplicate_keys,
             )
             workbook = load_workbook(path)
             try:
@@ -216,7 +213,7 @@ class ReceiptOutputPerformanceTest(unittest.TestCase):
                 self.assertEqual(sheet["B2"].number_format, "yyyymmdd")
                 self.assertEqual(
                     sheet["A2"].fill.fgColor.rgb[-6:],
-                    receipts.RECEIPTS_DUPLICATE_FILL_COLOR[-6:],
+                    receipts.RECEIPTS_REMARK_FILL_COLOR[-6:],
                 )
                 self.assertIsNone(sheet["A3"].fill.fill_type)
             finally:
@@ -229,7 +226,6 @@ class ReceiptOutputPerformanceTest(unittest.TestCase):
                 path,
                 self._build_output_rows(row_count=1),
                 [],
-                duplicate_match_keys=set(),
             )
 
             loaded = load_workbook(path, read_only=True, data_only=True)
