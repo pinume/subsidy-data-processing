@@ -792,5 +792,8 @@ def process_receipts() -> None:
             "未在本次收款单中找到特殊匹配键："
             + "、".join(stats["未找到特殊匹配键"])
         )
-    print(f"Issues logged in '{ISSUES_SHEET_NAME}': {len(issues)}")
+    if issues:
+        print(f"Issues logged in '{ISSUES_SHEET_NAME}': {len(issues)}")
+    else:
+        print(f"No issues; '{ISSUES_SHEET_NAME}' sheet was not created")
     print(f"Output file: {OUTPUT_FILE}")
