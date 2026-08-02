@@ -189,10 +189,7 @@ def build_report(profile_name: str) -> SubmittedReport:
     expected_header: list[object] | None = None
     output_header: list[object] | None = None
     reference_column_index: int | None = None
-    status_column_index: int | None = None
-    description_column_index: int | None = None
-    reference_details: dict[str, tuple[str, str, str, int]] = {}
-    row_locations: dict[tuple[object, ...], tuple[str, int]] = {}
+    reference_locations: dict[str, tuple[str, int]] = {}
     data_row_count = 0
     data_rows: list[list[object]] = []
 
@@ -232,8 +229,6 @@ def build_report(profile_name: str) -> SubmittedReport:
                         f"实际字段 {tuple(output_header)}"
                     )
                 reference_column_index = output_header.index("检索参考号")
-                status_column_index = output_header.index("状态")
-                description_column_index = output_header.index("描述")
             elif header != expected_header:
                 raise ValueError(f"{path.name} 的表头与第一个文件不一致")
 
@@ -248,26 +243,8 @@ def build_report(profile_name: str) -> SubmittedReport:
                     source_name=path.name,
                     source_row=source_row,
                 )
-                if (
-                    reference_column_index is None
-                    or status_column_index is None
-                    or description_column_index is None
-                ):
+                if reference_column_index is None:
                     raise RuntimeError("未能定位已上传数据必要字段")
-
-                fingerprint = tuple(output_row)
-                existing_row_location = row_locations.get(fingerprint)
-                if (
-                    existing_row_location is not None
-                    and existing_row_location[0] != path.name
-                ):
-                    existing_name, existing_row = existing_row_location
-                    raise ValueError(
-                        "多个源文件包含完全相同的数据行；"
-                        f"首次出现在 {existing_name} 第 {existing_row} 行，"
-                        f"再次出现在 {path.name} 第 {source_row} 行"
-                    )
-                row_locations.setdefault(fingerprint, (path.name, source_row))
 
                 reference = normalize_receipt_identifier(
                     output_row[reference_column_index]
@@ -279,25 +256,15 @@ def build_report(profile_name: str) -> SubmittedReport:
                             f"{output_row[reference_column_index]!r}；"
                             "正确格式应为11位数字后跟一个大写字母"
                         )
-                    status = str(output_row[status_column_index] or "").strip()
-                    description = str(
-                        output_row[description_column_index] or ""
-                    ).strip()
-                    existing_detail = reference_details.get(reference)
-                    if existing_detail is not None and existing_detail[:2] != (
-                        status,
-                        description,
-                    ):
-                        _, _, existing_name, existing_row = existing_detail
+                    existing_location = reference_locations.get(reference)
+                    if existing_location is not None:
+                        existing_name, existing_row = existing_location
                         raise ValueError(
-                            f"检索参考号存在冲突：{reference}；"
-                            f"{existing_name} 第 {existing_row} 行与"
-                            f"{path.name} 第 {source_row} 行的状态或描述不一致"
+                            f"检索参考号重复：{reference}；"
+                            f"首次出现在 {existing_name} 第 {existing_row} 行，"
+                            f"再次出现在 {path.name} 第 {source_row} 行"
                         )
-                    reference_details.setdefault(
-                        reference,
-                        (status, description, path.name, source_row),
-                    )
+                    reference_locations[reference] = (path.name, source_row)
 
                 data_rows.append(output_row)
                 data_row_count += 1
@@ -412,7 +379,7 @@ def validate_output(path: Path, expected_data_rows: int, profile_name: str) -> N
         subsidy_column = header.index("补贴金额")
         reference_column = header.index("检索参考号")
 
-        reference_details: dict[str, tuple[str, str]] = {}
+        seen_references: dict[str, int] = {}
         for row_number, row in enumerate(summary_rows[1:], start=2):
             reference = normalize_receipt_identifier(
                 row[reference_column]
@@ -422,16 +389,13 @@ def validate_output(path: Path, expected_data_rows: int, profile_name: str) -> N
                     raise RuntimeError(
                         f"Summary 第 {row_number} 行检索参考号格式无效"
                     )
-                detail = (
-                    str(row[status_column] or "").strip(),
-                    str(row[description_column] or "").strip(),
-                )
-                existing_detail = reference_details.get(reference)
-                if existing_detail is not None and existing_detail != detail:
+                first_row = seen_references.get(reference)
+                if first_row is not None:
                     raise RuntimeError(
-                        f"Summary 第 {row_number} 行检索参考号存在冲突：{reference}"
+                        f"Summary 第 {row_number} 行检索参考号重复：{reference}；"
+                        f"首次出现在第 {first_row} 行"
                     )
-                reference_details.setdefault(reference, detail)
+                seen_references[reference] = row_number
 
             amount = row[amount_column]
             subsidy = row[subsidy_column]
