@@ -37,6 +37,7 @@ REFERENCE_REPORT_ORDER = {
     REFERENCE_REPORT_COLLISION: 1,
     REFERENCE_REPORT_UNRESOLVED: 2,
 }
+ReferenceDecision = tuple[str, str, object, str, str]
 
 
 def as_currency(amount: Decimal) -> Decimal:
@@ -210,7 +211,7 @@ def reference_decision(
     row: list[object],
     raw_reference: str,
     note: str,
-) -> tuple[str, str, object, str, str]:
+) -> ReferenceDecision:
     """Identify a decision by 单据号 + 单据日期, not by row position.
 
     The detail rows get re-sorted after corrections are applied, so a row
@@ -230,7 +231,7 @@ def correct_coupon_references(
     reference_universe: set[str],
     excluded_bottom_rows: int = 0,
     protected_row_ids: set[int] | None = None,
-) -> tuple[int, int, int, list[tuple[str, str, object, str, str]]]:
+) -> tuple[int, int, int, list[ReferenceDecision]]:
     """Correct references and record every decision for the processing report.
 
     The universe is built from submitted data only, so an operator has to be
@@ -251,7 +252,7 @@ def correct_coupon_references(
     proposed: dict[int, str] = {}
     target_counts: Counter[str] = Counter()
     unresolved_count = 0
-    decisions: list[tuple[str, str, object, str, str]] = []
+    decisions: list[ReferenceDecision] = []
     correction_index = build_reference_correction_index(reference_universe)
 
     for row_index, row in enumerate(included_rows, start=1):

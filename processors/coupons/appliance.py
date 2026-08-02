@@ -138,7 +138,9 @@ def load_coupon_reference_supplement(
                 raise ValueError(
                     f"{source.name} 第 {row_number} 行单据号为空"
                 )
-            document_date = normalize_coupon_date(row[2], row_number)
+            document_date = normalize_coupon_date(
+                row[2], row_number, source.name
+            )
             key = (document_number, document_date)
             references_by_key.setdefault(key, set()).add(reference)
         return {
@@ -549,7 +551,7 @@ class CouponComputation:
     corrected_count: int
     unresolved_count: int
     correction_collision_count: int
-    reference_decisions: list[tuple[str, str, str, str]]
+    reference_decisions: list[matching.ReferenceDecision]
     final_unresolved_reference_count: int
     uploaded_count: int
     unmatched_count: int

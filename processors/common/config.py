@@ -4,14 +4,59 @@ from pathlib import Path
 
 import yaml
 
-from processors.common.dates import is_valid_original_invoice_number
-
 BASE_DIR = Path(__file__).resolve().parents[2]
 CONFIG_DIR = BASE_DIR / "config"
 BRAND_MAPPING_FILE = CONFIG_DIR / "brand_mapping.yaml"
-RECEIPT_SPECIAL_REMARKS_FILE = CONFIG_DIR / "receipt_special_remarks.yaml"
 MERCHANTS_FILE = CONFIG_DIR / "merchants.yaml"
 PAYMENT_BRANDS_FILE = CONFIG_DIR / "payment_brands.yaml"
+
+
+def _load_yaml_mapping(path: Path) -> dict:
+    with path.open("r", encoding="utf-8") as file:
+        loaded = yaml.safe_load(file)
+    if loaded is None:
+        return {}
+    if not isinstance(loaded, dict):
+        raise ValueError(
+            f"{path.name} 顶层应为映射，实际为 {type(loaded).__name__}"
+        )
+    return loaded
+
+
+def _string_mapping(value: object, location: str) -> dict[str, str]:
+    if value is None:
+        return {}
+    if not isinstance(value, dict):
+        raise ValueError(
+            f"{location} 应为映射，实际为 {type(value).__name__}"
+        )
+    result: dict[str, str] = {}
+    for key, item in value.items():
+        if not isinstance(key, str) or not key.strip():
+            raise ValueError(f"{location} 的键必须为非空字符串：{key!r}")
+        if not isinstance(item, str) or not item.strip():
+            raise ValueError(
+                f"{location}.{key} 的值必须为非空字符串：{item!r}"
+            )
+        result[key.strip()] = item.strip()
+    return result
+
+
+def _string_list(value: object, location: str) -> tuple[str, ...]:
+    if value is None:
+        return ()
+    if not isinstance(value, list):
+        raise ValueError(
+            f"{location} 应为列表，实际为 {type(value).__name__}"
+        )
+    result: list[str] = []
+    for index, item in enumerate(value):
+        if not isinstance(item, str) or not item.strip():
+            raise ValueError(
+                f"{location}[{index}] 必须为非空字符串：{item!r}"
+            )
+        result.append(item.strip())
+    return tuple(result)
 
 
 @lru_cache(maxsize=1)
@@ -19,60 +64,11 @@ def load_brand_mapping() -> dict[str, str]:
     if not BRAND_MAPPING_FILE.exists():
         return {}
 
-    with BRAND_MAPPING_FILE.open("r", encoding="utf-8") as file:
-        config = yaml.safe_load(file) or {}
-
-    return config.get("brand_mapping", {})
-
-
-@lru_cache(maxsize=1)
-def load_receipt_special_remark_keys() -> frozenset[str]:
-    """Load the 收款单 match keys that always get the 退换货\\倒票 remark.
-
-    Every key is format-checked here rather than at point of use: a typo'd
-    or wrongly-typed key silently matches no row, so the special case it was
-    added for would quietly stop being applied with nothing to notice. The
-    format is validated with is_valid_original_invoice_number — despite the
-    name, what it checks is the shared "6-digit YYMMDD + 单据号" shape, which
-    is exactly what a match key is (see receipt_match_key).
-    """
-    if not RECEIPT_SPECIAL_REMARKS_FILE.exists():
-        return frozenset()
-
-    with RECEIPT_SPECIAL_REMARKS_FILE.open("r", encoding="utf-8") as file:
-        config = yaml.safe_load(file) or {}
-
-    # Checked before .get(): a file written as a bare YAML list (the keys
-    # without the match_keys: header) would otherwise fail with an
-    # AttributeError naming neither the file nor what was wrong with it.
-    if not isinstance(config, dict):
-        raise ValueError(
-            f"{RECEIPT_SPECIAL_REMARKS_FILE.name} 顶层应为映射，"
-            f"实际为 {type(config).__name__}"
-        )
-
-    match_keys = config.get("match_keys")
-    if match_keys is None:
-        return frozenset()
-    if not isinstance(match_keys, list):
-        raise ValueError(
-            f"{RECEIPT_SPECIAL_REMARKS_FILE.name} 的 match_keys 应为列表，"
-            f"实际为 {type(match_keys).__name__}"
-        )
-
-    for match_key in match_keys:
-        if not isinstance(match_key, str) or not match_key.strip():
-            raise ValueError(
-                f"{RECEIPT_SPECIAL_REMARKS_FILE.name} 中的特殊匹配键必须为"
-                f"非空字符串：{match_key!r}"
-            )
-        if not is_valid_original_invoice_number(match_key.strip()):
-            raise ValueError(
-                f"{RECEIPT_SPECIAL_REMARKS_FILE.name} 中的特殊匹配键格式无效："
-                f"{match_key!r}；应为6位有效日期加单据号。"
-            )
-
-    return frozenset(match_key.strip() for match_key in match_keys)
+    config = _load_yaml_mapping(BRAND_MAPPING_FILE)
+    return _string_mapping(
+        config.get("brand_mapping"),
+        f"{BRAND_MAPPING_FILE.name} 的 brand_mapping",
+    )
 
 
 @lru_cache(maxsize=1)
@@ -137,8 +133,29 @@ class PaymentBrandConfig:
     appliance_brand_model_aliases: dict[str, str] = field(default_factory=dict)
 
 
-def _brand_keywords(entries: list[dict]) -> BrandKeywords:
-    return tuple((entry["brand"], tuple(entry["keywords"])) for entry in entries)
+def _brand_keywords(value: object, location: str) -> BrandKeywords:
+    if value is None:
+        return ()
+    if not isinstance(value, list):
+        raise ValueError(
+            f"{location} 应为列表，实际为 {type(value).__name__}"
+        )
+    result: list[tuple[str, tuple[str, ...]]] = []
+    for index, entry in enumerate(value):
+        entry_location = f"{location}[{index}]"
+        if not isinstance(entry, dict):
+            raise ValueError(
+                f"{entry_location} 应为映射，实际为 {type(entry).__name__}"
+            )
+        brand = entry.get("brand")
+        if not isinstance(brand, str) or not brand.strip():
+            raise ValueError(f"{entry_location}.brand 必须为非空字符串")
+        keywords = _string_list(
+            entry.get("keywords"),
+            f"{entry_location}.keywords",
+        )
+        result.append((brand.strip(), keywords))
+    return tuple(result)
 
 
 @lru_cache(maxsize=1)
@@ -151,22 +168,65 @@ def load_payment_brand_config() -> PaymentBrandConfig:
     if not PAYMENT_BRANDS_FILE.exists():
         return PaymentBrandConfig()
 
-    with PAYMENT_BRANDS_FILE.open("r", encoding="utf-8") as file:
-        config = yaml.safe_load(file) or {}
-
-    categories = config.get("categories") or {}
-    brand_keywords = config.get("brand_keywords") or {}
-    brand_normalization = config.get("brand_normalization") or {}
-    midea_group = config.get("midea_group") or {}
-    brand_model_aliases = config.get("brand_model_aliases") or {}
+    config = _load_yaml_mapping(PAYMENT_BRANDS_FILE)
+    categories = config.get("categories")
+    brand_keywords = config.get("brand_keywords")
+    brand_normalization = config.get("brand_normalization")
+    midea_group = config.get("midea_group")
+    brand_model_aliases = config.get("brand_model_aliases")
+    for location, value in (
+        ("categories", categories),
+        ("brand_keywords", brand_keywords),
+        ("brand_normalization", brand_normalization),
+        ("midea_group", midea_group),
+        ("brand_model_aliases", brand_model_aliases),
+    ):
+        if value is not None and not isinstance(value, dict):
+            raise ValueError(
+                f"{PAYMENT_BRANDS_FILE.name} 的 {location} 应为映射，"
+                f"实际为 {type(value).__name__}"
+            )
+    categories = categories or {}
+    brand_keywords = brand_keywords or {}
+    brand_normalization = brand_normalization or {}
+    midea_group = midea_group or {}
+    brand_model_aliases = brand_model_aliases or {}
 
     return PaymentBrandConfig(
-        appliance_categories=categories.get("appliance") or {},
-        digital_categories=categories.get("digital") or {},
-        appliance_brand_keywords=_brand_keywords(brand_keywords.get("appliance") or []),
-        digital_brand_keywords=_brand_keywords(brand_keywords.get("digital") or []),
-        appliance_brand_normalization=brand_normalization.get("appliance") or {},
-        midea_group_categories=frozenset(midea_group.get("categories") or ()),
-        midea_group_brands=frozenset(midea_group.get("brands") or ()),
-        appliance_brand_model_aliases=brand_model_aliases.get("appliance") or {},
+        appliance_categories=_string_mapping(
+            categories.get("appliance"),
+            f"{PAYMENT_BRANDS_FILE.name} 的 categories.appliance",
+        ),
+        digital_categories=_string_mapping(
+            categories.get("digital"),
+            f"{PAYMENT_BRANDS_FILE.name} 的 categories.digital",
+        ),
+        appliance_brand_keywords=_brand_keywords(
+            brand_keywords.get("appliance"),
+            f"{PAYMENT_BRANDS_FILE.name} 的 brand_keywords.appliance",
+        ),
+        digital_brand_keywords=_brand_keywords(
+            brand_keywords.get("digital"),
+            f"{PAYMENT_BRANDS_FILE.name} 的 brand_keywords.digital",
+        ),
+        appliance_brand_normalization=_string_mapping(
+            brand_normalization.get("appliance"),
+            f"{PAYMENT_BRANDS_FILE.name} 的 brand_normalization.appliance",
+        ),
+        midea_group_categories=frozenset(
+            _string_list(
+                midea_group.get("categories"),
+                f"{PAYMENT_BRANDS_FILE.name} 的 midea_group.categories",
+            )
+        ),
+        midea_group_brands=frozenset(
+            _string_list(
+                midea_group.get("brands"),
+                f"{PAYMENT_BRANDS_FILE.name} 的 midea_group.brands",
+            )
+        ),
+        appliance_brand_model_aliases=_string_mapping(
+            brand_model_aliases.get("appliance"),
+            f"{PAYMENT_BRANDS_FILE.name} 的 brand_model_aliases.appliance",
+        ),
     )

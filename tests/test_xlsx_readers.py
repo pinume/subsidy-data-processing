@@ -434,6 +434,32 @@ class ReadCouponSourceTotalTest(unittest.TestCase):
 
 
 class ReadCouponExportTest(unittest.TestCase):
+    def test_invalid_date_error_names_source_file_and_row(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "销售用券情况统计.xlsx"
+            _write_coupon_source(
+                source,
+                [
+                    _coupon_row(
+                        document="收款001",
+                        day="2026.1.24",
+                        product="海尔冰箱",
+                        brand="海尔",
+                        category="冰箱",
+                        summary="ref1",
+                        family_subsidy=100,
+                    ),
+                ],
+            )
+
+            with self.assertRaises(ValueError) as caught:
+                sources.read_coupon_export(source)
+
+            message = str(caught.exception)
+            self.assertIn(source.name, message)
+            self.assertIn("第 3 行", message)
+            self.assertIn("2026.1.24", message)
+
     def test_rejects_excel_error_in_subsidy_column(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             source = Path(directory) / "销售用券情况统计.xlsx"

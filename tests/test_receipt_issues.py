@@ -333,74 +333,7 @@ class BlankAndTotalRowTest(unittest.TestCase):
         )
 
 
-class SpecialRemarkStatsTest(unittest.TestCase):
-    def _special_key_row(self) -> tuple[str, list[object]]:
-        match_key = min(receipts.RECEIPTS_SPECIAL_REMARK_KEYS)
-        date_part, document_number = match_key[:6], match_key[6:]
-        receipt_date = (
-            f"20{date_part[:2]}-{date_part[2:4]}-{date_part[4:6]}"
-        )
-        return match_key, [document_number, receipt_date, "", "", "测试商品"]
-
-    def test_special_remark_is_counted_in_total(self) -> None:
-        match_key, row = self._special_key_row()
-        output_rows, stats, _issues = prepare([HEADER, row])
-
-        self.assertEqual(output_rows[0][-1], receipts.RECEIPTS_REMARK_SPECIAL)
-        # The row has no 原票号 and is nobody's original, so it belongs to
-        # none of the 退单/原单 tallies the total used to be summed from.
-        self.assertEqual(stats["仅退单数量"], 0)
-        self.assertEqual(stats["仅原单数量"], 0)
-        self.assertEqual(stats["退单及原单数量"], 0)
-        self.assertEqual(stats["备注总数"], 1)
-        self.assertEqual(stats["特殊备注数量"], 1)
-        self.assertEqual(stats["生效特殊匹配键"], [match_key])
-
-    def test_special_remark_counted_once_per_row(self) -> None:
-        row = self._special_key_row()[1]
-        _output_rows, stats, _issues = prepare([HEADER, row, list(row)])
-
-        self.assertEqual(stats["备注总数"], 2)
-        self.assertEqual(stats["特殊备注数量"], 2)
-
-    def test_special_key_outranks_other_remark_rules(self) -> None:
-        row = self._special_key_row()[1]
-        # Give it an 原票号 too: without the special rule this row would be
-        # 退换货/倒票（退单）.
-        row[2] = "260101ZH9999"
-        output_rows, _stats, _issues = prepare([HEADER, row])
-
-        self.assertEqual(output_rows[0][-1], receipts.RECEIPTS_REMARK_SPECIAL)
-
-    def test_missing_special_keys_are_reported_not_fatal(self) -> None:
-        _output_rows, stats, _issues = prepare(
-            [HEADER, ["ZH0001", "2026-01-24", "", "海尔冰箱"]]
-        )
-
-        self.assertEqual(stats["生效特殊匹配键"], [])
-        self.assertEqual(
-            stats["未生效特殊匹配键"],
-            sorted(receipts.RECEIPTS_SPECIAL_REMARK_KEYS),
-        )
-
-    def test_a_special_key_on_an_unremarked_row_reports_as_ineffective(
-        self,
-    ) -> None:
-        """The key is in the file, yet its row never takes a remark.
-
-        Counting it as 生效 would hide that the configured override was
-        dropped, which is the only signal an operator gets.
-        """
-        match_key, row = self._special_key_row()
-        row[4] = "同型号换货"
-
-        output_rows, stats, _issues = prepare([HEADER, row])
-
-        self.assertIsNone(output_rows[0][-1])
-        self.assertEqual(stats["生效特殊匹配键"], [])
-        self.assertIn(match_key, stats["未生效特殊匹配键"])
-        self.assertEqual(stats["特殊备注数量"], 0)
-
+class ReceiptRemarkStatsTest(unittest.TestCase):
     def test_ordinary_remarks_still_counted(self) -> None:
         kept_rows = [
             HEADER,
@@ -411,13 +344,11 @@ class SpecialRemarkStatsTest(unittest.TestCase):
 
         self.assertEqual(stats["仅退单数量"], 1)
         self.assertEqual(stats["备注总数"], 1)
-        self.assertEqual(stats["特殊备注数量"], 0)
 
 
 class ReceiptOutputSortTest(unittest.TestCase):
     def test_remark_groups_follow_explicit_business_order(self) -> None:
         remarks = [
-            receipts.RECEIPTS_REMARK_SPECIAL,
             receipts.RECEIPTS_REMARK_BOTH,
             receipts.RECEIPTS_REMARK_RETURN,
             receipts.RECEIPTS_REMARK_ORIGINAL,
@@ -439,7 +370,6 @@ class ReceiptOutputSortTest(unittest.TestCase):
                 receipts.RECEIPTS_REMARK_ORIGINAL,
                 receipts.RECEIPTS_REMARK_RETURN,
                 receipts.RECEIPTS_REMARK_BOTH,
-                receipts.RECEIPTS_REMARK_SPECIAL,
             ],
         )
 

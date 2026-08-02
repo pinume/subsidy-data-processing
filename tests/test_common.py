@@ -106,8 +106,15 @@ class DateHelpersTest(unittest.TestCase):
         self.assertIn("YYYY-MM-DD", message)
 
     def test_normalize_coupon_date_rejects_invalid_value(self) -> None:
-        with self.assertRaisesRegex(ValueError, "row 9"):
-            normalize_coupon_date("not-a-date", 9)
+        source_name = "销售用券情况统计.xlsx"
+        with self.assertRaises(ValueError) as caught:
+            normalize_coupon_date("not-a-date", 9, source_name)
+
+        message = str(caught.exception)
+        self.assertIn(source_name, message)
+        self.assertIn("第 9 行", message)
+        self.assertIn("not-a-date", message)
+        self.assertIn("YYYY-MM-DD", message)
 
     def test_normalize_document_number_only_removes_prefix(self) -> None:
         self.assertEqual(normalize_document_number("收款123收款"), "123收款")
