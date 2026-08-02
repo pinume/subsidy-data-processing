@@ -24,7 +24,7 @@ class PrepareReceiptDataIssuesTest(unittest.TestCase):
             ["ZH0003", "2026-01-25", "notvalid", "", "小米手机"],
         ]
 
-        _output_rows, stats, issues, duplicate_match_keys = prepare(kept_rows)
+        _output_rows, stats, issues = prepare(kept_rows)
 
         # A duplicate match key is expected here (multi-line suite sales
         # share one 单据号/日期) and is never reported as an issue — see
@@ -58,7 +58,6 @@ class PrepareReceiptDataIssuesTest(unittest.TestCase):
         self.assertEqual(stats["重复匹配键数量"], 1)
         self.assertEqual(stats["缺少匹配键数量"], 1)
         self.assertEqual(stats["原票号格式异常数量"], 1)
-        self.assertEqual(duplicate_match_keys, {"260124ZH0001"})
 
     def test_duplicate_match_keys_are_not_reported_as_issues(self) -> None:
         """Same 单据号/日期 with two line items is a normal suite sale (e.g.
@@ -71,11 +70,10 @@ class PrepareReceiptDataIssuesTest(unittest.TestCase):
             ["ZH0001", "2026-01-24", "", "", "老板-嵌入式灶-9B5-B1"],
         ]
 
-        _output_rows, stats, issues, duplicate_match_keys = prepare(kept_rows)
+        _output_rows, stats, issues = prepare(kept_rows)
 
         self.assertEqual(issues, [])
         self.assertEqual(stats["重复匹配键数量"], 1)
-        self.assertEqual(duplicate_match_keys, {"260124ZH0001"})
 
     def test_original_invoice_from_before_the_file_is_not_reported(self) -> None:
         """收款单统计 only ever covers one year's receipts, so an 原票号
@@ -86,7 +84,7 @@ class PrepareReceiptDataIssuesTest(unittest.TestCase):
             ["ZH0001", "2026-01-24", "250101ZH9999", "", "海尔冰箱"],
         ]
 
-        output_rows, stats, issues, _duplicates = prepare(kept_rows)
+        output_rows, stats, issues = prepare(kept_rows)
 
         self.assertEqual(
             output_rows[0][-1],
@@ -101,7 +99,7 @@ class PrepareReceiptDataIssuesTest(unittest.TestCase):
             ["ZH0001", "2026-01-24", "260101ZH9999", "", "海尔冰箱"],
         ]
 
-        _output_rows, stats, issues, _duplicates = prepare(kept_rows)
+        _output_rows, stats, issues = prepare(kept_rows)
 
         self.assertEqual(
             issues,
@@ -122,7 +120,7 @@ class PrepareReceiptDataIssuesTest(unittest.TestCase):
             ["ZH0001", "2026-01-24", "", "", "海尔冰箱"],
         ]
 
-        _output_rows, _stats, issues, _duplicates = prepare(kept_rows)
+        _output_rows, _stats, issues = prepare(kept_rows)
 
         self.assertEqual(issues, [])
 
@@ -151,7 +149,7 @@ class BlankAndTotalRowTest(unittest.TestCase):
             ["", "  ", "", "", ""],
         ]
 
-        output_rows, stats, issues, _duplicates = prepare(kept_rows)
+        output_rows, stats, issues = prepare(kept_rows)
 
         self.assertEqual(len(output_rows), 1)
         self.assertEqual(stats["总数据量"], 1)
@@ -164,7 +162,7 @@ class BlankAndTotalRowTest(unittest.TestCase):
             [None, None, None, None, "海尔冰箱"],
         ]
 
-        output_rows, stats, issues, _duplicates = prepare(kept_rows)
+        output_rows, stats, issues = prepare(kept_rows)
 
         self.assertEqual(len(output_rows), 1)
         self.assertEqual(stats["跳过空白行数"], 0)
@@ -177,7 +175,7 @@ class BlankAndTotalRowTest(unittest.TestCase):
             [0, None, None, None, None],
         ]
 
-        output_rows, stats, _issues, _duplicates = prepare(kept_rows)
+        output_rows, stats, _issues = prepare(kept_rows)
 
         self.assertEqual(len(output_rows), 1)
         self.assertEqual(stats["跳过空白行数"], 0)
@@ -195,7 +193,7 @@ class BlankAndTotalRowTest(unittest.TestCase):
                     total_row,
                 ]
 
-                output_rows, stats, _issues, _duplicates = prepare(kept_rows)
+                output_rows, stats, _issues = prepare(kept_rows)
 
                 self.assertEqual(len(output_rows), 1)
                 self.assertEqual(stats["跳过合计行数"], 1)
@@ -206,7 +204,7 @@ class BlankAndTotalRowTest(unittest.TestCase):
             ["ZH0001", "2026-01-24", "", "合计说明", "合计套装"],
         ]
 
-        output_rows, stats, _issues, _duplicates = prepare(kept_rows)
+        output_rows, stats, _issues = prepare(kept_rows)
 
         self.assertEqual(len(output_rows), 1)
         self.assertEqual(stats["跳过合计行数"], 0)
@@ -224,7 +222,7 @@ class BlankAndTotalRowTest(unittest.TestCase):
             ["ZH0002", None, "", "", "格力空调"],
         ]
 
-        _output_rows, _stats, issues, _duplicates = prepare(kept_rows)
+        _output_rows, _stats, issues = prepare(kept_rows)
 
         self.assertEqual(
             issues,
@@ -243,7 +241,7 @@ class SpecialRemarkStatsTest(unittest.TestCase):
 
     def test_special_remark_is_counted_in_total(self) -> None:
         match_key, row = self._special_key_row()
-        output_rows, stats, _issues, _duplicates = prepare([HEADER, row])
+        output_rows, stats, _issues = prepare([HEADER, row])
 
         self.assertEqual(output_rows[0][-1], receipts.RECEIPTS_REMARK_SPECIAL)
         # The row has no 原票号 and is nobody's original, so it belongs to
@@ -257,7 +255,7 @@ class SpecialRemarkStatsTest(unittest.TestCase):
 
     def test_special_remark_counted_once_per_row(self) -> None:
         row = self._special_key_row()[1]
-        _output_rows, stats, _issues, _duplicates = prepare([HEADER, row, list(row)])
+        _output_rows, stats, _issues = prepare([HEADER, row, list(row)])
 
         self.assertEqual(stats["备注总数"], 2)
         self.assertEqual(stats["特殊备注数量"], 2)
@@ -267,12 +265,12 @@ class SpecialRemarkStatsTest(unittest.TestCase):
         # Give it an 原票号 too: without the special rule this row would be
         # 退换货/倒票（退单）.
         row[2] = "260101ZH9999"
-        output_rows, _stats, _issues, _duplicates = prepare([HEADER, row])
+        output_rows, _stats, _issues = prepare([HEADER, row])
 
         self.assertEqual(output_rows[0][-1], receipts.RECEIPTS_REMARK_SPECIAL)
 
     def test_missing_special_keys_are_reported_not_fatal(self) -> None:
-        _output_rows, stats, _issues, _duplicates = prepare(
+        _output_rows, stats, _issues = prepare(
             [HEADER, ["ZH0001", "2026-01-24", "", "", "海尔冰箱"]]
         )
 
@@ -288,11 +286,69 @@ class SpecialRemarkStatsTest(unittest.TestCase):
             ["ZH0001", "2026-01-24", "260101ZH9999", "", "海尔冰箱"],
         ]
 
-        _output_rows, stats, _issues, _duplicates = prepare(kept_rows)
+        _output_rows, stats, _issues = prepare(kept_rows)
 
         self.assertEqual(stats["仅退单数量"], 1)
         self.assertEqual(stats["备注总数"], 1)
         self.assertEqual(stats["特殊备注数量"], 0)
+
+
+class ReceiptOutputSortTest(unittest.TestCase):
+    def test_rows_are_sorted_by_remark_date_document_and_product(self) -> None:
+        output_rows, _stats, issues = prepare(
+            [
+                HEADER,
+                ["ZH0002", "2026-01-02", "", "", "B商品"],
+                ["ZH0004", "2026-01-01", "250101OLD4", "", "D退货"],
+                ["ZH0001", "2026-01-01", "", "", "Z商品"],
+                ["ZH0001", "2026-01-01", "", "", "A商品"],
+                ["ZH0003", "2026-01-01", "250101OLD3", "", "C退货"],
+            ]
+        )
+
+        self.assertEqual(issues, [])
+        self.assertEqual(
+            [(row[0], row[4], row[5]) for row in output_rows],
+            [
+                ("ZH0001", "A商品", None),
+                ("ZH0001", "Z商品", None),
+                ("ZH0002", "B商品", None),
+                ("ZH0003", "C退货", receipts.RECEIPTS_REMARK_RETURN),
+                ("ZH0004", "D退货", receipts.RECEIPTS_REMARK_RETURN),
+            ],
+        )
+
+    def test_issue_row_number_uses_the_sorted_output_position(self) -> None:
+        output_rows, _stats, issues = prepare(
+            [
+                HEADER,
+                ["ZH0009", None, "", "", "缺少日期"],
+                ["ZH0001", "2026-01-01", "", "", "正常商品"],
+            ]
+        )
+
+        self.assertEqual([row[0] for row in output_rows], ["ZH0001", "ZH0009"])
+        self.assertEqual(
+            issues,
+            [("缺少匹配键", "3", "", "日期或单据号为空，无法生成匹配键")],
+        )
+
+    def test_validation_rejects_unsorted_output(self) -> None:
+        output_rows, _stats, issues = prepare(
+            [
+                HEADER,
+                ["ZH0002", "2026-01-02", "", "", "B商品"],
+                ["ZH0001", "2026-01-01", "", "", "A商品"],
+            ]
+        )
+        output_rows.reverse()
+
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "收款单统计.xlsx"
+            receipts._write_receipts_workbook(path, output_rows, issues)
+
+            with self.assertRaisesRegex(RuntimeError, "收款单排序校验失败"):
+                receipts.validate_receipts_output(path, len(output_rows), issues)
 
 
 class ReceiptRemarkFillTest(unittest.TestCase):
@@ -305,7 +361,7 @@ class ReceiptRemarkFillTest(unittest.TestCase):
         )
 
     def _write_and_read(self, kept_rows):
-        output_rows, _stats, issues, _duplicates = prepare(kept_rows)
+        output_rows, _stats, issues = prepare(kept_rows)
         directory = tempfile.TemporaryDirectory()
         self.addCleanup(directory.cleanup)
         path = Path(directory.name) / "收款单统计.xlsx"

@@ -190,7 +190,7 @@ class ReceiptOutputPerformanceTest(unittest.TestCase):
                 None,
                 None,
                 "海尔冰箱",
-                "",
+                None,
             ]
             for index in range(row_count)
         ]
