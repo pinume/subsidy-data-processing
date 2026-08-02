@@ -44,6 +44,7 @@ RECEIPT_STATISTICS_KEYWORD = "收款单统计"
 
 RECEIPTS_SOURCE_HEADER = ("单据号", "日期", "原票号", "摘要", "商品名称")
 RECEIPTS_OUTPUT_HEADER = (*RECEIPTS_SOURCE_HEADER, "备注")
+RECEIPTS_REMARK_INDEX = RECEIPTS_OUTPUT_HEADER.index("备注")
 RECEIPTS_REMARK_RETURN = "退换货/倒票（退单）"
 RECEIPTS_REMARK_ORIGINAL = "退换货/倒票（原单）"
 RECEIPTS_REMARK_BOTH = "退换货/倒票（退单及原单）"
@@ -199,6 +200,31 @@ def receipt_remark(
     return None
 
 
+def receipt_output_sort_key(
+    remark: object,
+    receipt_date: object,
+    document_number: object,
+    product_name: object,
+) -> tuple[str, bool, date, str, str]:
+    """Sort by 备注、日期、单据号、商品名称; missing dates sort last.
+
+    An empty remark sorts before every actual remark, so ordinary sales stay
+    together at the top and the highlighted return/exchange rows form the
+    trailing section of the output.
+    """
+    normalized_date = (
+        receipt_date.date() if isinstance(receipt_date, datetime) else receipt_date
+    )
+    has_no_date = not isinstance(normalized_date, date)
+    return (
+        normalize_receipt_identifier(remark),
+        has_no_date,
+        date.max if has_no_date else normalized_date,
+        normalize_receipt_identifier(document_number),
+        normalize_receipt_identifier(product_name),
+    )
+
+
 def prepare_receipt_data(kept_rows: list[list[object]], source_name: str):
     records: list[dict[str, object]] = []
     key_rows: dict[str, list[int]] = {}
@@ -260,19 +286,51 @@ def prepare_receipt_data(kept_rows: list[list[object]], source_name: str):
             }
         )
 
-    # Every record ends up in output_rows, in this same order, one row per
-    # record — so its 1-based position here (+1 for the header row) is
-    # exactly the row an operator will find it at in Sheet1. 问题明细 reports
-    # that number rather than source_row (the row in the original .xlsx
-    # export) so a reported problem points at the file the operator actually
-    # opens, not the raw import.
+    # Remarks depend on the complete set of original-invoice references, so
+    # compute them only after every source row has been scanned. Sorting then
+    # uses the final remark as its primary key.
+    for record in records:
+        original_invoice_number = str(record["original_invoice_number"])
+        match_key = str(record["match_key"])
+        has_original = bool(original_invoice_number)
+        is_referenced = bool(
+            match_key and match_key in referenced_original_invoice_numbers
+        )
+        is_same_model_replacement = bool(
+            match_key
+            and match_key in same_model_replacement_original_invoice_numbers
+            and not is_referenced
+        )
+        is_special = match_key in RECEIPTS_SPECIAL_REMARK_KEYS
+        record["has_original"] = has_original
+        record["is_referenced"] = is_referenced
+        record["is_same_model_replacement"] = is_same_model_replacement
+        record["is_special"] = is_special
+        record["remark"] = receipt_remark(
+            has_original,
+            is_referenced,
+            is_same_model_replacement,
+            is_special,
+        )
+
+    records.sort(
+        key=lambda record: receipt_output_sort_key(
+            record["remark"],
+            record["receipt_date"],
+            record["document_number"],
+            record["product_name"],
+        )
+    )
+
+    # Every record ends up in output_rows in this sorted order, one row per
+    # record. Assign output coordinates only now so 问题明细 points at the row
+    # an operator will find in the generated Sheet1, not the raw import.
     for position, record in enumerate(records, start=2):
         record["output_row"] = position
 
     # Same-document 烟机+灶具 (and similar kitchen-suite) sales are entered as
     # multiple line items sharing one 单据号/日期, which is expected here, not
     # a data problem — so it is neither reported in 问题明细 nor highlighted.
-    # duplicate_match_keys is still returned for the diagnostic count only.
     issues: list[tuple[str, str, str, str]] = []
 
     # 原票号 referencing a sale from a year earlier than anything in this
@@ -298,17 +356,10 @@ def prepare_receipt_data(kept_rows: list[list[object]], source_name: str):
         output_row = int(record["output_row"])
         original_invoice_number = str(record["original_invoice_number"])
         match_key = str(record["match_key"])
-        has_original = bool(original_invoice_number)
-        is_referenced = bool(
-            match_key and match_key in referenced_original_invoice_numbers
-        )
-        is_same_model_replacement = bool(
-            match_key
-            and match_key
-            in same_model_replacement_original_invoice_numbers
-            and not is_referenced
-        )
-        is_special = match_key in RECEIPTS_SPECIAL_REMARK_KEYS
+        has_original = bool(record["has_original"])
+        is_referenced = bool(record["is_referenced"])
+        is_same_model_replacement = bool(record["is_same_model_replacement"])
+        is_special = bool(record["is_special"])
 
         if not match_key:
             missing_match_key_count += 1
@@ -363,12 +414,7 @@ def prepare_receipt_data(kept_rows: list[list[object]], source_name: str):
         # three 退单/原单 tallies: a row whose remark comes only from a
         # special match key belongs to none of them, so summing those three
         # silently understated the total.
-        remark = receipt_remark(
-            has_original,
-            is_referenced,
-            is_same_model_replacement,
-            is_special,
-        )
+        remark = record["remark"]
         if remark:
             remark_count += 1
         if is_special:
@@ -407,12 +453,7 @@ def prepare_receipt_data(kept_rows: list[list[object]], source_name: str):
             RECEIPTS_SPECIAL_REMARK_KEYS - applied_special_keys
         ),
     }
-    duplicate_match_keys = {
-        match_key
-        for match_key, source_rows in key_rows.items()
-        if len(source_rows) > 1
-    }
-    return output_rows, stats, issues, duplicate_match_keys
+    return output_rows, stats, issues
 
 
 def _write_issues_sheet(
@@ -481,7 +522,7 @@ def _write_issues_sheet(
 def validate_receipts_output(
     path: Path,
     expected_data_rows: int,
-    expected_issues: list[tuple[str, str, str, str]] | None = None,
+    expected_issues: list[tuple[str, str, str, str]],
 ) -> None:
     workbook = load_workbook(path, read_only=True, data_only=True)
     try:
@@ -522,7 +563,14 @@ def validate_receipts_output(
         same_model_replacement_original_invoice_numbers: set[str] = set()
         snapshots = []
         for row_number, row in enumerate(rows, start=2):
-            document_cell, date_cell, original_cell, summary_cell, _, remark_cell = row
+            (
+                document_cell,
+                date_cell,
+                original_cell,
+                summary_cell,
+                product_cell,
+                remark_cell,
+            ) = row
             document_number = normalize_receipt_identifier(document_cell.value)
             date_value = date_cell.value
             original_invoice_number = normalize_receipt_identifier(
@@ -567,6 +615,7 @@ def validate_receipts_output(
                     remark_cell.value,
                     date_cell.number_format,
                     match_key,
+                    product_cell.value,
                     pink_cells,
                 )
             )
@@ -579,6 +628,7 @@ def validate_receipts_output(
             actual_remark,
             date_number_format,
             match_key,
+            product_name,
             pink_cells,
         ) in snapshots:
             if document_number is not None and (
@@ -625,6 +675,30 @@ def validate_receipts_output(
                     raise RuntimeError(
                         f"收款单第 {row_number} 行的退换货备注填充不正确"
                     )
+
+        actual_sort_keys = [
+            receipt_output_sort_key(
+                actual_remark,
+                date_value,
+                document_number,
+                product_name,
+            )
+            for (
+                _row_number,
+                document_number,
+                date_value,
+                _original_invoice_number,
+                actual_remark,
+                _date_number_format,
+                _match_key,
+                product_name,
+                _pink_cells,
+            ) in snapshots
+        ]
+        if actual_sort_keys != sorted(actual_sort_keys):
+            raise RuntimeError(
+                "收款单排序校验失败：应按备注、日期、单据号、商品名称升序排列"
+            )
 
         if expected_issues:
             issues_sheet = workbook[ISSUES_SHEET_NAME]
@@ -712,7 +786,7 @@ def _write_receipts_workbook(
 
         for row_number, row in enumerate(output_rows, start=1):
             sheet.set_row(row_number, RECEIPTS_ROW_HEIGHT)
-            has_remark = row[-1] not in (None, "")
+            has_remark = row[RECEIPTS_REMARK_INDEX] is not None
             for column, value in enumerate(row):
                 number_format_kind = (
                     "text"
@@ -754,7 +828,7 @@ def process_receipts() -> None:
         )
 
     kept_rows = read_receipt_rows(RECEIPTS_SOURCE_FILE)
-    output_rows, stats, issues, _duplicate_match_keys = prepare_receipt_data(
+    output_rows, stats, issues = prepare_receipt_data(
         kept_rows, source_name=RECEIPTS_SOURCE_FILE.name
     )
     row_count = len(output_rows)
