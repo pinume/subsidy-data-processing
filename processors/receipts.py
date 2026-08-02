@@ -50,6 +50,14 @@ RECEIPTS_REMARK_ORIGINAL = "退换货/倒票（原单）"
 RECEIPTS_REMARK_BOTH = "退换货/倒票（退单及原单）"
 RECEIPTS_REMARK_SAME_MODEL_REPLACEMENT = "已做同型号换货处理"
 RECEIPTS_REMARK_SPECIAL = r"退换货\倒票"
+RECEIPTS_REMARK_ORDER: dict[str | None, int] = {
+    None: 0,
+    RECEIPTS_REMARK_SAME_MODEL_REPLACEMENT: 1,
+    RECEIPTS_REMARK_ORIGINAL: 2,
+    RECEIPTS_REMARK_RETURN: 3,
+    RECEIPTS_REMARK_BOTH: 4,
+    RECEIPTS_REMARK_SPECIAL: 5,
+}
 RECEIPTS_SPECIAL_REMARK_KEYS = load_receipt_special_remark_keys()
 RECEIPTS_ROW_HEIGHT = 20
 RECEIPTS_REMARK_FILL_COLOR = "FFC7CE"
@@ -205,19 +213,24 @@ def receipt_output_sort_key(
     receipt_date: object,
     document_number: object,
     product_name: object,
-) -> tuple[str, bool, date, str, str]:
+) -> tuple[int, str, bool, date, str, str]:
     """Sort by 备注、日期、单据号、商品名称; missing dates sort last.
 
     An empty remark sorts before every actual remark, so ordinary sales stay
     together at the top and the highlighted return/exchange rows form the
-    trailing section of the output.
+    trailing section of the output. Remark groups use the explicit business
+    order above rather than their display text, so copy changes cannot
+    silently reorder the output. Unknown remarks sort after all known groups.
     """
+    normalized_remark = normalize_receipt_identifier(remark) or None
+    known_remark = normalized_remark in RECEIPTS_REMARK_ORDER
     normalized_date = (
         receipt_date.date() if isinstance(receipt_date, datetime) else receipt_date
     )
     has_no_date = not isinstance(normalized_date, date)
     return (
-        normalize_receipt_identifier(remark),
+        RECEIPTS_REMARK_ORDER.get(normalized_remark, len(RECEIPTS_REMARK_ORDER)),
+        "" if known_remark else str(normalized_remark),
         has_no_date,
         date.max if has_no_date else normalized_date,
         normalize_receipt_identifier(document_number),
@@ -302,10 +315,6 @@ def prepare_receipt_data(kept_rows: list[list[object]], source_name: str):
             and not is_referenced
         )
         is_special = match_key in RECEIPTS_SPECIAL_REMARK_KEYS
-        record["has_original"] = has_original
-        record["is_referenced"] = is_referenced
-        record["is_same_model_replacement"] = is_same_model_replacement
-        record["is_special"] = is_special
         record["remark"] = receipt_remark(
             has_original,
             is_referenced,
@@ -356,10 +365,16 @@ def prepare_receipt_data(kept_rows: list[list[object]], source_name: str):
         output_row = int(record["output_row"])
         original_invoice_number = str(record["original_invoice_number"])
         match_key = str(record["match_key"])
-        has_original = bool(record["has_original"])
-        is_referenced = bool(record["is_referenced"])
-        is_same_model_replacement = bool(record["is_same_model_replacement"])
-        is_special = bool(record["is_special"])
+        has_original = bool(original_invoice_number)
+        is_referenced = bool(
+            match_key and match_key in referenced_original_invoice_numbers
+        )
+        is_same_model_replacement = bool(
+            match_key
+            and match_key in same_model_replacement_original_invoice_numbers
+            and not is_referenced
+        )
+        is_special = match_key in RECEIPTS_SPECIAL_REMARK_KEYS
 
         if not match_key:
             missing_match_key_count += 1
