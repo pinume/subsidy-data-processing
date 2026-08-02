@@ -184,14 +184,7 @@ class ReceiptOutputPerformanceTest(unittest.TestCase):
     def _build_output_rows(self, row_count: int = 100):
         receipt_date = datetime(2026, 1, 24)
         return [
-            [
-                f"ZH{index:04d}",
-                receipt_date,
-                None,
-                None,
-                "海尔冰箱",
-                None,
-            ]
+            [f"ZH{index:04d}", receipt_date, None]
             for index in range(row_count)
         ]
 
@@ -231,7 +224,9 @@ class ReceiptOutputPerformanceTest(unittest.TestCase):
             loaded = load_workbook(path, read_only=True, data_only=True)
             wrapped = _CountingWorkbookWrapper(loaded)
             with patch.object(receipts, "load_workbook", return_value=wrapped):
-                receipts.validate_receipts_output(path, 1, [])
+                receipts.validate_receipts_output(
+                    path, self._build_output_rows(row_count=1), []
+                )
 
             self.assertEqual(wrapped.sheet_wrapper.iter_rows_calls, 1)
 

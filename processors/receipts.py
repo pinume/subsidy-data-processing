@@ -43,13 +43,27 @@ RECEIPTS_SOURCE_FILE: Path | None
 RECEIPT_STATISTICS_KEYWORD = "收款单统计"
 
 RECEIPTS_SOURCE_HEADER = ("单据号", "日期", "原票号", "摘要", "商品名称")
-RECEIPTS_OUTPUT_HEADER = (*RECEIPTS_SOURCE_HEADER, "备注")
+# 原票号, 摘要 and 商品名称 are read from the source and drive the remark, the
+# 北国 exclusion and the sort, but nothing downstream consumes them: the coupon
+# remark lookup reads exactly these three columns out of Sheet1.
+RECEIPTS_OUTPUT_HEADER = ("单据号", "日期", "备注")
+RECEIPTS_DOCUMENT_INDEX = RECEIPTS_OUTPUT_HEADER.index("单据号")
+RECEIPTS_DATE_INDEX = RECEIPTS_OUTPUT_HEADER.index("日期")
 RECEIPTS_REMARK_INDEX = RECEIPTS_OUTPUT_HEADER.index("备注")
 RECEIPTS_REMARK_RETURN = "退换货/倒票（退单）"
 RECEIPTS_REMARK_ORIGINAL = "退换货/倒票（原单）"
 RECEIPTS_REMARK_BOTH = "退换货/倒票（退单及原单）"
 RECEIPTS_REMARK_SAME_MODEL_REPLACEMENT = "已做同型号换货处理"
 RECEIPTS_REMARK_SPECIAL = r"退换货\倒票"
+RECEIPTS_REMARKS = frozenset(
+    {
+        RECEIPTS_REMARK_RETURN,
+        RECEIPTS_REMARK_ORIGINAL,
+        RECEIPTS_REMARK_BOTH,
+        RECEIPTS_REMARK_SAME_MODEL_REPLACEMENT,
+        RECEIPTS_REMARK_SPECIAL,
+    }
+)
 RECEIPTS_REMARK_ORDER: dict[str | None, int] = {
     None: 0,
     RECEIPTS_REMARK_SAME_MODEL_REPLACEMENT: 1,
@@ -456,9 +470,6 @@ def prepare_receipt_data(kept_rows: list[list[object]], source_name: str):
             [
                 record["document_number"],
                 record["receipt_date"],
-                original_invoice_number or None,
-                record["summary"],
-                record["product_name"],
                 remark,
             ]
         )
@@ -551,11 +562,34 @@ def _write_issues_sheet(
         )
 
 
+def _comparable_receipt_row(row) -> tuple[object, ...]:
+    """One output row reduced to what survives a round trip through .xlsx.
+
+    openpyxl hands back a datetime for a date cell and None for a blank one,
+    so both sides go through here before being compared.
+    """
+    document_number, receipt_date, remark = row
+    return (
+        normalize_receipt_identifier(document_number),
+        receipt_date.date() if isinstance(receipt_date, datetime) else receipt_date,
+        remark if remark not in (None, "") else None,
+    )
+
+
 def validate_receipts_output(
     path: Path,
-    expected_data_rows: int,
+    expected_rows: list[list[object]],
     expected_issues: list[tuple[str, str, str, str]],
 ) -> None:
+    """Re-read the workbook just written and check it against what was built.
+
+    The remark used to be recomputed here from 原票号 and 摘要, which the output
+    no longer carries. That independent derivation is covered by
+    prepare_receipt_data's own tests; what a read-back can still establish —
+    and what only a read-back can — is that the writer put those rows on the
+    sheet unaltered, with the right number formats, fills and ordering.
+    """
+    expected_data_rows = len(expected_rows)
     workbook = load_workbook(path, read_only=True, data_only=True)
     try:
         expected_sheet_names = (
@@ -591,43 +625,9 @@ def validate_receipts_output(
                 f"实际 {header}"
             )
 
-        referenced_original_invoice_numbers: set[str] = set()
-        same_model_replacement_original_invoice_numbers: set[str] = set()
         snapshots = []
         for row_number, row in enumerate(rows, start=2):
-            (
-                document_cell,
-                date_cell,
-                original_cell,
-                summary_cell,
-                product_cell,
-                remark_cell,
-            ) = row
-            document_number = normalize_receipt_identifier(document_cell.value)
-            date_value = date_cell.value
-            original_invoice_number = normalize_receipt_identifier(
-                original_cell.value
-            )
-            if original_invoice_number:
-                summary = normalize_receipt_identifier(summary_cell.value)
-                target = (
-                    same_model_replacement_original_invoice_numbers
-                    if RECEIPTS_SAME_MODEL_REPLACEMENT_KEYWORD in summary
-                    else referenced_original_invoice_numbers
-                )
-                target.add(original_invoice_number)
-
-            match_key = ""
-            if date_value is None or not document_number:
-                pass
-            else:
-                match_key = receipt_match_key(
-                    date_value.date()
-                    if isinstance(date_value, datetime)
-                    else date_value,
-                    document_number,
-                )
-
+            document_cell, date_cell, remark_cell = row
             # openpyxl does not promise a str here: a fill this program wrote
             # yields one, but a theme-coloured cell yields an RGB object that
             # cannot be sliced. Comparing against the three spellings of the
@@ -642,25 +642,25 @@ def validate_receipts_output(
                 (
                     row_number,
                     document_cell.value,
-                    date_value,
-                    original_invoice_number,
+                    date_cell.value,
                     remark_cell.value,
                     date_cell.number_format,
-                    match_key,
-                    product_cell.value,
                     pink_cells,
                 )
             )
+
+        actual_rows = [
+            _comparable_receipt_row(snapshot[1:4]) for snapshot in snapshots
+        ]
+        if actual_rows != [_comparable_receipt_row(row) for row in expected_rows]:
+            raise RuntimeError("收款单数据行与生成结果不一致")
 
         for (
             row_number,
             document_number,
             date_value,
-            original_invoice_number,
             actual_remark,
             date_number_format,
-            match_key,
-            product_name,
             pink_cells,
         ) in snapshots:
             if document_number is not None and (
@@ -681,55 +681,41 @@ def validate_receipts_output(
                         f"收款单第 {row_number} 行的日期格式不正确"
                     )
 
-            expected_remark = receipt_remark(
-                bool(original_invoice_number),
-                bool(
-                    match_key
-                    and match_key in referenced_original_invoice_numbers
-                ),
-                bool(
-                    match_key
-                    and match_key
-                    in same_model_replacement_original_invoice_numbers
-                    and match_key
-                    not in referenced_original_invoice_numbers
-                ),
-                match_key in RECEIPTS_SPECIAL_REMARK_KEYS,
-            )
-            if actual_remark != expected_remark:
+            if actual_remark is not None and actual_remark not in RECEIPTS_REMARKS:
                 raise RuntimeError(
-                    f"收款单第 {row_number} 行的备注校验失败"
+                    f"收款单第 {row_number} 行的备注不是已知备注：{actual_remark!r}"
                 )
 
-            should_be_pink = bool(expected_remark)
+            should_be_pink = actual_remark is not None
             for is_pink in pink_cells:
                 if is_pink != should_be_pink:
                     raise RuntimeError(
                         f"收款单第 {row_number} 行的退换货备注填充不正确"
                     )
 
+        # 商品名称 is the last sort key but is no longer written out, so only
+        # the three leading keys can be re-derived here. Sorting by four keys
+        # still leaves the output ordered by the first three, so a break in
+        # this weaker check is still a real ordering fault.
         actual_sort_keys = [
             receipt_output_sort_key(
                 actual_remark,
                 date_value,
                 document_number,
-                product_name,
+                None,
             )
             for (
                 _row_number,
                 document_number,
                 date_value,
-                _original_invoice_number,
                 actual_remark,
                 _date_number_format,
-                _match_key,
-                product_name,
                 _pink_cells,
             ) in snapshots
         ]
         if actual_sort_keys != sorted(actual_sort_keys):
             raise RuntimeError(
-                "收款单排序校验失败：应按备注、日期、单据号、商品名称升序排列"
+                "收款单排序校验失败：应按备注、日期、单据号升序排列"
             )
 
         if expected_issues:
@@ -822,9 +808,9 @@ def _write_receipts_workbook(
             for column, value in enumerate(row):
                 number_format_kind = (
                     "text"
-                    if column == 0
+                    if column == RECEIPTS_DOCUMENT_INDEX
                     else "date"
-                    if column == 1 and value not in (None, "")
+                    if column == RECEIPTS_DATE_INDEX and value not in (None, "")
                     else "general"
                 )
                 sheet.write(
@@ -871,7 +857,7 @@ def process_receipts() -> None:
             output_rows,
             issues,
         ),
-        lambda path: validate_receipts_output(path, row_count, issues),
+        lambda path: validate_receipts_output(path, output_rows, issues),
     )
     print(f"Receipt statistics complete: {row_count} rows")
     print(

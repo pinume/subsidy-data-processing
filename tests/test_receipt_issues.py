@@ -325,6 +325,18 @@ class ReceiptOutputSortTest(unittest.TestCase):
             ],
         )
 
+    def test_product_name_breaks_ties(self) -> None:
+        """商品名称 is still the last sort key even though it is not written.
+
+        Two rows alike in remark, date and 单据号 are indistinguishable in the
+        output, so this is the only place the tie-break can be asserted.
+        """
+        key = receipts.receipt_output_sort_key
+        self.assertLess(
+            key(None, date(2026, 1, 1), "ZH0001", "A商品"),
+            key(None, date(2026, 1, 1), "ZH0001", "Z商品"),
+        )
+
     def test_rows_are_sorted_by_remark_date_document_and_product(self) -> None:
         output_rows, _stats, issues = prepare(
             [
@@ -339,13 +351,16 @@ class ReceiptOutputSortTest(unittest.TestCase):
 
         self.assertEqual(issues, [])
         self.assertEqual(
-            [(row[0], row[4], row[5]) for row in output_rows],
+            [(row[0], row[-1]) for row in output_rows],
             [
-                ("ZH0001", "A商品", None),
-                ("ZH0001", "Z商品", None),
-                ("ZH0002", "B商品", None),
-                ("ZH0003", "C退货", receipts.RECEIPTS_REMARK_RETURN),
-                ("ZH0004", "D退货", receipts.RECEIPTS_REMARK_RETURN),
+                # 商品名称 is no longer written out, so the two ZH0001 lines are
+                # indistinguishable here; their A商品/Z商品 ordering is asserted
+                # on the sort key itself in test_product_name_breaks_ties.
+                ("ZH0001", None),
+                ("ZH0001", None),
+                ("ZH0002", None),
+                ("ZH0003", receipts.RECEIPTS_REMARK_RETURN),
+                ("ZH0004", receipts.RECEIPTS_REMARK_RETURN),
             ],
         )
 
@@ -375,7 +390,7 @@ class ReceiptOutputSortTest(unittest.TestCase):
 
         self.assertEqual([row[0] for row in output_rows], ["ZH0001", "ZH0009"])
         self.assertEqual(
-            [row[5] for row in output_rows],
+            [row[-1] for row in output_rows],
             [receipts.RECEIPTS_REMARK_RETURN] * 2,
         )
         self.assertEqual(
@@ -398,7 +413,7 @@ class ReceiptOutputSortTest(unittest.TestCase):
             receipts._write_receipts_workbook(path, output_rows, issues)
 
             with self.assertRaisesRegex(RuntimeError, "收款单排序校验失败"):
-                receipts.validate_receipts_output(path, len(output_rows), issues)
+                receipts.validate_receipts_output(path, output_rows, issues)
 
 
 class ReceiptRemarkFillTest(unittest.TestCase):
@@ -418,8 +433,26 @@ class ReceiptRemarkFillTest(unittest.TestCase):
         receipts._write_receipts_workbook(path, output_rows, issues)
         workbook = load_workbook(path)
         self.addCleanup(workbook.close)
-        receipts.validate_receipts_output(path, len(output_rows), issues)
+        receipts.validate_receipts_output(path, output_rows, issues)
         return output_rows, issues, workbook
+
+    def test_validation_rejects_a_tampered_data_row(self) -> None:
+        """The remark can no longer be re-derived from 原票号/摘要 here, so the
+        read-back's remaining job is proving the writer wrote what was built."""
+        output_rows, _stats, issues = prepare(
+            [
+                HEADER,
+                ["ZH0001", "2026-01-24", "250101OLD1", "", "海尔冰箱"],
+            ]
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "收款单统计.xlsx"
+            receipts._write_receipts_workbook(path, output_rows, issues)
+            tampered = [list(output_rows[0])]
+            tampered[0][0] = "ZH9999"
+
+            with self.assertRaisesRegex(RuntimeError, "收款单数据行与生成结果不一致"):
+                receipts.validate_receipts_output(path, tampered, issues)
 
     def test_suite_sale_duplicate_without_return_is_not_filled(self) -> None:
         output_rows, issues, workbook = self._write_and_read(
@@ -529,7 +562,7 @@ class IssuesSheetRoundTripTest(unittest.TestCase):
             finally:
                 workbook.close()
 
-            receipts.validate_receipts_output(path, 0, issues)
+            receipts.validate_receipts_output(path, [], issues)
 
     def test_validation_rejects_mismatched_issues(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -543,7 +576,7 @@ class IssuesSheetRoundTripTest(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "问题明细工作表内容校验失败"):
                 receipts.validate_receipts_output(
                     path,
-                    0,
+                    [],
                     [("缺少匹配键", "5", "", "说明")],
                 )
 
