@@ -7,6 +7,7 @@ SubmittedProfile instances sharing one pipeline rather than two
 near-identical modules.
 """
 
+from collections import Counter
 from dataclasses import dataclass
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from pathlib import Path
@@ -15,6 +16,7 @@ from python_calamine import CalamineWorkbook
 from xlsxwriter import Workbook
 
 from processors.common.config import submitted_file_marker
+from processors.common.dates import normalize_receipt_identifier
 from processors.common.excel import (
     calamine_rows,
     load_measurement_font,
@@ -24,12 +26,19 @@ from processors.common.excel import (
     write_xlsx_atomically,
 )
 from processors.common.paths import find_data_files
+from processors.coupons.matching import COUPON_REFERENCE_RE
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 OUTPUT_DIR = BASE_DIR / "output"
 
-# Keep the required source columns in their original order.
-KEPT_SOURCE_COLUMNS = ("D", "E", "F", "G", "I", "J", "Q", "S", "U", "W", "X")
+# Keep the required source columns in their original order, as they appear in
+# a MER_*.xlsx export:
+#   D 订单号  E 交易日期  F 交易金额  G 检索参考号  I 状态  J 描述
+# Q 详细地址, S tel, U 发票金额, W 图片1 and X S/N码 were kept once but are not
+# used by either project's downstream reports, so they are no longer carried
+# over. add_subsidy_column depends on the leading four: it reads the amount at
+# index 2 and inserts 补贴金额 at index 3.
+KEPT_SOURCE_COLUMNS = ("D", "E", "F", "G", "I", "J")
 
 
 def _column_index(column: str) -> int:
@@ -42,7 +51,7 @@ def _column_index(column: str) -> int:
 
 KEPT_COLUMN_INDEXES = tuple(_column_index(column) for column in KEPT_SOURCE_COLUMNS)
 # "补贴金额" is inserted by add_subsidy_column, so only source fields are listed.
-REQUIRED_SUBMITTED_HEADERS = ("状态", "描述", "交易金额")
+REQUIRED_SUBMITTED_HEADERS = ("检索参考号", "状态", "描述", "交易金额")
 STATUS_ORDER = (
     "核销失败",
     "审核失败",
@@ -179,6 +188,11 @@ def build_report(profile_name: str) -> SubmittedReport:
 
     expected_header: list[object] | None = None
     output_header: list[object] | None = None
+    reference_column_index: int | None = None
+    status_column_index: int | None = None
+    description_column_index: int | None = None
+    reference_details: dict[str, tuple[str, str, str, int]] = {}
+    row_locations: dict[tuple[object, ...], tuple[str, int]] = {}
     data_row_count = 0
     data_rows: list[list[object]] = []
 
@@ -217,20 +231,76 @@ def build_report(profile_name: str) -> SubmittedReport:
                         f"{'、'.join(missing_headers)}；"
                         f"实际字段 {tuple(output_header)}"
                     )
+                reference_column_index = output_header.index("检索参考号")
+                status_column_index = output_header.index("状态")
+                description_column_index = output_header.index("描述")
             elif header != expected_header:
                 raise ValueError(f"{path.name} 的表头与第一个文件不一致")
 
             for source_row, row in enumerate(rows, start=3):
-                if any(value not in (None, "") for value in row):
-                    data_rows.append(
-                        add_subsidy_column(
-                            select_columns(row),
-                            profile_name=profile_name,
-                            source_name=path.name,
-                            source_row=source_row,
-                        )
+                selected_row = select_columns(row)
+                if not any(value not in (None, "") for value in selected_row):
+                    continue
+
+                output_row = add_subsidy_column(
+                    selected_row,
+                    profile_name=profile_name,
+                    source_name=path.name,
+                    source_row=source_row,
+                )
+                if (
+                    reference_column_index is None
+                    or status_column_index is None
+                    or description_column_index is None
+                ):
+                    raise RuntimeError("未能定位已上传数据必要字段")
+
+                fingerprint = tuple(output_row)
+                existing_row_location = row_locations.get(fingerprint)
+                if (
+                    existing_row_location is not None
+                    and existing_row_location[0] != path.name
+                ):
+                    existing_name, existing_row = existing_row_location
+                    raise ValueError(
+                        "多个源文件包含完全相同的数据行；"
+                        f"首次出现在 {existing_name} 第 {existing_row} 行，"
+                        f"再次出现在 {path.name} 第 {source_row} 行"
                     )
-                    data_row_count += 1
+                row_locations.setdefault(fingerprint, (path.name, source_row))
+
+                reference = normalize_receipt_identifier(
+                    output_row[reference_column_index]
+                ).upper()
+                if reference:
+                    if not COUPON_REFERENCE_RE.fullmatch(reference):
+                        raise ValueError(
+                            f"{path.name} 第 {source_row} 行检索参考号格式无效："
+                            f"{output_row[reference_column_index]!r}；"
+                            "正确格式应为11位数字后跟一个大写字母"
+                        )
+                    status = str(output_row[status_column_index] or "").strip()
+                    description = str(
+                        output_row[description_column_index] or ""
+                    ).strip()
+                    existing_detail = reference_details.get(reference)
+                    if existing_detail is not None and existing_detail[:2] != (
+                        status,
+                        description,
+                    ):
+                        _, _, existing_name, existing_row = existing_detail
+                        raise ValueError(
+                            f"检索参考号存在冲突：{reference}；"
+                            f"{existing_name} 第 {existing_row} 行与"
+                            f"{path.name} 第 {source_row} 行的状态或描述不一致"
+                        )
+                    reference_details.setdefault(
+                        reference,
+                        (status, description, path.name, source_row),
+                    )
+
+                data_rows.append(output_row)
+                data_row_count += 1
         finally:
             source_workbook.close()
 
@@ -340,6 +410,51 @@ def validate_output(path: Path, expected_data_rows: int, profile_name: str) -> N
         description_column = header.index("描述")
         amount_column = header.index("交易金额")
         subsidy_column = header.index("补贴金额")
+        reference_column = header.index("检索参考号")
+
+        reference_details: dict[str, tuple[str, str]] = {}
+        for row_number, row in enumerate(summary_rows[1:], start=2):
+            reference = normalize_receipt_identifier(
+                row[reference_column]
+            ).upper()
+            if reference:
+                if not COUPON_REFERENCE_RE.fullmatch(reference):
+                    raise RuntimeError(
+                        f"Summary 第 {row_number} 行检索参考号格式无效"
+                    )
+                detail = (
+                    str(row[status_column] or "").strip(),
+                    str(row[description_column] or "").strip(),
+                )
+                existing_detail = reference_details.get(reference)
+                if existing_detail is not None and existing_detail != detail:
+                    raise RuntimeError(
+                        f"Summary 第 {row_number} 行检索参考号存在冲突：{reference}"
+                    )
+                reference_details.setdefault(reference, detail)
+
+            amount = row[amount_column]
+            subsidy = row[subsidy_column]
+            if amount in (None, ""):
+                if subsidy not in (None, ""):
+                    raise RuntimeError(
+                        f"Summary 第 {row_number} 行交易金额为空但补贴金额不为空"
+                    )
+                continue
+            expected_subsidy = min(
+                Decimal(str(amount)) * profile.subsidy_rate,
+                profile.subsidy_cap,
+            ).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+            try:
+                actual_subsidy = Decimal(str(subsidy))
+            except InvalidOperation as error:
+                raise RuntimeError(
+                    f"Summary 第 {row_number} 行补贴金额无效：{subsidy!r}"
+                ) from error
+            if actual_subsidy != expected_subsidy:
+                raise RuntimeError(
+                    f"Summary 第 {row_number} 行补贴金额计算错误"
+                )
 
         status_total = sum(
             max(len(sheet_rows[status]) - 1, 0) for status in STATUS_ORDER
@@ -353,6 +468,29 @@ def validate_output(path: Path, expected_data_rows: int, profile_name: str) -> N
             raise RuntimeError(
                 f"状态工作表校验失败：预期共 {known_status_total} 条，"
                 f"实际共 {status_total} 条"
+            )
+
+        # The six status sheets are written by six calls separate from the
+        # Summary one, so matching counts do not prove matching content.
+        # Comparing them as multisets checks every column of every row —
+        # 补贴金额 included — against the Summary rows already recomputed
+        # above, which is cheaper than recomputing the subsidy per sheet.
+        # Counter rather than set: one 检索参考号 may legitimately carry
+        # several identical detail rows, and a status sheet that dropped one
+        # of them must not pass.
+        expected_status_rows = Counter(
+            tuple(row)
+            for row in summary_rows[1:]
+            if row[status_column] in STATUS_ORDER
+        )
+        actual_status_rows = Counter(
+            tuple(row)
+            for status in STATUS_ORDER
+            for row in sheet_rows[status][1:]
+        )
+        if actual_status_rows != expected_status_rows:
+            raise RuntimeError(
+                "状态工作表校验失败：数据行内容与 Summary 不一致"
             )
 
         for status in STATUS_ORDER:
@@ -376,18 +514,6 @@ def validate_output(path: Path, expected_data_rows: int, profile_name: str) -> N
                             f"{status}工作表的空白描述未全部排在末尾"
                         )
                     descriptions.append(str(description))
-
-                amount = row[amount_column]
-                subsidy = row[subsidy_column]
-                if amount not in (None, ""):
-                    expected_subsidy = min(
-                        Decimal(str(amount)) * profile.subsidy_rate,
-                        profile.subsidy_cap,
-                    ).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
-                    if Decimal(str(subsidy)) != expected_subsidy:
-                        raise RuntimeError(
-                            f"{status}工作表存在补贴金额计算错误"
-                        )
 
             if descriptions != sorted(descriptions, reverse=True):
                 raise RuntimeError(f"{status}工作表的描述列未按降序排列")
