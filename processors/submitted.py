@@ -16,7 +16,6 @@ from python_calamine import CalamineWorkbook
 from xlsxwriter import Workbook
 
 from processors.common.config import submitted_file_marker
-from processors.common.dates import normalize_receipt_identifier
 from processors.common.excel import (
     calamine_rows,
     load_measurement_font,
@@ -26,7 +25,7 @@ from processors.common.excel import (
     write_xlsx_atomically,
 )
 from processors.common.paths import find_data_files
-from processors.coupons.matching import COUPON_REFERENCE_RE
+from processors.common.references import normalize_reference, validated_reference
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 OUTPUT_DIR = BASE_DIR / "output"
@@ -246,16 +245,12 @@ def build_report(profile_name: str) -> SubmittedReport:
                 if reference_column_index is None:
                     raise RuntimeError("未能定位已上传数据必要字段")
 
-                reference = normalize_receipt_identifier(
-                    output_row[reference_column_index]
-                ).upper()
-                if reference:
-                    if not COUPON_REFERENCE_RE.fullmatch(reference):
-                        raise ValueError(
-                            f"{path.name} 第 {source_row} 行检索参考号格式无效："
-                            f"{output_row[reference_column_index]!r}；"
-                            "正确格式应为11位数字后跟一个大写字母"
-                        )
+                raw_reference = output_row[reference_column_index]
+                if normalize_reference(raw_reference):
+                    reference = validated_reference(
+                        raw_reference,
+                        f"{path.name} 第 {source_row} 行",
+                    )
                     existing_location = reference_locations.get(reference)
                     if existing_location is not None:
                         existing_name, existing_row = existing_location
@@ -381,14 +376,12 @@ def validate_output(path: Path, expected_data_rows: int, profile_name: str) -> N
 
         seen_references: dict[str, int] = {}
         for row_number, row in enumerate(summary_rows[1:], start=2):
-            reference = normalize_receipt_identifier(
-                row[reference_column]
-            ).upper()
-            if reference:
-                if not COUPON_REFERENCE_RE.fullmatch(reference):
-                    raise RuntimeError(
-                        f"Summary 第 {row_number} 行检索参考号格式无效"
-                    )
+            if normalize_reference(row[reference_column]):
+                reference = validated_reference(
+                    row[reference_column],
+                    f"Summary 第 {row_number} 行",
+                    error_type=RuntimeError,
+                )
                 first_row = seen_references.get(reference)
                 if first_row is not None:
                     raise RuntimeError(
