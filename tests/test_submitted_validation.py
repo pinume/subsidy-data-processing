@@ -5,7 +5,7 @@ from decimal import Decimal
 from pathlib import Path
 
 from openpyxl import Workbook, load_workbook
-from openpyxl.utils import column_index_from_string
+from openpyxl.utils import column_index_from_string, get_column_letter
 
 from processors import submitted
 from processors.common.config import load_merchants, submitted_file_marker
@@ -26,11 +26,13 @@ def text_pixel_width(value: object, font) -> float:
 
 
 SOURCE_COLUMN_COUNT = 24
+# Column letters as they appear in a real MER_*.xlsx export, so a fixture that
+# passes here is shaped like the file the operator actually feeds in.
 # add_subsidy_column reads the amount from the third kept column, which is F.
 AMOUNT_COLUMN = "F"
-STATUS_COLUMN = "Q"
-REFERENCE_COLUMN = "S"
-DESCRIPTION_COLUMN = "U"
+REFERENCE_COLUMN = "G"
+STATUS_COLUMN = "I"
+DESCRIPTION_COLUMN = "J"
 
 
 def build_header(**overrides: str) -> tuple[str, ...]:
@@ -329,6 +331,23 @@ class SubmittedHeaderValidationTest(unittest.TestCase):
                 self.assertEqual(report.file_count, 1)
                 self.assertEqual(report.data_row_count, 1)
 
+    def test_output_carries_only_the_kept_columns(self) -> None:
+        """详细地址/tel/发票金额/图片1/S/N码 were dropped from both projects.
+
+        The placeholder header names are the doubled column letter, so a
+        column that sneaks back in is identifiable by where it came from.
+        """
+        for profile_name in ("家电", "数码"):
+            with self.subTest(profile_name=profile_name):
+                header = self.run_build(profile_name, SUBMITTED_HEADER).header
+
+                self.assertEqual(len(header), 7)
+                self.assertEqual(header[3], "补贴金额")
+                for dropped in ("QQ", "SS", "UU", "WW", "XX"):
+                    self.assertNotIn(dropped, header)
+                for required in submitted.REQUIRED_SUBMITTED_HEADERS:
+                    self.assertIn(required, header)
+
 
 class SubmittedRowValidationTest(unittest.TestCase):
     def build_from_rows(
@@ -438,7 +457,13 @@ class ValidatorRejectsBadOutputTest(unittest.TestCase):
                     try:
                         sheet = workbook["Summary"]
                         self.assertEqual(sheet.freeze_panes, "A2")
-                        self.assertEqual(sheet.auto_filter.ref, "A1:L2")
+                        # One column per kept source column, plus 补贴金额.
+                        last_column = get_column_letter(
+                            len(submitted.KEPT_SOURCE_COLUMNS) + 1
+                        )
+                        self.assertEqual(
+                            sheet.auto_filter.ref, f"A1:{last_column}2"
+                        )
                         self.assertEqual(sheet["A1"].fill.fgColor.rgb[-6:], "000000")
                         self.assertEqual(sheet["D2"].number_format, "0.00")
                     finally:

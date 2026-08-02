@@ -31,8 +31,14 @@ from processors.coupons.matching import COUPON_REFERENCE_RE
 BASE_DIR = Path(__file__).resolve().parent.parent
 OUTPUT_DIR = BASE_DIR / "output"
 
-# Keep the required source columns in their original order.
-KEPT_SOURCE_COLUMNS = ("D", "E", "F", "G", "I", "J", "Q", "S", "U", "W", "X")
+# Keep the required source columns in their original order, as they appear in
+# a MER_*.xlsx export:
+#   D 订单号  E 交易日期  F 交易金额  G 检索参考号  I 状态  J 描述
+# Q 详细地址, S tel, U 发票金额, W 图片1 and X S/N码 were kept once but are not
+# used by either project's downstream reports, so they are no longer carried
+# over. add_subsidy_column depends on the leading four: it reads the amount at
+# index 2 and inserts 补贴金额 at index 3.
+KEPT_SOURCE_COLUMNS = ("D", "E", "F", "G", "I", "J")
 
 
 def _column_index(column: str) -> int:
