@@ -98,13 +98,18 @@ class _CountingWorkbookWrapper:
         self._workbook.close()
 
 
+def _pad(row: list[object]) -> list[object]:
+    """Widen a fixture row to the full source header, leaving 销售类别 blank."""
+    return [*row, *[None] * (len(receipts.RECEIPTS_SOURCE_HEADER) - len(row))]
+
+
 def _write_receipt_source(path: Path, rows: list[list[object]]) -> None:
     workbook = Workbook()
     sheet = workbook.active
     sheet.append(["收款单统计"])
-    sheet.append(["单据号", "日期", "原票号", "摘要", "商品名称"])
+    sheet.append(list(receipts.RECEIPTS_SOURCE_HEADER))
     for row in rows:
-        sheet.append(row)
+        sheet.append(_pad(row))
     workbook.save(path)
     workbook.close()
 
@@ -134,11 +139,11 @@ class ReadReceiptRowsTest(unittest.TestCase):
             self.assertEqual(
                 rows,
                 [
-                    ["单据号", "日期", "原票号", "摘要", "商品名称"],
-                    ["收款ZH0001", "2026-01-24", None, None, "海尔冰箱"],
-                    [None, None, None, None, None],
-                    ["收款ZH0002", "2026-01-25", None, None, "美的空调"],
-                    ["合计", "合计", None, None, None],
+                    list(receipts.RECEIPTS_SOURCE_HEADER),
+                    _pad(["收款ZH0001", "2026-01-24", None, None, "海尔冰箱"]),
+                    _pad([None, None, None, None, None]),
+                    _pad(["收款ZH0002", "2026-01-25", None, None, "美的空调"]),
+                    _pad(["合计", "合计", None, None, None]),
                 ],
             )
 

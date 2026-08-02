@@ -28,7 +28,6 @@ from processors.common.excel import (
 )
 from processors.common.references import validated_reference
 from processors.receipts import OUTPUT_FILE as RECEIPTS_OUTPUT_FILE
-from processors.receipts import RECEIPTS_REMARK_SAME_MODEL_REPLACEMENT
 from processors.submitted import PROFILES as SUBMITTED_PROFILES
 
 from . import matching, sources
@@ -591,7 +590,6 @@ def compute_coupon_data(
             rows,
             remark_lookup,
             "2026家电国补",
-            excluded_remark=RECEIPTS_REMARK_SAME_MODEL_REPLACEMENT,
         )
     )
     detail_lookup, uploaded_subsidy_count, uploaded_subsidy_total = (
