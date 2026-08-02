@@ -16,8 +16,9 @@ def resolve_data_dir() -> Path | None:
     print(f"Created data directory: {current_data_dir}")
     print(
         "Add the required files directly into this directory (no subfolders); "
-        "each project identifies its files by filename keywords. "
-        "See README.md for the exact naming rules."
+        "each project identifies its files by filename keywords: "
+        "MER_<商户编号>_*.xlsx（已上传数据）、收款单统计、销售用券情况统计、"
+        "补贴明细、门店国补上传及回款情况表。"
     )
     print("This run has ended.")
     return None
