@@ -98,7 +98,7 @@ class CouponComputation:
     corrected_count: int
     unresolved_count: int
     correction_collision_count: int
-    reference_decisions: list[tuple[str, str, str, str]]
+    reference_decisions: list[matching.ReferenceDecision]
     summary_rows: list[tuple[object, ...]]
 
 

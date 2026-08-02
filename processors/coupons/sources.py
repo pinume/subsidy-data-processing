@@ -153,6 +153,7 @@ def load_coupon_remark_lookup(source: Path) -> dict[tuple[str, date], str]:
             receipt_date = normalize_coupon_date(
                 row[date_index],
                 row_number,
+                source.name,
             )
             key = (document_number, receipt_date)
             existing_remark = lookup.get(key)
@@ -448,7 +449,9 @@ def read_coupon_export(
                 if row_values[0] is None
                 else str(row_values[0]).replace("收款", "")
             )
-            document_date = normalize_coupon_date(row_values[1], row_number)
+            document_date = normalize_coupon_date(
+                row_values[1], row_number, source.name
+            )
             result_row = [document_number, document_date, *row_values[2:], None, None]
             if profile.normalize_brand:
                 brand = str(result_row[3] or "").strip()

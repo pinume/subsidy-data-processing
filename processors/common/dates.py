@@ -31,20 +31,24 @@ def normalize_receipt_date(value, source_row: int, source_name: str):
     )
 
 
-def normalize_coupon_date(value: object, source_row: int) -> date:
+def normalize_coupon_date(
+    value: object,
+    source_row: int,
+    source_name: str,
+) -> date:
     if isinstance(value, datetime):
         return value.date()
     if isinstance(value, date):
         return value
     text = str(value).strip()
-    for date_format in ("%Y-%m-%d", "%Y/%m/%d", "%Y%m%d"):
+    for date_format in RECEIPT_DATE_FORMATS:
         try:
             return datetime.strptime(text, date_format).date()
         except ValueError:
             continue
     raise ValueError(
-        f"Invalid document date at row {source_row} in "
-        f"subsidy_coupon_statistics.xlsx: {value!r}"
+        f"{source_name} 第 {source_row} 行单据日期格式无效：{value!r}；"
+        "支持 YYYY-MM-DD、YYYY/MM/DD、YYYYMMDD 或 Excel 日期。"
     )
 
 

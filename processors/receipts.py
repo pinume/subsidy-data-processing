@@ -1,10 +1,9 @@
 """收款单统计 (receipt statistics) processing, shared by both projects.
 
 Household appliances and digital both read this same source file and are
-processed with the same rules (same-model replacement plus the special
-remarks in config/receipt_special_remarks.yaml); there has never been a
-digital-specific variant, so this lives at the top level rather than under
-either project's package.
+processed with the same rules; there has never been a digital-specific
+variant, so this lives at the top level rather than under either project's
+package.
 """
 
 from datetime import date, datetime
@@ -14,7 +13,6 @@ from openpyxl import load_workbook
 from python_calamine import CalamineWorkbook
 from xlsxwriter import Workbook
 
-from processors.common.config import load_receipt_special_remark_keys
 from processors.common.dates import (
     is_valid_original_invoice_number,
     normalize_document_number,
@@ -78,13 +76,11 @@ RECEIPTS_REMARK_BOTH = "退换货/倒票（退单及原单）"
 # the subsidy from the report. A later ordinary 退货 naming one of these rows
 # is unaffected: it is a 退单 like any other, and simply gets no 原单 partner.
 RECEIPTS_UNREMARKED_SALE_CATEGORIES = frozenset({"零售补差", "同型号换货"})
-RECEIPTS_REMARK_SPECIAL = r"退换货\倒票"
 RECEIPTS_REMARKS = frozenset(
     {
         RECEIPTS_REMARK_RETURN,
         RECEIPTS_REMARK_ORIGINAL,
         RECEIPTS_REMARK_BOTH,
-        RECEIPTS_REMARK_SPECIAL,
     }
 )
 RECEIPTS_REMARK_ORDER: dict[str | None, int] = {
@@ -92,9 +88,7 @@ RECEIPTS_REMARK_ORDER: dict[str | None, int] = {
     RECEIPTS_REMARK_ORIGINAL: 1,
     RECEIPTS_REMARK_RETURN: 2,
     RECEIPTS_REMARK_BOTH: 3,
-    RECEIPTS_REMARK_SPECIAL: 4,
 }
-RECEIPTS_SPECIAL_REMARK_KEYS = load_receipt_special_remark_keys()
 RECEIPTS_ROW_HEIGHT = 20
 RECEIPTS_REMARK_FILL_COLOR = "FFC7CE"
 # The same colour as openpyxl may report it: bare, alpha-prefixed by the reader,
@@ -227,10 +221,7 @@ def is_receipt_total_row(row: list[object]) -> bool:
 def receipt_remark(
     has_original: bool,
     is_referenced: bool,
-    is_special: bool = False,
 ) -> str | None:
-    if is_special:
-        return RECEIPTS_REMARK_SPECIAL
     if has_original and is_referenced:
         return RECEIPTS_REMARK_BOTH
     if has_original:
@@ -243,14 +234,13 @@ def receipt_remark(
 def _receipt_remark_flags(
     record: dict[str, object],
     referenced_original_invoice_numbers: set[str],
-) -> tuple[bool, bool, bool]:
+) -> tuple[bool, bool]:
     match_key = str(record["match_key"])
     has_original = bool(record["original_invoice_number"])
     is_referenced = bool(
         match_key and match_key in referenced_original_invoice_numbers
     )
-    is_special = match_key in RECEIPTS_SPECIAL_REMARK_KEYS
-    return has_original, is_referenced, is_special
+    return has_original, is_referenced
 
 
 def receipt_output_sort_key(
@@ -348,7 +338,6 @@ def prepare_receipt_data(kept_rows: list[list[object]], source_name: str):
         (
             has_original,
             is_referenced,
-            is_special,
         ) = _receipt_remark_flags(
             record,
             referenced_original_invoice_numbers,
@@ -356,7 +345,6 @@ def prepare_receipt_data(kept_rows: list[list[object]], source_name: str):
         record["remark"] = receipt_remark(
             has_original,
             is_referenced,
-            is_special,
         )
 
     records.sort(
@@ -396,7 +384,6 @@ def prepare_receipt_data(kept_rows: list[list[object]], source_name: str):
     invalid_original_count = 0
     missing_match_key_count = 0
     remark_count = 0
-    special_remark_count = 0
     output_rows: list[list[object]] = []
     for record in records:
         output_row = int(record["output_row"])
@@ -410,8 +397,8 @@ def prepare_receipt_data(kept_rows: list[list[object]], source_name: str):
         is_unremarked = (
             str(record["sale_category"]) in RECEIPTS_UNREMARKED_SALE_CATEGORIES
         )
-        has_original, is_referenced, is_special = (
-            (False, False, False)
+        has_original, is_referenced = (
+            (False, False)
             if is_unremarked
             else _receipt_remark_flags(
                 record,
@@ -468,15 +455,9 @@ def prepare_receipt_data(kept_rows: list[list[object]], source_name: str):
         elif is_referenced:
             only_original_count += 1
 
-        # Counted from the remark actually written, not by re-adding the
-        # three 退单/原单 tallies: a row whose remark comes only from a
-        # special match key belongs to none of them, so summing those three
-        # silently understated the total.
         remark = record["remark"]
         if remark:
             remark_count += 1
-        if is_special:
-            special_remark_count += 1
 
         output_rows.append(
             [
@@ -486,15 +467,6 @@ def prepare_receipt_data(kept_rows: list[list[object]], source_name: str):
             ]
         )
 
-    # Derived from the remarks actually written, not from key_rows: a key
-    # naming a row in an unremarked 销售类别 is present in the file yet never
-    # takes effect, and reporting it as 生效 would hide that the configured
-    # override was dropped.
-    applied_special_keys = {
-        str(record["match_key"])
-        for record in records
-        if record["remark"] == RECEIPTS_REMARK_SPECIAL
-    }
     stats = {
         "总数据量": len(records),
         "删除北国商品行数": excluded_product_count,
@@ -504,17 +476,12 @@ def prepare_receipt_data(kept_rows: list[list[object]], source_name: str):
         "仅原单数量": only_original_count,
         "退单及原单数量": both_count,
         "备注总数": remark_count,
-        "特殊备注数量": special_remark_count,
         "未匹配原票号数量": unmatched_original_count,
         "重复匹配键数量": sum(
             1 for source_rows in key_rows.values() if len(source_rows) > 1
         ),
         "原票号格式异常数量": invalid_original_count,
         "缺少匹配键数量": missing_match_key_count,
-        "生效特殊匹配键": sorted(applied_special_keys),
-        "未生效特殊匹配键": sorted(
-            RECEIPTS_SPECIAL_REMARK_KEYS - applied_special_keys
-        ),
     }
     return output_rows, stats, issues
 
@@ -881,8 +848,7 @@ def process_receipts() -> None:
     )
     print(f"Receipt statistics complete: {row_count} rows")
     print(
-        f"Remarks: {stats['备注总数']} "
-        f"(special: {stats['特殊备注数量']}); "
+        f"Remarks: {stats['备注总数']}; "
         f"unmatched original invoices: {stats['未匹配原票号数量']}; "
         f"duplicate match keys: {stats['重复匹配键数量']}"
     )
@@ -895,16 +861,6 @@ def process_receipts() -> None:
         f"Excluded rows containing "
         f"'{RECEIPTS_EXCLUDED_PRODUCT_KEYWORD}': {stats['删除北国商品行数']}"
     )
-    print(f"Special receipt remarks applied: {len(stats['生效特殊匹配键'])}")
-    # Reported, never fatal: the configured keys are one-off exceptions, and
-    # a run covering a different date range legitimately contains none of
-    # them. Silence would instead hide a key typo'd into never matching, or
-    # one aimed at a row whose 销售类别 is excluded from remarking.
-    if stats["未生效特殊匹配键"]:
-        print(
-            "未生效的特殊匹配键（本次收款单中不存在，或该行的销售类别不做备注"
-            "处理）：" + "、".join(stats["未生效特殊匹配键"])
-        )
     if issues:
         print(f"Issues logged in '{ISSUES_SHEET_NAME}': {len(issues)}")
     else:
