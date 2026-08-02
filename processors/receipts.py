@@ -51,14 +51,14 @@ RECEIPTS_REMARK_SAME_MODEL_REPLACEMENT = "已做同型号换货处理"
 RECEIPTS_REMARK_SPECIAL = r"退换货\倒票"
 RECEIPTS_SPECIAL_REMARK_KEYS = load_receipt_special_remark_keys()
 RECEIPTS_ROW_HEIGHT = 20
-RECEIPTS_DUPLICATE_FILL_COLOR = "FFC7CE"
+RECEIPTS_REMARK_FILL_COLOR = "FFC7CE"
 # The same colour as openpyxl may report it: bare, alpha-prefixed by the reader,
 # or alpha-prefixed by XlsxWriter on the way out.
-RECEIPTS_DUPLICATE_FILL_SPELLINGS = frozenset(
+RECEIPTS_REMARK_FILL_SPELLINGS = frozenset(
     {
-        RECEIPTS_DUPLICATE_FILL_COLOR,
-        f"00{RECEIPTS_DUPLICATE_FILL_COLOR}",
-        f"FF{RECEIPTS_DUPLICATE_FILL_COLOR}",
+        RECEIPTS_REMARK_FILL_COLOR,
+        f"00{RECEIPTS_REMARK_FILL_COLOR}",
+        f"FF{RECEIPTS_REMARK_FILL_COLOR}",
     }
 )
 RECEIPTS_EXCLUDED_PRODUCT_KEYWORD = "北国"
@@ -271,9 +271,8 @@ def prepare_receipt_data(kept_rows: list[list[object]], source_name: str):
 
     # Same-document 烟机+灶具 (and similar kitchen-suite) sales are entered as
     # multiple line items sharing one 单据号/日期, which is expected here, not
-    # a data problem — so it is not reported in 问题明细. duplicate_match_keys
-    # is still returned below for highlighting, and 重复匹配键数量 below still
-    # counts them, just not as issues.
+    # a data problem — so it is neither reported in 问题明细 nor highlighted.
+    # duplicate_match_keys is still returned for the diagnostic count only.
     issues: list[tuple[str, str, str, str]] = []
 
     # 原票号 referencing a sale from a year earlier than anything in this
@@ -487,7 +486,7 @@ def validate_receipts_output(
     workbook = load_workbook(path, read_only=True, data_only=True)
     try:
         expected_sheet_names = (
-            ["Sheet1"] if expected_issues is None else ["Sheet1", ISSUES_SHEET_NAME]
+            ["Sheet1"] if not expected_issues else ["Sheet1", ISSUES_SHEET_NAME]
         )
         if workbook.sheetnames != expected_sheet_names:
             raise RuntimeError(
@@ -521,7 +520,6 @@ def validate_receipts_output(
 
         referenced_original_invoice_numbers: set[str] = set()
         same_model_replacement_original_invoice_numbers: set[str] = set()
-        match_key_counts: dict[str, int] = {}
         snapshots = []
         for row_number, row in enumerate(rows, start=2):
             document_cell, date_cell, original_cell, summary_cell, _, remark_cell = row
@@ -549,7 +547,6 @@ def validate_receipts_output(
                     else date_value,
                     document_number,
                 )
-                match_key_counts[match_key] = match_key_counts.get(match_key, 0) + 1
 
             # openpyxl does not promise a str here: a fill this program wrote
             # yields one, but a theme-coloured cell yields an RGB object that
@@ -558,7 +555,7 @@ def validate_receipts_output(
             # already do it.
             pink_cells = tuple(
                 cell.fill.fill_type == "solid"
-                and cell.fill.fgColor.rgb in RECEIPTS_DUPLICATE_FILL_SPELLINGS
+                and cell.fill.fgColor.rgb in RECEIPTS_REMARK_FILL_SPELLINGS
                 for cell in row
             )
             snapshots.append(
@@ -622,14 +619,14 @@ def validate_receipts_output(
                     f"收款单第 {row_number} 行的备注校验失败"
                 )
 
-            is_duplicate = bool(match_key and match_key_counts[match_key] > 1)
+            should_be_pink = bool(expected_remark)
             for is_pink in pink_cells:
-                if is_pink != is_duplicate:
+                if is_pink != should_be_pink:
                     raise RuntimeError(
-                        f"收款单第 {row_number} 行的重复匹配键标记不正确"
+                        f"收款单第 {row_number} 行的退换货备注填充不正确"
                     )
 
-        if expected_issues is not None:
+        if expected_issues:
             issues_sheet = workbook[ISSUES_SHEET_NAME]
             issues_header = tuple(
                 cell.value for cell in next(issues_sheet.iter_rows(max_row=1))
@@ -662,8 +659,6 @@ def _write_receipts_workbook(
     path: Path,
     output_rows: list[list[object]],
     issues: list[tuple[str, str, str, str]],
-    *,
-    duplicate_match_keys: set[str],
 ) -> None:
     font_name, font_path = resolve_font()
     measurement_font = load_measurement_font(font_path)
@@ -690,7 +685,7 @@ def _write_receipts_workbook(
             }
         )
         body_formats = {}
-        for is_duplicate in (False, True):
+        for has_remark in (False, True):
             for number_format_kind in ("general", "text", "date"):
                 properties = {
                     "font_name": font_name,
@@ -699,13 +694,13 @@ def _write_receipts_workbook(
                     "align": "center",
                     "valign": "vcenter",
                 }
-                if is_duplicate:
-                    properties["bg_color"] = f"#{RECEIPTS_DUPLICATE_FILL_COLOR}"
+                if has_remark:
+                    properties["bg_color"] = f"#{RECEIPTS_REMARK_FILL_COLOR}"
                 if number_format_kind == "text":
                     properties["num_format"] = "@"
                 elif number_format_kind == "date":
                     properties["num_format"] = "yyyymmdd"
-                body_formats[(is_duplicate, number_format_kind)] = (
+                body_formats[(has_remark, number_format_kind)] = (
                     workbook.add_format(properties)
                 )
 
@@ -717,19 +712,7 @@ def _write_receipts_workbook(
 
         for row_number, row in enumerate(output_rows, start=1):
             sheet.set_row(row_number, RECEIPTS_ROW_HEIGHT)
-            document_number = normalize_receipt_identifier(row[0])
-            receipt_date = row[1]
-            row_match_key = (
-                receipt_match_key(
-                    receipt_date.date()
-                    if isinstance(receipt_date, datetime)
-                    else receipt_date,
-                    document_number,
-                )
-                if receipt_date is not None and document_number
-                else ""
-            )
-            is_duplicate = row_match_key in duplicate_match_keys
+            has_remark = row[-1] not in (None, "")
             for column, value in enumerate(row):
                 number_format_kind = (
                     "text"
@@ -742,7 +725,7 @@ def _write_receipts_workbook(
                     row_number,
                     column,
                     value,
-                    body_formats[(is_duplicate, number_format_kind)],
+                    body_formats[(has_remark, number_format_kind)],
                 )
                 maximum_widths[column] = max(maximum_widths[column], measure(value))
 
@@ -754,12 +737,13 @@ def _write_receipts_workbook(
                 pixels_to_column_pixels(maximum_pixels),
             )
 
-        _write_issues_sheet(
-            workbook,
-            issues,
-            font_name,
-            measurement_font,
-        )
+        if issues:
+            _write_issues_sheet(
+                workbook,
+                issues,
+                font_name,
+                measurement_font,
+            )
 
 
 def process_receipts() -> None:
@@ -770,7 +754,7 @@ def process_receipts() -> None:
         )
 
     kept_rows = read_receipt_rows(RECEIPTS_SOURCE_FILE)
-    output_rows, stats, issues, duplicate_match_keys = prepare_receipt_data(
+    output_rows, stats, issues, _duplicate_match_keys = prepare_receipt_data(
         kept_rows, source_name=RECEIPTS_SOURCE_FILE.name
     )
     row_count = len(output_rows)
@@ -780,7 +764,6 @@ def process_receipts() -> None:
             path,
             output_rows,
             issues,
-            duplicate_match_keys=duplicate_match_keys,
         ),
         lambda path: validate_receipts_output(path, row_count, issues),
     )
