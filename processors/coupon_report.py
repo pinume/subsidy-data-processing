@@ -30,6 +30,7 @@ from processors.common.excel import (
 from processors.coupons import appliance, digital, matching, sources, xlsx_output
 from processors.coupons.report_contract import SUMMARY_HEADER, SUMMARY_SHEET_NAME
 from processors.coupons.sources import load_coupon_remark_lookup
+from processors.payment import OUTPUT_FILE as PAYMENT_FILE
 
 # Not unused despite the lack of a local reference: re-exported for
 # store_report.py, which imports SUMMARY_SHEET_NAME/SUMMARY_HEADER from this
@@ -229,6 +230,9 @@ def process_coupon_sales() -> None:
             "家电、数码用券导出格式的 .XLSX 文件"
         )
 
+    payment_reference_locations = sources.load_payment_reference_locations(
+        PAYMENT_FILE
+    )
     source_workbook = CalamineWorkbook.from_path(str(coupon_source))
     try:
         export = sources.read_coupon_export(coupon_source, source_workbook)
@@ -239,11 +243,13 @@ def process_coupon_sales() -> None:
     appliance_computation = appliance.compute_coupon_data(
         rows=export.appliance_rows,
         remark_lookup=remark_lookup,
+        payment_reference_locations=payment_reference_locations["家电"],
         source_total=export.source_total,
     )
     digital_computation = digital.compute_coupon_data(
         rows=export.digital_rows,
         remark_lookup=remark_lookup,
+        payment_reference_locations=payment_reference_locations["数码"],
     )
     extra_summary_rows = digital_extra_summary_rows(digital_computation)
 
@@ -290,6 +296,7 @@ def process_coupon_sales() -> None:
         f"{la.ambiguous_reference_supplement_count}"
     )
     print(f"[家电] Submitted status matches: {la.uploaded_count}")
+    print(f"[家电] Payment status matches: {la.payment_match_count}")
     print(
         "[家电] Rows not found in submitted data (marked 未上传): "
         f"{la.unmatched_count}"
@@ -318,6 +325,7 @@ def process_coupon_sales() -> None:
     )
     print(f"[数码] Remark matches: {dg.matched_count}")
     print(f"[数码] Submitted status matches: {dg.uploaded_match_count}")
+    print(f"[数码] Payment status matches: {dg.payment_match_count}")
     print(
         "[数码] Uploaded subsidy rows used in Summary: "
         f"{dg.uploaded_subsidy_count}; total: {dg.uploaded_subsidy_total:.2f}"

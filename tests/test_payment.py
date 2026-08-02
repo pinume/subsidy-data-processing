@@ -31,18 +31,49 @@ def _write_source(path: Path, profile, category: str, product: str, subsidy: str
 
 
 class DetailProcessingTests(unittest.TestCase):
-    def test_actual_rows_include_data_after_long_blank_run(self) -> None:
-        workbook = Workbook()
-        source = workbook.active
-        source.append(["first"])
-        for _ in range(100):
-            source.append([None])
-        source.append(["last"])
+    def test_non_target_merchant_row_only_reads_the_merchant_field(self) -> None:
+        class CountingRow:
+            def __init__(self, values):
+                self.values = values
+                self.accessed_indexes = []
 
-        rows = list(payment._iter_actual_rows_with_numbers(source))
+            def __len__(self):
+                return len(self.values)
 
-        self.assertEqual([row_number for row_number, _ in rows], [1, 102])
-        self.assertEqual(rows[-1][1][0], "last")
+            def __getitem__(self, index):
+                self.accessed_indexes.append(index)
+                return self.values[index]
+
+        profile = payment.PROFILES["家电"]
+        source_positions = {
+            name: index for index, name in enumerate(profile.detail_headers)
+        }
+        other_values = _detail_row(profile, "A04-空调", "格力空调")
+        other_values[source_positions["商户编号"]] = "OTHER"
+        other_row = CountingRow(other_values)
+
+        rows, unidentified = payment._collect_normalized_detail(
+            ((1, profile.detail_headers), (2, other_row)),
+            "家电明细",
+            profile=profile,
+            merchant_id="ABC123",
+        )
+
+        self.assertEqual(rows, [])
+        self.assertEqual(unidentified, 0)
+        self.assertEqual(
+            other_row.accessed_indexes,
+            [source_positions["商户编号"]],
+        )
+
+    def test_lg_keyword_does_not_match_the_leader_lga2_model(self) -> None:
+        profile = payment.PROFILES["家电"]
+
+        self.assertEqual(
+            payment._extract_brand("统帅空调KFR-35GW/LGA2-1套机", profile),
+            "海尔",
+        )
+        self.assertEqual(payment._extract_brand("LG 空调KFR-35GW", profile), "LG")
 
     def test_source_headers_are_trimmed(self) -> None:
         profile = payment.PROFILES["家电"]
@@ -53,7 +84,7 @@ class DetailProcessingTests(unittest.TestCase):
         target = workbook.create_sheet("target")
 
         rows, unidentified = payment._collect_normalized_detail(
-            payment._iter_actual_rows_with_numbers(source),
+            enumerate(source.iter_rows(min_col=1, values_only=True), 1),
             source.title,
             profile=profile,
             merchant_id="ABC123",
@@ -75,7 +106,7 @@ class DetailProcessingTests(unittest.TestCase):
         target = workbook.create_sheet("target")
 
         rows, unidentified = payment._collect_normalized_detail(
-            payment._iter_actual_rows_with_numbers(source),
+            enumerate(source.iter_rows(min_col=1, values_only=True), 1),
             source.title,
             profile=profile,
             merchant_id="ABC123",
@@ -143,7 +174,7 @@ class DetailProcessingTests(unittest.TestCase):
                         [
                             (
                                 read_only_detail.title,
-                                payment._worksheet_rows(read_only_detail),
+                                read_only_detail.iter_rows(values_only=True),
                             )
                         ]
                     )
@@ -516,7 +547,7 @@ class PaymentPipelineTests(unittest.TestCase):
 
             saved = load_workbook(output_file)
             expected_summary = payment._summary_snapshot(
-                payment._worksheet_rows(saved["汇总"])
+                saved["汇总"].iter_rows(values_only=True)
             )
             saved["汇总"].cell(saved["汇总"].max_row, 3).value = 999
             saved.save(output_file)

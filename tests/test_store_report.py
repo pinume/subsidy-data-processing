@@ -530,6 +530,11 @@ class ProcessStoreReportIntegrationTests(unittest.TestCase):
                 patch.object(store_report, "UPLOAD_FILE", upload_file),
                 patch.object(store_report, "PAYMENT_FILE", payment_file),
                 patch.object(store_report, "OUTPUT_FILE", output_file),
+                patch.object(
+                    store_report,
+                    "resolve_font",
+                    return_value=("Maple Mono NF CN", Path("unused.ttf")),
+                ),
             ):
                 store_report.process_store_report()
 
@@ -555,13 +560,12 @@ class ProcessStoreReportIntegrationTests(unittest.TestCase):
             self.assertEqual(sheet["F51"].value, 2)
             self.assertEqual(sheet["G51"].value, 30)
             self.assertIn("更新时间：", sheet["A1"].value)
-            populated_fonts = {
+            output_fonts = {
                 cell.font.name
                 for row in sheet.iter_rows()
                 for cell in row
-                if cell.value not in (None, "")
             }
-            self.assertEqual(populated_fonts, {store_report.REPORT_FONT_NAME})
+            self.assertEqual(output_fonts, {"Maple Mono NF CN"})
             leftover = [entry.name for entry in output_file.parent.iterdir() if entry.name.startswith(".")]
             self.assertEqual(leftover, [])
 

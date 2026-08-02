@@ -1,13 +1,12 @@
 """Matching logic shared identically in shape by 家电 and 数码 coupon rows.
 
-Both projects' COUPON_OUTPUT_HEADER starts with the same nine columns
+Both projects' COUPON_OUTPUT_HEADER starts with the same ten columns
 (单据号, 单据日期, 商品名称, 品牌, 财务大类, 明细摘要, <subsidy header>, 备注,
-详细情况) — only the subsidy header's text differs, never its position — so
-every function here indexes rows positionally rather than taking a header
-tuple. 家电 additionally excludes a trailing block of rows already pinned to
-the bottom by an earlier pass (reference-supplement matching); 数码 has no
-such block, so it calls the same functions with excluded_bottom_rows=0 (the
-default), not a separate implementation.
+详细情况, 回款情况) — only the subsidy header's text differs, never its
+position — so every function here indexes rows positionally rather than
+taking a header tuple. Both projects exclude the trailing receipt-remark
+block already pinned to the bottom by an earlier pass, instead of maintaining
+separate matching implementations.
 """
 
 import re
@@ -28,6 +27,9 @@ SUMMARY_INDEX = 5
 SUBSIDY_INDEX = 6
 REMARK_INDEX = 7
 DETAIL_INDEX = 8
+PAYMENT_STATUS_INDEX = 9
+UPLOADED_REMARK = "已上传"
+PAID_STATUS = "已回款"
 
 REFERENCE_REPORT_CORRECTED = "已自动纠正"
 REFERENCE_REPORT_UNRESOLVED = "无唯一候选"
@@ -190,22 +192,6 @@ def fill_coupon_remarks(
     return len(matched_rows), matched_subsidy_total, receipt_remark_count
 
 
-def fill_uploaded_details(
-    rows: list[list[object]],
-    detail_lookup: dict[str, str],
-    excluded_bottom_rows: int = 0,
-) -> int:
-    matched_count = 0
-    for row in coupon_data_rows(rows, excluded_bottom_rows):
-        reference = normalize_receipt_identifier(row[SUMMARY_INDEX]).upper()
-        detail = detail_lookup.get(reference, "")
-        row[DETAIL_INDEX] = detail
-        if detail:
-            row[REMARK_INDEX] = "已上传"
-            matched_count += 1
-    return matched_count
-
-
 def reference_decision(
     outcome: str,
     row: list[object],
@@ -313,15 +299,31 @@ def correct_coupon_references(
     return corrected_count, unresolved_count, collision_count, decisions
 
 
-def fill_unmatched_remarks(
+def fill_reference_statuses(
     rows: list[list[object]],
+    detail_lookup: dict[str, str],
     reference_universe: set[str],
+    payment_references: set[str] | frozenset[str],
     excluded_bottom_rows: int = 0,
-) -> int:
+) -> tuple[int, int, int]:
+    """Fill upload and payment results together in one main-detail pass."""
+    uploaded_count = 0
     unmatched_count = 0
+    paid_count = 0
     for row in coupon_data_rows(rows, excluded_bottom_rows):
         reference = normalize_receipt_identifier(row[SUMMARY_INDEX]).upper()
-        if reference not in reference_universe:
+        detail = detail_lookup.get(reference, "")
+        row[DETAIL_INDEX] = detail
+        if detail:
+            row[REMARK_INDEX] = UPLOADED_REMARK
+            uploaded_count += 1
+        elif reference not in reference_universe:
             row[REMARK_INDEX] = "未上传"
             unmatched_count += 1
-    return unmatched_count
+        is_paid = (
+            row[REMARK_INDEX] == UPLOADED_REMARK
+            and reference in payment_references
+        )
+        row[PAYMENT_STATUS_INDEX] = PAID_STATUS if is_paid else None
+        paid_count += int(is_paid)
+    return uploaded_count, unmatched_count, paid_count

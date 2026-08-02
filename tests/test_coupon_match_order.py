@@ -132,11 +132,45 @@ class LargeApplianceMatchOrderTest(unittest.TestCase):
         )
         rows = [list(appliance.COUPON_OUTPUT_HEADER), row]
 
-        count = matching.fill_unmatched_remarks(rows, self.universe, 0)
+        counts = matching.fill_reference_statuses(
+            rows,
+            {},
+            self.universe,
+            set(),
+            0,
+        )
 
         remark_index = appliance.COUPON_OUTPUT_HEADER.index("备注")
-        self.assertEqual(count, 1)
+        self.assertEqual(counts, (0, 1, 0))
         self.assertEqual(row[remark_index], "未上传")
+
+    def test_final_corrected_reference_drives_both_status_matches(self) -> None:
+        target = "12345678901N"
+        row = coupon_row(
+            appliance.COUPON_OUTPUT_HEADER,
+            "12345 678901 N",
+            "004",
+            self.day,
+        )
+        rows = [list(appliance.COUPON_OUTPUT_HEADER), row]
+
+        corrected, _, _, _ = matching.correct_coupon_references(
+            rows,
+            {target},
+        )
+        counts = matching.fill_reference_statuses(
+            rows,
+            {target: "审核通过：同意"},
+            {target},
+            {target},
+        )
+
+        self.assertEqual(corrected, 1)
+        self.assertEqual(counts, (1, 0, 1))
+        self.assertEqual(
+            row[appliance.COUPON_OUTPUT_HEADER.index("回款情况")],
+            "已回款",
+        )
 
 
 class PinkBlockIsLeftAloneTest(unittest.TestCase):

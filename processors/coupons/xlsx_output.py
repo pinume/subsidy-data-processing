@@ -55,13 +55,19 @@ class FormatKey:
 
 
 class CouponFormatCache:
-    """Hands out one XlsxWriter Format per distinct FormatKey."""
+    """Cache formats and text measurements shared by the whole workbook."""
 
     def __init__(self, workbook, font_name: str, fill_color: str) -> None:
         self._workbook = workbook
         self._font_name = font_name
         self._fill_color = fill_color
         self._formats: dict[FormatKey, object] = {}
+        self._width_measure = None
+
+    def get_width_measurer(self, measurement_font):
+        if self._width_measure is None:
+            self._width_measure = width_measurer(measurement_font)
+        return self._width_measure
 
     def get(self, key: FormatKey):
         cached = self._formats.get(key)
@@ -135,7 +141,7 @@ def _write_table(
     left_columns = {
         index for index, name in enumerate(header) if name in left_aligned_headers
     }
-    measure = width_measurer(measurement_font)
+    measure = formats.get_width_measurer(measurement_font)
     maximum_widths = [measure(value) for value in header]
 
     sheet.set_row(0, ROW_HEIGHT)

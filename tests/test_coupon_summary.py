@@ -245,6 +245,25 @@ class CouponSummaryTest(unittest.TestCase):
                             uploaded_subsidy_total=Decimal("0"),
                         )
 
+    def test_group_sheet_inherits_payment_status_from_main_detail(self) -> None:
+        row = summary_row(
+            appliance,
+            category="冰箱",
+            brand="海尔",
+            remark="已上传",
+            detail="审核通过：同意",
+            subsidy=100,
+        )
+        row[appliance.COUPON_OUTPUT_HEADER.index("回款情况")] = "已回款"
+        groups = appliance.build_coupon_group_sheets(
+            [list(appliance.COUPON_OUTPUT_HEADER), row],
+            excluded_bottom_rows=0,
+        )
+
+        grouped_row = appliance.select_coupon_group_columns(groups[0][3][0][0])
+        payment_index = appliance.COUPON_GROUP_HEADER.index("回款情况")
+        self.assertEqual(grouped_row[payment_index], "已回款")
+
 
 class SummarySheetLayoutTest(unittest.TestCase):
     """Cover the sheet builder itself, not just the row computation.
@@ -281,6 +300,8 @@ class SummarySheetLayoutTest(unittest.TestCase):
             remark_lookup={},
             detail_lookup={},
             reference_universe=set(),
+            payment_references=frozenset(),
+            payment_match_count=0,
             reference_supplement_count=0,
             ambiguous_reference_supplement_count=0,
             reference_supplement_matches=Counter(),

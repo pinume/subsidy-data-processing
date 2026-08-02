@@ -119,43 +119,74 @@ class UnremarkedSaleCategoryTest(unittest.TestCase):
                     (0, 0, 0),
                 )
 
-    def test_a_later_return_of_a_replaced_sale_is_a_plain_return(self) -> None:
-        """A 退货 naming one of these rows is a 退单 like any other.
+    def test_later_return_traces_through_unremarked_bridge(self) -> None:
+        """A return through either bridge pairs with the subsidy-bearing original."""
+        for category in ("零售补差", "同型号换货"):
+            with self.subTest(category):
+                kept_rows = [
+                    *self.rows(category),
+                    # 原票号 names the 2026-01-23 bridge: yymmdd + 单据号.
+                    [
+                        "0233000901",
+                        "2026-02-01",
+                        "2601230233000588",
+                        "美的空调",
+                        "退货",
+                    ],
+                ]
 
-        Its 原单 partner stays unremarked — the sale it points at was
-        replaced, not returned — so the return is reported on its own.
-        """
+                output_rows, stats, _issues = prepare(kept_rows)
+
+                self.assertEqual(
+                    {(row[0], row[-1]) for row in output_rows},
+                    {
+                        ("ZFP3000067", receipts.RECEIPTS_REMARK_ORIGINAL),
+                        ("0233000588", None),
+                        ("0233000901", receipts.RECEIPTS_REMARK_RETURN),
+                    },
+                )
+                self.assertEqual(stats["备注总数"], 2)
+                self.assertEqual(
+                    (
+                        stats["仅退单数量"],
+                        stats["仅原单数量"],
+                        stats["退单及原单数量"],
+                    ),
+                    (1, 1, 0),
+                )
+
+    def test_reference_bridge_is_followed_transitively(self) -> None:
         kept_rows = [
-            *self.rows("同型号换货"),
-            # 原票号 names the 2026-01-23 换货 row: yymmdd + 单据号.
+            HEADER,
+            ["ZH3X000025", "2026-04-26", "", "小鸭洗衣机", "正常销售"],
             [
-                "0233000901",
-                "2026-02-01",
-                "2601230233000588",
-                "美的空调",
+                "0233000049",
+                "2026-05-03",
+                "260426ZH3X000025",
+                "小鸭洗衣机",
+                "同型号换货",
+            ],
+            [
+                "0233000077",
+                "2026-05-05",
+                "2605030233000049",
+                "小鸭洗衣机",
                 "退货",
             ],
         ]
 
-        output_rows, stats, _issues = prepare(kept_rows)
+        output_rows, stats, issues = prepare(kept_rows)
 
         self.assertEqual(
             {(row[0], row[-1]) for row in output_rows},
             {
-                ("ZFP3000067", None),
-                ("0233000588", None),
-                ("0233000901", receipts.RECEIPTS_REMARK_RETURN),
+                ("ZH3X000025", receipts.RECEIPTS_REMARK_ORIGINAL),
+                ("0233000049", None),
+                ("0233000077", receipts.RECEIPTS_REMARK_RETURN),
             },
         )
-        self.assertEqual(stats["备注总数"], 1)
-        self.assertEqual(
-            (
-                stats["仅退单数量"],
-                stats["仅原单数量"],
-                stats["退单及原单数量"],
-            ),
-            (1, 0, 0),
-        )
+        self.assertEqual(stats["备注总数"], 2)
+        self.assertEqual(issues, [])
 
     def test_an_ordinary_return_of_the_same_original_still_reports(self) -> None:
         """The exclusion is by 销售类别, not by 原票号: a real 退货 row naming

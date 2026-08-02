@@ -7,7 +7,9 @@ styles or on an Excel reader's worksheet API.
 
 from datetime import date, datetime
 
-from .matching import as_currency
+from processors.common.dates import normalize_receipt_identifier
+
+from .matching import UPLOADED_REMARK, as_currency
 
 
 def validate_detail_rows_shape(
@@ -92,4 +94,42 @@ def validate_matched_subsidy_total(actual_total, expected_total) -> None:
         raise RuntimeError(
             "销售用券匹配行国补合计校验失败："
             f"预期 {expected_total}，实际 {actual_total}"
+        )
+
+
+def validate_payment_statuses(
+    rows: list[list[object]],
+    header: tuple[str, ...],
+    payment_references: set[str] | frozenset[str],
+    excluded_bottom_rows: int,
+    expected_paid_rows: int,
+) -> None:
+    summary_column = header.index("明细摘要")
+    remark_column = header.index("备注")
+    payment_status_column = header.index("回款情况")
+    included_end = len(rows) - excluded_bottom_rows
+    actual_paid_rows = 0
+    for row_index, row in enumerate(rows[1:], start=1):
+        reference = normalize_receipt_identifier(
+            row[summary_column]
+        ).upper()
+        expected_status = (
+            "已回款"
+            if (
+                row_index < included_end
+                and row[remark_column] == UPLOADED_REMARK
+                and reference in payment_references
+            )
+            else ""
+        )
+        actual_status = str(row[payment_status_column] or "")
+        if actual_status != expected_status:
+            raise RuntimeError(
+                f"销售用券第 {row_index + 1} 行回款情况匹配校验失败"
+            )
+        actual_paid_rows += int(actual_status == "已回款")
+    if actual_paid_rows != expected_paid_rows:
+        raise RuntimeError(
+            "销售用券已回款匹配数校验失败："
+            f"预期 {expected_paid_rows} 条，实际 {actual_paid_rows} 条"
         )

@@ -13,6 +13,8 @@ from processors.common.dates import (
     normalize_receipt_date,
 )
 from processors.common.excel import (
+    FALLBACK_FONT_NAME,
+    FONT_NAME,
     load_measurement_font,
     remove_stale_temporary_files,
     resolve_font,
@@ -315,11 +317,11 @@ class ExcelHelpersTest(unittest.TestCase):
             with patch(
                 "processors.common.excel.FONT_CANDIDATES",
                 (
-                    ("Primary", (missing,), ()),
-                    ("Fallback", (existing,), ()),
+                    (FONT_NAME, (missing,), ()),
+                    ("Measurement fallback", (existing,), ()),
                 ),
             ), patch.dict("os.environ", {}, clear=True):
-                self.assertEqual(resolve_font(), ("Fallback", existing))
+                self.assertEqual(resolve_font(), (FALLBACK_FONT_NAME, existing))
 
     def test_resolve_font_searches_font_roots_by_file_name(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -330,12 +332,12 @@ class ExcelHelpersTest(unittest.TestCase):
 
             with patch(
                 "processors.common.excel.FONT_CANDIDATES",
-                (("Candidate", (), ("candidate.ttf",)),),
+                ((FONT_NAME, (), ("candidate.ttf",)),),
             ), patch(
                 "processors.common.excel.FONT_SEARCH_ROOTS",
                 (font_root,),
             ), patch.dict("os.environ", {}, clear=True):
-                self.assertEqual(resolve_font(), ("Candidate", font_path))
+                self.assertEqual(resolve_font(), (FONT_NAME, font_path))
 
     def test_resolve_font_uses_configured_font_path(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

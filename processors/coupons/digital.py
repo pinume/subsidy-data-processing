@@ -25,6 +25,7 @@ from .validation import (
     validate_detail_rows_shape,
     validate_document_and_date_values,
     validate_matched_subsidy_total,
+    validate_payment_statuses,
     validate_remark_and_detail_values,
     validate_uploaded_and_unmatched_counts,
 )
@@ -91,6 +92,8 @@ class CouponComputation:
     remark_lookup: dict[tuple[str, date], str]
     detail_lookup: dict[str, str]
     reference_universe: set[str]
+    payment_references: frozenset[str]
+    payment_match_count: int
     uploaded_subsidy_count: int
     uploaded_subsidy_total: Decimal
     uploaded_match_count: int
@@ -106,6 +109,7 @@ def compute_coupon_data(
     *,
     rows: list[list[object]] | None = None,
     remark_lookup: dict[tuple[str, date], str] | None = None,
+    payment_reference_locations: dict[str, str] | None = None,
 ) -> CouponComputation:
     if sources.COUPON_SOURCE_FILE is None:
         raise FileNotFoundError(
@@ -129,6 +133,13 @@ def compute_coupon_data(
     # Unsubmitted data is no longer supplied, so submitted data is the only
     # source of valid references.
     reference_universe = set(detail_lookup)
+    payment_reference_locations = payment_reference_locations or {}
+    sources.validate_payment_reference_subset(
+        "数码",
+        payment_reference_locations,
+        reference_universe,
+    )
+    payment_references = frozenset(payment_reference_locations)
     (
         corrected_count,
         unresolved_count,
@@ -143,11 +154,14 @@ def compute_coupon_data(
     ) = matching.correct_coupon_references(
         rows, reference_universe, matched_count
     )
-    uploaded_match_count = matching.fill_uploaded_details(
-        rows, detail_lookup, matched_count
-    )
-    unmatched_count = matching.fill_unmatched_remarks(
-        rows, reference_universe, matched_count
+    uploaded_match_count, unmatched_count, payment_match_count = (
+        matching.fill_reference_statuses(
+            rows,
+            detail_lookup,
+            reference_universe,
+            payment_references,
+            matched_count,
+        )
     )
     summary_rows = build_coupon_summary(
         rows,
@@ -168,6 +182,8 @@ def compute_coupon_data(
         remark_lookup=remark_lookup,
         detail_lookup=detail_lookup,
         reference_universe=reference_universe,
+        payment_references=payment_references,
+        payment_match_count=payment_match_count,
         uploaded_subsidy_count=uploaded_subsidy_count,
         uploaded_subsidy_total=uploaded_subsidy_total,
         uploaded_match_count=uploaded_match_count,
@@ -187,10 +203,19 @@ def validate_computation(computation: CouponComputation) -> None:
     expected_matched_subsidy_total = computation.matched_subsidy_total
     detail_lookup = computation.detail_lookup
     reference_universe = computation.reference_universe
+    payment_references = computation.payment_references
+    expected_paid_rows = computation.payment_match_count
 
     rows = computation.rows
     validate_detail_rows_shape(
         rows, COUPON_OUTPUT_HEADER, computation.data_row_count
+    )
+    validate_payment_statuses(
+        rows,
+        COUPON_OUTPUT_HEADER,
+        payment_references,
+        expected_matched_rows,
+        expected_paid_rows,
     )
     detail_column, remark_column = validate_uploaded_and_unmatched_counts(
         rows,
