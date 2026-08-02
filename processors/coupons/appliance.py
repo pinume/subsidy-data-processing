@@ -26,13 +26,13 @@ from processors.common.dates import (
 from processors.common.excel import (
     calamine_rows,
 )
+from processors.common.references import validated_reference
 from processors.receipts import OUTPUT_FILE as RECEIPTS_OUTPUT_FILE
 from processors.receipts import RECEIPTS_REMARK_SAME_MODEL_REPLACEMENT
 from processors.submitted import PROFILES as SUBMITTED_PROFILES
 
 from . import matching, sources
 from .matching import (
-    COUPON_REFERENCE_RE,
     as_currency,
     coupon_data_rows,
 )
@@ -131,13 +131,10 @@ def load_coupon_reference_supplement(
         for row_number, row in enumerate(rows_iter, start=2):
             if all(value in (None, "") for value in row):
                 continue
-            reference = normalize_receipt_identifier(row[0]).upper()
+            reference = validated_reference(
+                row[0], f"{source.name} 第 {row_number} 行"
+            )
             document_number = normalize_document_number(row[1])
-            if not COUPON_REFERENCE_RE.fullmatch(reference):
-                raise ValueError(
-                    f"{source.name} 第 {row_number} 行参考号格式无效："
-                    f"{row[0]!r}"
-                )
             if not document_number:
                 raise ValueError(
                     f"{source.name} 第 {row_number} 行单据号为空"

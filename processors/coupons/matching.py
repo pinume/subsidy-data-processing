@@ -20,8 +20,7 @@ from processors.common.dates import (
     normalize_document_number,
     normalize_receipt_identifier,
 )
-
-COUPON_REFERENCE_RE = re.compile(r"\d{11}[A-Z]")
+from processors.common.references import REFERENCE_RE
 
 DOCUMENT_INDEX = 0
 DATE_INDEX = 1
@@ -60,7 +59,7 @@ def build_reference_correction_index(
     invalid_references = sorted(
         reference
         for reference in references
-        if not COUPON_REFERENCE_RE.fullmatch(reference)
+        if not REFERENCE_RE.fullmatch(reference)
     )
     if invalid_references:
         raise ValueError(
@@ -274,7 +273,7 @@ def correct_coupon_references(
         )
         if len(candidates) != 1:
             unresolved_count += 1
-            if candidates or not COUPON_REFERENCE_RE.fullmatch(raw_reference):
+            if candidates or not REFERENCE_RE.fullmatch(raw_reference):
                 decisions.append(
                     reference_decision(
                         REFERENCE_REPORT_UNRESOLVED,

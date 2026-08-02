@@ -16,7 +16,6 @@ from python_calamine import CalamineWorkbook
 from xlsxwriter import Workbook
 
 from processors.common.config import submitted_file_marker
-from processors.common.dates import normalize_receipt_identifier
 from processors.common.excel import (
     calamine_rows,
     load_measurement_font,
@@ -26,7 +25,7 @@ from processors.common.excel import (
     write_xlsx_atomically,
 )
 from processors.common.paths import find_data_files
-from processors.coupons.matching import COUPON_REFERENCE_RE
+from processors.common.references import normalize_reference, validated_reference
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 OUTPUT_DIR = BASE_DIR / "output"
@@ -77,6 +76,10 @@ class SubmittedReport:
     status_rows: dict[str, list[list[object]]]
     file_count: int
     data_row_count: int
+    # Statuses the export carried that STATUS_ORDER does not name, counted per
+    # status. Those rows reach Summary but no status sheet, so without this
+    # they are invisible to an operator working from the status tabs.
+    unknown_status_counts: dict[str, int]
 
 
 # Household appliances and digital both take 15% of the transaction; the two
@@ -189,10 +192,7 @@ def build_report(profile_name: str) -> SubmittedReport:
     expected_header: list[object] | None = None
     output_header: list[object] | None = None
     reference_column_index: int | None = None
-    status_column_index: int | None = None
-    description_column_index: int | None = None
-    reference_details: dict[str, tuple[str, str, str, int]] = {}
-    row_locations: dict[tuple[object, ...], tuple[str, int]] = {}
+    reference_locations: dict[str, tuple[str, int]] = {}
     data_row_count = 0
     data_rows: list[list[object]] = []
 
@@ -232,8 +232,6 @@ def build_report(profile_name: str) -> SubmittedReport:
                         f"实际字段 {tuple(output_header)}"
                     )
                 reference_column_index = output_header.index("检索参考号")
-                status_column_index = output_header.index("状态")
-                description_column_index = output_header.index("描述")
             elif header != expected_header:
                 raise ValueError(f"{path.name} 的表头与第一个文件不一致")
 
@@ -248,56 +246,24 @@ def build_report(profile_name: str) -> SubmittedReport:
                     source_name=path.name,
                     source_row=source_row,
                 )
-                if (
-                    reference_column_index is None
-                    or status_column_index is None
-                    or description_column_index is None
-                ):
+                if reference_column_index is None:
                     raise RuntimeError("未能定位已上传数据必要字段")
 
-                fingerprint = tuple(output_row)
-                existing_row_location = row_locations.get(fingerprint)
-                if (
-                    existing_row_location is not None
-                    and existing_row_location[0] != path.name
-                ):
-                    existing_name, existing_row = existing_row_location
-                    raise ValueError(
-                        "多个源文件包含完全相同的数据行；"
-                        f"首次出现在 {existing_name} 第 {existing_row} 行，"
-                        f"再次出现在 {path.name} 第 {source_row} 行"
+                raw_reference = output_row[reference_column_index]
+                if normalize_reference(raw_reference):
+                    reference = validated_reference(
+                        raw_reference,
+                        f"{path.name} 第 {source_row} 行",
                     )
-                row_locations.setdefault(fingerprint, (path.name, source_row))
-
-                reference = normalize_receipt_identifier(
-                    output_row[reference_column_index]
-                ).upper()
-                if reference:
-                    if not COUPON_REFERENCE_RE.fullmatch(reference):
+                    existing_location = reference_locations.get(reference)
+                    if existing_location is not None:
+                        existing_name, existing_row = existing_location
                         raise ValueError(
-                            f"{path.name} 第 {source_row} 行检索参考号格式无效："
-                            f"{output_row[reference_column_index]!r}；"
-                            "正确格式应为11位数字后跟一个大写字母"
+                            f"检索参考号重复：{reference}；"
+                            f"首次出现在 {existing_name} 第 {existing_row} 行，"
+                            f"再次出现在 {path.name} 第 {source_row} 行"
                         )
-                    status = str(output_row[status_column_index] or "").strip()
-                    description = str(
-                        output_row[description_column_index] or ""
-                    ).strip()
-                    existing_detail = reference_details.get(reference)
-                    if existing_detail is not None and existing_detail[:2] != (
-                        status,
-                        description,
-                    ):
-                        _, _, existing_name, existing_row = existing_detail
-                        raise ValueError(
-                            f"检索参考号存在冲突：{reference}；"
-                            f"{existing_name} 第 {existing_row} 行与"
-                            f"{path.name} 第 {source_row} 行的状态或描述不一致"
-                        )
-                    reference_details.setdefault(
-                        reference,
-                        (status, description, path.name, source_row),
-                    )
+                    reference_locations[reference] = (path.name, source_row)
 
                 data_rows.append(output_row)
                 data_row_count += 1
@@ -318,10 +284,13 @@ def build_report(profile_name: str) -> SubmittedReport:
     rows_by_status: dict[str, list[list[object]]] = {
         status: [] for status in STATUS_ORDER
     }
+    unknown_status_counts: Counter[str] = Counter()
     for row in data_rows:
         status = str(row[status_column_index] or "")
         if status in rows_by_status:
             rows_by_status[status].append(row)
+        else:
+            unknown_status_counts[status] += 1
 
     for status in STATUS_ORDER:
         status_rows = rows_by_status[status]
@@ -339,6 +308,7 @@ def build_report(profile_name: str) -> SubmittedReport:
         status_rows=rows_by_status,
         file_count=len(files),
         data_row_count=data_row_count,
+        unknown_status_counts=dict(unknown_status_counts),
     )
 
 
@@ -412,26 +382,21 @@ def validate_output(path: Path, expected_data_rows: int, profile_name: str) -> N
         subsidy_column = header.index("补贴金额")
         reference_column = header.index("检索参考号")
 
-        reference_details: dict[str, tuple[str, str]] = {}
+        seen_references: dict[str, int] = {}
         for row_number, row in enumerate(summary_rows[1:], start=2):
-            reference = normalize_receipt_identifier(
-                row[reference_column]
-            ).upper()
-            if reference:
-                if not COUPON_REFERENCE_RE.fullmatch(reference):
-                    raise RuntimeError(
-                        f"Summary 第 {row_number} 行检索参考号格式无效"
-                    )
-                detail = (
-                    str(row[status_column] or "").strip(),
-                    str(row[description_column] or "").strip(),
+            if normalize_reference(row[reference_column]):
+                reference = validated_reference(
+                    row[reference_column],
+                    f"Summary 第 {row_number} 行",
+                    error_type=RuntimeError,
                 )
-                existing_detail = reference_details.get(reference)
-                if existing_detail is not None and existing_detail != detail:
+                first_row = seen_references.get(reference)
+                if first_row is not None:
                     raise RuntimeError(
-                        f"Summary 第 {row_number} 行检索参考号存在冲突：{reference}"
+                        f"Summary 第 {row_number} 行检索参考号重复：{reference}；"
+                        f"首次出现在第 {first_row} 行"
                     )
-                reference_details.setdefault(reference, detail)
+                seen_references[reference] = row_number
 
             amount = row[amount_column]
             subsidy = row[subsidy_column]
@@ -534,6 +499,24 @@ def process_submitted_files(profile_name: str) -> None:
         "Submitted data complete: "
         f"merged {report.file_count} files, {report.data_row_count} rows"
     )
+    # Reported, never fatal: an unrecognised status is still uploaded data and
+    # belongs in Summary; it just has no status sheet of its own, so silence
+    # would hide it from an operator reading the status tabs. A status new to
+    # this program shows up here rather than as a row count that does not add
+    # up.
+    if report.unknown_status_counts:
+        unknown_total = sum(report.unknown_status_counts.values())
+        detail = "、".join(
+            f"{status or '(空)'}×{count}"
+            for status, count in sorted(
+                report.unknown_status_counts.items(),
+                key=lambda item: (-item[1], item[0]),
+            )
+        )
+        print(
+            f"未归入状态工作表的行：{unknown_total}（仅在 Summary 中）；"
+            f"状态为 {detail}"
+        )
     print(f"Output file: {output_file}")
 
 

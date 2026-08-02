@@ -24,11 +24,13 @@ from processors.common.config import load_brand_mapping
 from processors.common.dates import (
     normalize_coupon_date,
     normalize_document_number,
-    normalize_receipt_identifier,
 )
 from processors.common.excel import calamine_rows
 from processors.common.paths import find_data_files, resolve_unique_file
-from processors.coupons.matching import COUPON_REFERENCE_RE
+from processors.common.references import (
+    normalize_reference,
+    validated_reference,
+)
 
 BASE_DIR = Path(__file__).resolve().parent.parent.parent
 OUTPUT_DIR = BASE_DIR / "output"
@@ -197,16 +199,12 @@ def load_uploaded_summary(source: Path) -> tuple[dict[str, str], int, Decimal]:
         subsidy_count = 0
         subsidy_total = Decimal("0")
         for row_number, row in enumerate(rows_iter, start=2):
-            reference = normalize_receipt_identifier(
-                row[reference_index]
-            ).upper()
+            reference = normalize_reference(row[reference_index])
             if reference:
-                if not COUPON_REFERENCE_RE.fullmatch(reference):
-                    raise ValueError(
-                        f"{source.name} 第 {row_number} 行检索参考号格式无效："
-                        f"{row[reference_index]!r}；"
-                        "正确格式应为11位数字后跟一个大写字母"
-                    )
+                validated_reference(
+                    row[reference_index],
+                    f"{source.name} 第 {row_number} 行",
+                )
                 status = str(row[status_index] or "").strip()
                 description = str(row[description_index] or "").strip()
                 detail = f"{status}：{description}"

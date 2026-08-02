@@ -366,6 +366,42 @@ class SubmittedRowValidationTest(unittest.TestCase):
             submitted.configure_data_dir(data_dir)
             return submitted.build_report(profile_name)
 
+    def test_unknown_statuses_are_counted_not_dropped(self) -> None:
+        """核销成功 and 待同步 appear in real exports but have no status sheet.
+
+        Such rows still belong in Summary, so they must be reported rather
+        than silently missing from every status tab.
+        """
+        rows = []
+        for status, count in (("核销成功", 2), ("待同步", 1), ("", 1)):
+            for index in range(count):
+                row = submitted_row(
+                    SUBMITTED_HEADER,
+                    reference=f"1234567890{len(rows)}A",
+                )
+                row[column_index_from_string(STATUS_COLUMN) - 1] = status
+                rows.append(row)
+        rows.append(submitted_row(SUBMITTED_HEADER, reference="12345678999A"))
+
+        report = self.build_from_rows(rows)
+
+        self.assertEqual(report.data_row_count, 5)
+        self.assertEqual(
+            report.unknown_status_counts,
+            {"核销成功": 2, "待同步": 1, "": 1},
+        )
+        # The known-status row is the only one reaching a status sheet, but
+        # every row is still carried in Summary.
+        self.assertEqual(len(report.summary_rows), 5)
+        self.assertEqual(
+            sum(len(rows) for rows in report.status_rows.values()), 1
+        )
+
+    def test_no_unknown_statuses_reports_nothing(self) -> None:
+        report = self.build_from_rows([submitted_row(SUBMITTED_HEADER)])
+
+        self.assertEqual(report.unknown_status_counts, {})
+
     def test_invalid_reference_reports_source_location(self) -> None:
         row = submitted_row(SUBMITTED_HEADER, reference="not-valid")
 
@@ -391,38 +427,69 @@ class SubmittedRowValidationTest(unittest.TestCase):
         self.assertEqual(report.data_row_count, 0)
         self.assertEqual(report.summary_rows, [])
 
-    def test_same_reference_with_same_detail_is_allowed(self) -> None:
-        first = submitted_row(SUBMITTED_HEADER)
-        second = submitted_row(SUBMITTED_HEADER)
-        second[column_index_from_string("D") - 1] = "另一条商品明细"
+    def test_repeated_reference_is_rejected_however_the_rows_differ(self) -> None:
+        """检索参考号 is one per row in every real export, so a repeat is a
+        duplicate no matter which other fields happen to differ."""
+        variants = {
+            "完全相同": lambda row: row,
+            "商品明细不同": lambda row: self._with(row, "D", "另一条商品明细"),
+            "描述不同": lambda row: self._with(row, DESCRIPTION_COLUMN, "另一种说明"),
+        }
+        for label, vary in variants.items():
+            with self.subTest(label):
+                first = submitted_row(SUBMITTED_HEADER)
+                second = vary(submitted_row(SUBMITTED_HEADER))
 
-        report = self.build_from_rows([first, second])
+                with self.assertRaisesRegex(
+                    ValueError,
+                    r"检索参考号重复：12345678901A.*第 3 行.*第 4 行",
+                ):
+                    self.build_from_rows([first, second])
+
+    @staticmethod
+    def _with(row: list[object], column: str, value: object) -> list[object]:
+        row[column_index_from_string(column) - 1] = value
+        return row
+
+    def test_blank_references_do_not_collide(self) -> None:
+        """A blank reference is tolerated, so several of them must not read as
+        repeats of each other."""
+        rows = [
+            submitted_row(SUBMITTED_HEADER, reference=None),
+            submitted_row(SUBMITTED_HEADER, reference=""),
+        ]
+
+        report = self.build_from_rows(rows)
 
         self.assertEqual(report.data_row_count, 2)
 
-    def test_same_reference_with_conflicting_detail_is_rejected(self) -> None:
-        first = submitted_row(SUBMITTED_HEADER)
-        second = submitted_row(SUBMITTED_HEADER)
-        second[column_index_from_string(DESCRIPTION_COLUMN) - 1] = "另一种说明"
+    def test_overlapping_exports_are_rejected_by_reference(self) -> None:
+        """Two exports covering an overlapping period repeat whole records.
 
-        with self.assertRaisesRegex(ValueError, "检索参考号存在冲突"):
-            self.build_from_rows([first, second])
-
-    def test_duplicate_row_across_files_is_rejected(self) -> None:
+        The repeated rows are matched on 检索参考号 rather than on the row as a
+        whole, so an incidental difference between the two exports — here a
+        reformatted 交易金额 — cannot smuggle the duplicate past the check and
+        double-count its subsidy.
+        """
         profile_name = "家电"
+        rows = {
+            "first": submitted_row(SUBMITTED_HEADER),
+            "second": self._with(submitted_row(SUBMITTED_HEADER), AMOUNT_COLUMN, 1000.0),
+        }
         with tempfile.TemporaryDirectory() as directory:
             data_dir = Path(directory)
             marker = submitted_file_marker(profile_name)
-            for suffix in ("first", "second"):
+            for suffix, row in rows.items():
                 write_submitted_source(
                     data_dir / f"{marker}_{suffix}.xlsx",
                     SUBMITTED_HEADER,
+                    [row],
                 )
             submitted.configure_data_dir(data_dir)
 
             with self.assertRaisesRegex(
                 ValueError,
-                r"多个源文件包含完全相同的数据行.*first\.xlsx 第 3 行.*second\.xlsx 第 3 行",
+                r"检索参考号重复.*first\.xlsx 第 3 行.*second\.xlsx 第 3 行",
             ):
                 submitted.build_report(profile_name)
 
