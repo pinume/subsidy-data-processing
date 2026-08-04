@@ -53,21 +53,51 @@ class ConsoleReporter:
 
     warning_count/failure_count are accumulated on the instance so the final
     summary can state them; two instances never share state.
+
+    The output channels are deliberately distinct:
+    - metric(): normal statistics, always shown (待同步 count, 北国 count)
+    - detail(): traceability lines shown only when verbose is on; never a
+      warning, never counted
+    - warning(): things a human should look at; counted in the summary
+    - error(): a failed step, written to the error stream
     """
 
-    def __init__(self, stream=None, error_stream=None) -> None:
+    def __init__(
+        self,
+        stream=None,
+        error_stream=None,
+        *,
+        verbose: bool = False,
+    ) -> None:
         self.stream = stream if stream is not None else sys.stdout
         self.error_stream = (
             error_stream if error_stream is not None else sys.stderr
         )
+        self.verbose = verbose
         self.warning_count = 0
         self.failure_count = 0
 
     def step_start(self, index: int, total: int, label: str) -> None:
-        print(f"[{index}/{total}] {label}", file=self.stream)
+        # Trailing blank line keeps the stage block from gluing onto the
+        # metrics that follow.
+        print(f"[{index}/{total}] 处理{label}\n", file=self.stream)
 
     def metric(self, label: str, value: object = "") -> None:
-        print(f"{label}  {value}", file=self.stream)
+        print(f"{label}：{value}", file=self.stream)
+
+    def detail(self, title: str, lines: tuple[str, ...] = ()) -> None:
+        """Traceability block, shown only when verbose is on.
+
+        Not a warning: normal processing can carry source locations without
+        alarming anyone or inflating the summary's warning count.
+        """
+        if not self.verbose:
+            return
+        print(f"[明细] {title}", file=self.stream)
+        for line in lines:
+            print(f"{INDENT}{line}", file=self.stream)
+        # Blank line so the next block never glues onto the last detail row.
+        print(file=self.stream)
 
     def warning(self, title: str, details: tuple[str, ...] = ()) -> None:
         self.warning_count += 1
@@ -79,7 +109,8 @@ class ConsoleReporter:
         print(f"输出  {display_path(path)}", file=self.stream)
 
     def step_success(self, label: str) -> None:
-        print(f"[成功] {label}完成", file=self.stream)
+        suffix = "" if label.endswith("报表") else "报表"
+        print(f"[成功] 已生成{label}{suffix}", file=self.stream)
 
     def run_start(self, total: int) -> None:
         print("全部模式：任一步失败将回滚本次所有输出", file=self.stream)
@@ -93,7 +124,7 @@ class ConsoleReporter:
             file=self.stream,
         )
 
-    def failure(
+    def error(
         self,
         step_label: str | None,
         error: BaseException,

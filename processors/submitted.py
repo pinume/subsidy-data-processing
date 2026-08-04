@@ -547,40 +547,36 @@ def process_submitted_files(
         lambda path: validate_output(path, report.data_row_count, profile_name),
     )
 
-    reporter.metric(
-        profile_name,
-        f"文件 {format_count(report.file_count)} 个｜"
-        f"数据 {format_count(report.data_row_count)} 行",
+    metric_value = (
+        f"{format_count(report.file_count)} 个文件｜"
+        f"{format_count(report.data_row_count)} 行"
     )
-    for file_name in report.deleted_invalid_files:
-        reporter.warning(
-            "已删除无效导出文件（没有工作表）",
-            (f"文件：{file_name}",),
-        )
-    # Reported, never fatal: an unrecognised status is still uploaded data and
-    # belongs in Summary; it just has no status sheet of its own, so silence
-    # would hide it from an operator reading the status tabs. A status new to
-    # this program shows up here rather than as a row count that does not add
-    # up.
     if report.unknown_status_records:
         status_names = "、".join(
             sorted({record.status or "(空)" for record in report.unknown_status_records})
         )
-        record_details = tuple(
+        metric_value += (
+            f"｜{status_names} {format_count(len(report.unknown_status_records))} 行"
+            "（保留在 Summary）"
+        )
+        record_lines = tuple(
             f"源文件 {record.source_name}，源行 {record.source_row}，"
             f"检索参考号 {record.reference or '(空)'}"
             for record in report.unknown_status_records[:10]
         )
         remaining = len(report.unknown_status_records) - 10
         if remaining > 0:
-            record_details = (
-                *record_details,
-                f"其余 {remaining} 行未展开",
-            )
+            record_lines = (*record_lines, f"其余 {remaining} 行未展开")
+        reporter.detail(
+            f"{profile_name}待同步数据："
+            f"{format_count(len(report.unknown_status_records))} 行",
+            record_lines,
+        )
+    reporter.metric(profile_name, metric_value)
+    for file_name in report.deleted_invalid_files:
         reporter.warning(
-            f"{profile_name}有 {format_count(len(report.unknown_status_records))} 行"
-            f"状态为“{status_names}”",
-            ("处理：数据保留在 Summary，未生成独立工作表", *record_details),
+            "已删除无效导出文件（没有工作表）",
+            (f"文件：{file_name}",),
         )
     reporter.output(output_file)
 

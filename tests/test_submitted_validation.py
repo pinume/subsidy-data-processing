@@ -487,19 +487,43 @@ class SubmittedRowValidationTest(unittest.TestCase):
             )
             submitted.configure_data_dir(data_dir)
             output = io.StringIO()
+            reporter = submitted.ConsoleReporter(stream=output, verbose=True)
+            with patch.object(submitted, "write_xlsx_atomically"):
+                submitted.process_submitted_files("数码", reporter)
+
+        # A normal statistic, not a warning: the summary counts it nowhere.
+        self.assertEqual(reporter.warning_count, 0)
+        text = output.getvalue()
+        self.assertIn("数码：1 个文件｜3 行｜待同步 3 行（保留在 Summary）", text)
+        self.assertNotIn("[警告]", text)
+        # Traceability lives in the verbose-only [明细] block.
+        self.assertIn("[明细] 数码待同步数据：3 行", text)
+        self.assertIn("源文件 MER_89813014812B06R_export.xlsx", text)
+        self.assertIn("源行 3", text)
+        self.assertIn("检索参考号 12345678900A", text)
+
+    def test_unknown_status_details_are_hidden_without_verbose(self) -> None:
+        rows = [
+            submitted_row(SUBMITTED_HEADER, reference="12345678900A"),
+        ]
+        rows[0][column_index_from_string(STATUS_COLUMN) - 1] = "待同步"
+        with tempfile.TemporaryDirectory() as directory:
+            data_dir = Path(directory)
+            write_submitted_source(
+                data_dir / f"{submitted_file_marker('数码')}_export.xlsx",
+                SUBMITTED_HEADER,
+                rows,
+            )
+            submitted.configure_data_dir(data_dir)
+            output = io.StringIO()
             reporter = submitted.ConsoleReporter(stream=output)
             with patch.object(submitted, "write_xlsx_atomically"):
                 submitted.process_submitted_files("数码", reporter)
 
-        self.assertEqual(reporter.warning_count, 1)
         text = output.getvalue()
-        self.assertIn("[警告] 数码有 3 行状态为“待同步”", text)
-        self.assertIn("处理：数据保留在 Summary，未生成独立工作表", text)
-        self.assertIn("数码  文件 1 个｜数据 3 行", text)
-        # Title and header occupy source rows 1-2, so the first data row is 3.
-        self.assertIn("源文件 MER_89813014812B06R_export.xlsx", text)
-        self.assertIn("源行 3", text)
-        self.assertIn("检索参考号 12345678900A", text)
+        self.assertIn("待同步 1 行（保留在 Summary）", text)
+        self.assertNotIn("源行", text)
+        self.assertNotIn("[明细]", text)
 
     def test_invalid_reference_reports_source_location(self) -> None:
         row = submitted_row(SUBMITTED_HEADER, reference="not-valid")

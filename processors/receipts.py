@@ -908,27 +908,16 @@ def process_receipts(reporter: ConsoleReporter) -> None:
         lambda path: validate_receipts_output(path, output_rows, issues),
     )
 
-    reporter.metric("有效数据", f"{format_count(row_count)} 行")
-    reporter.metric(
-        "退换货备注",
-        f"{format_count(stats['备注总数'])} 行",
-    )
     excluded_records = stats["北国剔除明细"]
     reporter.metric(
-        "北国商品剔除",
-        f"{format_count(len(excluded_records))} 行",
+        "原始数据",
+        f"{format_count(row_count + len(excluded_records))} 行",
     )
     reporter.metric(
-        "重复匹配键",
-        f"{format_count(stats['重复匹配键数量'])} 个",
+        "北国商品",
+        f"按业务规则剔除 {format_count(len(excluded_records))} 行",
     )
-    reporter.metric("问题明细", f"{format_count(len(issues))} 条")
-    if stats["跳过空白行数"] or stats["跳过合计行数"]:
-        reporter.metric(
-            "跳过行",
-            f"空白 {format_count(stats['跳过空白行数'])} 行｜"
-            f"合计 {format_count(stats['跳过合计行数'])} 行",
-        )
+    reporter.metric("有效数据", f"{format_count(row_count)} 行")
     if excluded_records:
         examples = tuple(
             f"源第 {record.source_row} 行，单据号 "
@@ -939,9 +928,9 @@ def process_receipts(reporter: ConsoleReporter) -> None:
         remaining = len(excluded_records) - 10
         if remaining > 0:
             examples = (*examples, f"其余 {remaining} 行未展开")
-        reporter.warning(
-            f"商品名称含“{RECEIPTS_EXCLUDED_PRODUCT_KEYWORD}”的 "
-            f"{format_count(len(excluded_records))} 行已按业务规则剔除",
+        reporter.detail(
+            f"按业务规则剔除“{RECEIPTS_EXCLUDED_PRODUCT_KEYWORD}”商品："
+            f"{format_count(len(excluded_records))} 行",
             examples,
         )
     if issues:

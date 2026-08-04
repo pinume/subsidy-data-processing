@@ -100,7 +100,7 @@ def process_all(
             try:
                 processor(reporter)
             except BaseException as error:
-                reporter.failure(
+                reporter.error(
                     step_label,
                     error,
                     "本次输出已回滚，原文件保持不变",
@@ -157,7 +157,9 @@ def choose_data_processor() -> ProcessorSelection | None:
 
 
 def main() -> int:
-    reporter = ConsoleReporter()
+    reporter = ConsoleReporter(
+        verbose=os.environ.get("UPLOAD_DATA_VERBOSE") == "1"
+    )
     try:
         data_dir = resolve_data_dir()
         if data_dir is None:
@@ -194,7 +196,7 @@ def main() -> int:
         print("\n处理已取消", file=sys.stderr)
         return 130
     except Exception as error:
-        reporter.failure(
+        reporter.error(
             None,
             error,
             "现有输出文件保持不变，请检查配置或源文件后重试",
@@ -218,7 +220,7 @@ def main() -> int:
         # The all mode already reported the failing step (with the rollback
         # remedy) inside process_all; single mode reports it here.
         if not selection.is_all:
-            reporter.failure(
+            reporter.error(
                 selection.step_label,
                 error,
                 "现有输出文件保持不变，请检查源文件后重试",

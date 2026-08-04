@@ -135,13 +135,13 @@ class MainErrorHandlingTest(unittest.TestCase):
                     side_effect=ValueError("bad config"),
                 ),
                 patch.object(
-                    app_main.ConsoleReporter, "failure"
-                ) as failure,
+                    app_main.ConsoleReporter, "error"
+                ) as error,
             ):
                 self.assertEqual(app_main.main(), 1)
 
-            failure.assert_called_once()
-            self.assertEqual(str(failure.call_args.args[1]), "bad config")
+            error.assert_called_once()
+            self.assertEqual(str(error.call_args.args[1]), "bad config")
 
 
 if __name__ == "__main__":

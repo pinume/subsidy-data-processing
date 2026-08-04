@@ -45,15 +45,33 @@ class FormattingTests(unittest.TestCase):
 
 
 class ConsoleReporterTests(unittest.TestCase):
-    def test_step_start_prints_stage_line(self) -> None:
+    def test_step_start_prints_stage_line_with_blank_line(self) -> None:
         reporter = ConsoleReporter(stream=io.StringIO())
         reporter.step_start(1, 5, "已上传数据")
-        self.assertEqual(reporter.stream.getvalue(), "[1/5] 已上传数据\n")
+        self.assertEqual(reporter.stream.getvalue(), "[1/5] 处理已上传数据\n\n")
 
     def test_metric_prints_label_and_value(self) -> None:
         reporter = ConsoleReporter(stream=io.StringIO())
-        reporter.metric("家电", "7,862 行｜已上传 3,970")
-        self.assertEqual(reporter.stream.getvalue(), "家电  7,862 行｜已上传 3,970\n")
+        reporter.metric("家电", "8 个文件｜4,125 行")
+        self.assertEqual(reporter.stream.getvalue(), "家电：8 个文件｜4,125 行\n")
+
+    def test_detail_is_silent_by_default_and_never_counts(self) -> None:
+        reporter = ConsoleReporter(stream=io.StringIO())
+        reporter.detail("按业务规则剔除“北国”商品：2 行", ("源第 3 行",))
+        self.assertEqual(reporter.stream.getvalue(), "")
+        self.assertEqual(reporter.warning_count, 0)
+
+    def test_detail_shows_only_in_verbose_mode(self) -> None:
+        reporter = ConsoleReporter(stream=io.StringIO(), verbose=True)
+        reporter.detail("数码待同步数据：2 行", ("源文件 a.xlsx，源行 3", "其余 0 行"))
+        self.assertEqual(
+            reporter.stream.getvalue(),
+            "[明细] 数码待同步数据：2 行\n"
+            "       源文件 a.xlsx，源行 3\n"
+            "       其余 0 行\n"
+            "\n",
+        )
+        self.assertEqual(reporter.warning_count, 0)
 
     def test_warning_counts_and_prints_block(self) -> None:
         reporter = ConsoleReporter(stream=io.StringIO())
@@ -70,6 +88,22 @@ class ConsoleReporterTests(unittest.TestCase):
         self.assertEqual(
             reporter.stream.getvalue(),
             f"输出  {os.path.join('output', '回款明细.xlsx')}\n",
+        )
+
+    def test_step_success_mentions_the_report(self) -> None:
+        reporter = ConsoleReporter(stream=io.StringIO())
+        reporter.step_success("已上传数据")
+        self.assertEqual(
+            reporter.stream.getvalue(),
+            "[成功] 已生成已上传数据报表\n",
+        )
+
+    def test_step_success_does_not_double_the_report_word(self) -> None:
+        reporter = ConsoleReporter(stream=io.StringIO())
+        reporter.step_success("门店报表")
+        self.assertEqual(
+            reporter.stream.getvalue(),
+            "[成功] 已生成门店报表\n",
         )
 
     def test_run_success_single_mode_has_no_transaction_line(self) -> None:
@@ -94,12 +128,12 @@ class ConsoleReporterTests(unittest.TestCase):
             "全部模式：任一步失败将回滚本次所有输出\n",
         )
 
-    def test_failure_goes_to_the_error_stream_and_counts(self) -> None:
+    def test_error_goes_to_the_error_stream_and_counts(self) -> None:
         reporter = ConsoleReporter(
             stream=io.StringIO(),
             error_stream=io.StringIO(),
         )
-        reporter.failure("审核明细", ValueError("坏了"), "本次输出已回滚，原文件保持不变")
+        reporter.error("审核明细", ValueError("坏了"), "本次输出已回滚，原文件保持不变")
         self.assertEqual(reporter.failure_count, 1)
         self.assertEqual(reporter.stream.getvalue(), "")
         self.assertEqual(
@@ -109,9 +143,9 @@ class ConsoleReporterTests(unittest.TestCase):
             "       处理：本次输出已回滚，原文件保持不变\n",
         )
 
-    def test_failure_without_a_step_label(self) -> None:
+    def test_error_without_a_step_label(self) -> None:
         reporter = ConsoleReporter(error_stream=io.StringIO())
-        reporter.failure(None, ValueError("配置错误"), "请检查配置")
+        reporter.error(None, ValueError("配置错误"), "请检查配置")
         self.assertIn("[失败] 处理失败\n", reporter.error_stream.getvalue())
 
     def test_instances_do_not_share_state(self) -> None:

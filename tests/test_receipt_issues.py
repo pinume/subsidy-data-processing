@@ -112,13 +112,46 @@ class PrepareReceiptDataIssuesTest(unittest.TestCase):
         )
 
     def test_beiguo_warning_names_rows_and_caps_examples(self) -> None:
-        """The warning shows up to 10 examples and reports the remainder."""
+        """The exclusion is a normal statistic by default; source locations
+        are traceable in verbose mode with up to 10 examples."""
         kept_rows = [
             HEADER,
             *[
                 ["ZH%04d" % index, "2026-01-24", "", "北国%d" % index]
                 for index in range(12)
             ],
+        ]
+        output = io.StringIO()
+        reporter = receipts.ConsoleReporter(stream=output, verbose=True)
+        with patch.object(
+            receipts, "read_receipt_rows", return_value=kept_rows
+        ), patch.object(
+            receipts,
+            "RECEIPTS_SOURCE_FILE",
+            Path("收款单统计.xlsx"),
+            create=True,
+        ), patch.object(
+            receipts, "write_xlsx_atomically"
+        ):
+            receipts.process_receipts(reporter)
+
+        # Normal statistics: no [警告], nothing counted.
+        self.assertEqual(reporter.warning_count, 0)
+        text = output.getvalue()
+        self.assertIn("[明细] 按业务规则剔除“北国”商品：12 行", text)
+        self.assertIn("源第 3 行，单据号 ZH0000，商品名称 北国0", text)
+        self.assertIn("源第 12 行，单据号 ZH0009，商品名称 北国9", text)
+        self.assertIn("其余 2 行未展开", text)
+        self.assertNotIn("北国10", text)  # beyond the 10-example cap
+        self.assertNotIn("[警告]", text)
+        self.assertIn("原始数据：12 行", text)
+        self.assertIn("北国商品：按业务规则剔除 12 行", text)
+        self.assertIn("有效数据：0 行", text)
+
+    def test_beiguo_details_are_hidden_without_verbose(self) -> None:
+        kept_rows = [
+            HEADER,
+            ["ZH0001", "2026-01-24", "", "北国电器"],
         ]
         output = io.StringIO()
         reporter = receipts.ConsoleReporter(stream=output)
@@ -134,18 +167,11 @@ class PrepareReceiptDataIssuesTest(unittest.TestCase):
         ):
             receipts.process_receipts(reporter)
 
-        self.assertEqual(reporter.warning_count, 1)
         text = output.getvalue()
-        self.assertIn(
-            "[警告] 商品名称含“北国”的 12 行已按业务规则剔除",
-            text,
-        )
-        self.assertIn("源第 3 行，单据号 ZH0000，商品名称 北国0", text)
-        self.assertIn("源第 12 行，单据号 ZH0009，商品名称 北国9", text)
-        self.assertIn("其余 2 行未展开", text)
-        self.assertNotIn("北国10", text)  # beyond the 10-example cap
-        self.assertIn("有效数据  0 行", text)
-        self.assertIn("北国商品剔除  12 行", text)
+        self.assertIn("北国商品：按业务规则剔除 1 行", text)
+        self.assertNotIn("源第", text)
+        self.assertNotIn("[明细]", text)
+        self.assertNotIn("[警告]", text)
 
 
 class UnremarkedSaleCategoryTest(unittest.TestCase):
