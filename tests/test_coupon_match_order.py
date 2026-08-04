@@ -54,7 +54,7 @@ class LargeApplianceMatchOrderTest(unittest.TestCase):
         rows = [list(appliance.COUPON_OUTPUT_HEADER), row]
         supplement = {("001", self.day): frozenset({SUPPLEMENT_REFERENCE})}
 
-        matched, ambiguous, row_ids, _ = (
+        matched, ambiguous, row_ids, _, _ = (
             appliance.fill_coupon_reference_supplement(
                 rows,
                 supplement,
@@ -75,7 +75,7 @@ class LargeApplianceMatchOrderTest(unittest.TestCase):
         rows = [list(appliance.COUPON_OUTPUT_HEADER), row]
         supplement = {("001", self.day): frozenset({SUPPLEMENT_REFERENCE})}
 
-        _, _, protected_row_ids, _ = (
+        _, _, protected_row_ids, _, _ = (
             appliance.fill_coupon_reference_supplement(
                 rows,
                 supplement,
@@ -104,7 +104,7 @@ class LargeApplianceMatchOrderTest(unittest.TestCase):
         )
         rows = [list(appliance.COUPON_OUTPUT_HEADER), row]
 
-        _, _, protected_row_ids, _ = (
+        _, _, protected_row_ids, _, _ = (
             appliance.fill_coupon_reference_supplement(
                 rows,
                 {},

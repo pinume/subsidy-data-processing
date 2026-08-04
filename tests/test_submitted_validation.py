@@ -1,5 +1,7 @@
+import io
 import tempfile
 import unittest
+from contextlib import redirect_stdout
 from datetime import date
 from decimal import Decimal
 from pathlib import Path
@@ -432,6 +434,35 @@ class SubmittedRowValidationTest(unittest.TestCase):
             report.unknown_status_counts,
             {"核销成功": 2, "待同步": 1, "": 1},
         )
+        self.assertEqual(
+            report.unknown_status_records,
+            (
+                submitted.UnknownStatusRecord(
+                    "MER_89813015722APT1_export.xlsx",
+                    3,
+                    "12345678900A",
+                    "核销成功",
+                ),
+                submitted.UnknownStatusRecord(
+                    "MER_89813015722APT1_export.xlsx",
+                    4,
+                    "12345678901A",
+                    "核销成功",
+                ),
+                submitted.UnknownStatusRecord(
+                    "MER_89813015722APT1_export.xlsx",
+                    5,
+                    "12345678902A",
+                    "待同步",
+                ),
+                submitted.UnknownStatusRecord(
+                    "MER_89813015722APT1_export.xlsx",
+                    6,
+                    "12345678903A",
+                    "",
+                ),
+            ),
+        )
         # The known-status row is the only one reaching a status sheet, but
         # every row is still carried in Summary.
         self.assertEqual(len(report.summary_rows), 5)
@@ -443,6 +474,37 @@ class SubmittedRowValidationTest(unittest.TestCase):
         report = self.build_from_rows([submitted_row(SUBMITTED_HEADER)])
 
         self.assertEqual(report.unknown_status_counts, {})
+
+    def test_unknown_status_warning_names_count_and_sources(self) -> None:
+        rows = []
+        for reference in ("12345678900A", "12345678901A", "12345678902A"):
+            row = submitted_row(SUBMITTED_HEADER, reference=reference)
+            row[column_index_from_string(STATUS_COLUMN) - 1] = "待同步"
+            rows.append(row)
+        with tempfile.TemporaryDirectory() as directory:
+            data_dir = Path(directory)
+            write_submitted_source(
+                data_dir / f"{submitted_file_marker('数码')}_export.xlsx",
+                SUBMITTED_HEADER,
+                rows,
+            )
+            submitted.configure_data_dir(data_dir)
+            output = io.StringIO()
+            with patch.object(
+                submitted, "write_xlsx_atomically"
+            ), redirect_stdout(output):
+                submitted.process_submitted_files("数码")
+
+        text = output.getvalue()
+        self.assertIn("[数码] 警告：3 行", text)
+        self.assertIn("状态为 待同步×3", text)
+        self.assertIn("未配置独立工作表", text)
+        self.assertIn("数据已保留在 Summary，未被删除", text)
+        # Title and header occupy source rows 1-2, so the first data row is 3.
+        self.assertIn("源文件 MER_89813014812B06R_export.xlsx", text)
+        self.assertIn("源行 3", text)
+        self.assertIn("检索参考号 12345678900A", text)
+        self.assertIn("状态 待同步", text)
 
     def test_invalid_reference_reports_source_location(self) -> None:
         row = submitted_row(SUBMITTED_HEADER, reference="not-valid")

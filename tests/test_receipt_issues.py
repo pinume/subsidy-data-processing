@@ -1,7 +1,10 @@
+import io
 import tempfile
 import unittest
+from contextlib import redirect_stdout
 from datetime import date
 from pathlib import Path
+from unittest.mock import patch
 
 from openpyxl import load_workbook
 
@@ -82,6 +85,64 @@ class PrepareReceiptDataIssuesTest(unittest.TestCase):
 
         self.assertEqual(issues, [])
         self.assertEqual(stats["重复匹配键数量"], 1)
+
+    def test_beiguo_rows_are_excluded_and_recorded_not_issued(self) -> None:
+        """北国 rows keep being dropped — from the output, from remark
+        matching, and from 问题明细 — while their source locations are
+        recorded for the console warning."""
+        kept_rows = [
+            HEADER,
+            ["ZH0001", "2026-01-24", "", "海尔冰箱"],
+            ["ZH0002", "2026-01-25", "", "北国电器"],
+            ["ZH0003", "2026-01-26", "", "美的空调"],
+            ["ZH0004", "2026-01-27", "", "北国商城电视"],
+        ]
+
+        output_rows, stats, issues = prepare(kept_rows)
+
+        self.assertEqual([row[0] for row in output_rows], ["ZH0001", "ZH0003"])
+        self.assertEqual(stats["删除北国商品行数"], 2)
+        self.assertEqual(stats["备注总数"], 0)
+        self.assertEqual(issues, [])
+        self.assertEqual(
+            stats["北国剔除明细"],
+            (
+                receipts.ExcludedProductRecord(4, "ZH0002", "北国电器"),
+                receipts.ExcludedProductRecord(6, "ZH0004", "北国商城电视"),
+            ),
+        )
+
+    def test_beiguo_warning_names_rows_and_caps_examples(self) -> None:
+        """The warning shows up to 10 examples and reports the remainder."""
+        kept_rows = [
+            HEADER,
+            *[
+                ["ZH%04d" % index, "2026-01-24", "", "北国%d" % index]
+                for index in range(12)
+            ],
+        ]
+        output = io.StringIO()
+        with patch.object(
+            receipts, "read_receipt_rows", return_value=kept_rows
+        ), patch.object(
+            receipts,
+            "RECEIPTS_SOURCE_FILE",
+            Path("收款单统计.xlsx"),
+            create=True,
+        ), patch.object(
+            receipts, "write_xlsx_atomically"
+        ), redirect_stdout(output):
+            receipts.process_receipts()
+
+        text = output.getvalue()
+        self.assertIn(
+            "[收款单] 警告：商品名称含“北国”的 12 行已按业务规则剔除",
+            text,
+        )
+        self.assertIn("源第 3 行，单据号 ZH0000，商品名称 北国0", text)
+        self.assertIn("源第 12 行，单据号 ZH0009，商品名称 北国9", text)
+        self.assertIn("其余 2 行未展开", text)
+        self.assertNotIn("北国10", text)  # beyond the 10-example cap
 
 
 class UnremarkedSaleCategoryTest(unittest.TestCase):

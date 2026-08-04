@@ -70,6 +70,22 @@ class SubmittedProfile:
 
 
 @dataclass(frozen=True)
+class UnknownStatusRecord:
+    """One Summary-only row whose status has no sheet of its own.
+
+    Carries where the row came from (source file and row) and what it
+    carried (reference and status), so the operator warning can point at
+    real rows instead of just counting them. Report-only: the workbook
+    keeps using summary_rows/status_rows.
+    """
+
+    source_name: str
+    source_row: int
+    reference: str
+    status: str
+
+
+@dataclass(frozen=True)
 class SubmittedReport:
     header: tuple[object, ...]
     summary_rows: list[list[object]]
@@ -80,6 +96,9 @@ class SubmittedReport:
     # status. Those rows reach Summary but no status sheet, so without this
     # they are invisible to an operator working from the status tabs.
     unknown_status_counts: dict[str, int]
+    # The same rows as records with their source location, for the console
+    # warning only (see UnknownStatusRecord).
+    unknown_status_records: tuple[UnknownStatusRecord, ...]
 
 
 # Household appliances and digital both take 15% of the transaction; the two
@@ -192,9 +211,11 @@ def build_report(profile_name: str) -> SubmittedReport:
     expected_header: list[object] | None = None
     output_header: list[object] | None = None
     reference_column_index: int | None = None
+    status_column_index: int | None = None
     reference_locations: dict[str, tuple[str, int]] = {}
     data_row_count = 0
     data_rows: list[list[object]] = []
+    unknown_status_records: list[UnknownStatusRecord] = []
     valid_file_count = 0
 
     for path in files:
@@ -238,6 +259,7 @@ def build_report(profile_name: str) -> SubmittedReport:
                         f"实际字段 {tuple(output_header)}"
                     )
                 reference_column_index = output_header.index("检索参考号")
+                status_column_index = output_header.index("状态")
             elif header != expected_header:
                 raise ValueError(f"{path.name} 的表头与第一个文件不一致")
 
@@ -253,6 +275,8 @@ def build_report(profile_name: str) -> SubmittedReport:
                     source_row=source_row,
                 )
                 if reference_column_index is None:
+                    raise RuntimeError("未能定位已上传数据必要字段")
+                if status_column_index is None:
                     raise RuntimeError("未能定位已上传数据必要字段")
 
                 raw_reference = output_row[reference_column_index]
@@ -270,6 +294,17 @@ def build_report(profile_name: str) -> SubmittedReport:
                             f"再次出现在 {path.name} 第 {source_row} 行"
                         )
                     reference_locations[reference] = (path.name, source_row)
+
+                status = str(output_row[status_column_index] or "")
+                if status not in STATUS_ORDER:
+                    unknown_status_records.append(
+                        UnknownStatusRecord(
+                            source_name=path.name,
+                            source_row=source_row,
+                            reference=str(output_row[reference_column_index] or ""),
+                            status=status,
+                        )
+                    )
 
                 data_rows.append(output_row)
                 data_row_count += 1
@@ -291,13 +326,13 @@ def build_report(profile_name: str) -> SubmittedReport:
     rows_by_status: dict[str, list[list[object]]] = {
         status: [] for status in STATUS_ORDER
     }
-    unknown_status_counts: Counter[str] = Counter()
     for row in data_rows:
         status = str(row[status_column_index] or "")
         if status in rows_by_status:
             rows_by_status[status].append(row)
-        else:
-            unknown_status_counts[status] += 1
+    unknown_status_counts = Counter(
+        record.status for record in unknown_status_records
+    )
 
     for status in STATUS_ORDER:
         status_rows = rows_by_status[status]
@@ -316,6 +351,7 @@ def build_report(profile_name: str) -> SubmittedReport:
         file_count=valid_file_count,
         data_row_count=data_row_count,
         unknown_status_counts=dict(unknown_status_counts),
+        unknown_status_records=tuple(unknown_status_records),
     )
 
 
@@ -511,8 +547,7 @@ def process_submitted_files(profile_name: str) -> None:
     # would hide it from an operator reading the status tabs. A status new to
     # this program shows up here rather than as a row count that does not add
     # up.
-    if report.unknown_status_counts:
-        unknown_total = sum(report.unknown_status_counts.values())
+    if report.unknown_status_records:
         detail = "、".join(
             f"{status or '(空)'}×{count}"
             for status, count in sorted(
@@ -521,9 +556,20 @@ def process_submitted_files(profile_name: str) -> None:
             )
         )
         print(
-            f"未归入状态工作表的行：{unknown_total}（仅在 Summary 中）；"
-            f"状态为 {detail}"
+            f"[{profile_name}] 警告：{len(report.unknown_status_records)} 行"
+            f"（状态为 {detail}）未配置独立工作表，"
+            "数据已保留在 Summary，未被删除"
         )
+        for record in report.unknown_status_records[:10]:
+            print(
+                f"[{profile_name}] 源文件 {record.source_name}，"
+                f"源行 {record.source_row}，"
+                f"检索参考号 {record.reference or '(空)'}，"
+                f"状态 {record.status or '(空)'}"
+            )
+        remaining = len(report.unknown_status_records) - 10
+        if remaining > 0:
+            print(f"[{profile_name}] 其余 {remaining} 行未展开")
     print(f"输出文件：{output_file}")
 
 

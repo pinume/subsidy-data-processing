@@ -152,18 +152,41 @@ def load_coupon_reference_supplement(
         workbook.close()
 
 
+@dataclass(frozen=True)
+class SupplementReferenceConflict:
+    """One ambiguous supplement match, reported without touching the row.
+
+    The supplement lists several candidate references for this document and
+    the row's own reference matches none of them, so nothing is chosen and
+    the row keeps its current value. Candidates are stored sorted so the
+    console warning is stable across runs.
+    """
+
+    document_number: str
+    document_date: date
+    current_reference: str
+    candidates: tuple[str, ...]
+
+
 def fill_coupon_reference_supplement(
     rows: list[list[object]],
     reference_lookup: dict[tuple[str, date], frozenset[str]],
     reference_universe: set[str],
     excluded_bottom_rows: int,
-) -> tuple[int, int, set[int], Counter[tuple[str, date, str]]]:
+) -> tuple[
+    int,
+    int,
+    set[int],
+    Counter[tuple[str, date, str]],
+    tuple[SupplementReferenceConflict, ...],
+]:
     summary_index = COUPON_SUMMARY_COLUMN_INDEX
     included_rows = coupon_data_rows(rows, excluded_bottom_rows)
     matched_count = 0
     ambiguous_count = 0
     matched_row_ids: set[int] = set()
     matched_values: Counter[tuple[str, date, str]] = Counter()
+    conflicts: list[SupplementReferenceConflict] = []
     for row in included_rows:
         current_reference = normalize_receipt_identifier(
             row[summary_index]
@@ -180,6 +203,14 @@ def fill_coupon_reference_supplement(
             reference = current_reference
         else:
             ambiguous_count += 1
+            conflicts.append(
+                SupplementReferenceConflict(
+                    document_number=key[0],
+                    document_date=key[1],
+                    current_reference=current_reference,
+                    candidates=tuple(sorted(references)),
+                )
+            )
             continue
         row[summary_index] = reference
         matched_count += 1
@@ -190,6 +221,7 @@ def fill_coupon_reference_supplement(
         ambiguous_count,
         matched_row_ids,
         matched_values,
+        tuple(conflicts),
     )
 
 
@@ -550,6 +582,7 @@ class CouponComputation:
     reference_supplement_count: int
     ambiguous_reference_supplement_count: int
     reference_supplement_matches: Counter[tuple[str, date, str]]
+    supplement_conflicts: tuple[SupplementReferenceConflict, ...]
     corrected_count: int
     unresolved_count: int
     correction_collision_count: int
@@ -622,6 +655,7 @@ def compute_coupon_data(
         ambiguous_reference_supplement_count,
         reference_supplement_row_ids,
         reference_supplement_matches,
+        reference_supplement_conflicts,
     ) = fill_coupon_reference_supplement(
         rows,
         reference_supplement_lookup,
@@ -700,6 +734,7 @@ def compute_coupon_data(
             ambiguous_reference_supplement_count
         ),
         reference_supplement_matches=reference_supplement_matches,
+        supplement_conflicts=reference_supplement_conflicts,
         corrected_count=corrected_count,
         unresolved_count=unresolved_count,
         correction_collision_count=correction_collision_count,

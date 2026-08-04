@@ -132,6 +132,29 @@ def format_subsidy_correction_warning(
     )
 
 
+def format_supplement_conflict_warning(
+    conflict: appliance.SupplementReferenceConflict,
+) -> str:
+    """Render one ambiguous supplement match as a single-line warning.
+
+    The row keeps its current value — nothing was chosen — so the message
+    says so and lists every candidate, sorted for stable output.
+    """
+    current = (
+        "为空"
+        if not conflict.current_reference
+        else f"为 {conflict.current_reference}"
+    )
+    return (
+        f"[家电] 警告：补充参考号候选不唯一："
+        f"单据号 {conflict.document_number}，"
+        f"日期 {conflict.document_date:%Y-%m-%d}，"
+        f"当前参考号{current}，"
+        f"候选 {'、'.join(conflict.candidates)}；"
+        "已保留原值，请人工核对"
+    )
+
+
 def digital_extra_summary_rows(
     digital_computation: digital.CouponComputation,
 ) -> list[tuple[object, ...]]:
@@ -312,10 +335,14 @@ def process_coupon_sales() -> None:
     print(f"[家电] 销售用券统计完成：{la.data_row_count} 行")
     print(f"[家电] 退换货（粉色）行数：{la.matched_count}")
     print(f"[家电] 补充参考号匹配：{la.reference_supplement_count}")
-    print(
-        "[家电] 补充参考号候选不唯一："
-        f"{la.ambiguous_reference_supplement_count}"
-    )
+    if la.supplement_conflicts:
+        for conflict in la.supplement_conflicts:
+            print(format_supplement_conflict_warning(conflict))
+    else:
+        print(
+            "[家电] 补充参考号候选不唯一："
+            f"{la.ambiguous_reference_supplement_count}"
+        )
     print(f"[家电] 已上传状态匹配：{la.uploaded_count}")
     print(f"[家电] 已回款匹配：{la.payment_match_count}")
     print(

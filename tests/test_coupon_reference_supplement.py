@@ -7,6 +7,7 @@ from pathlib import Path
 
 from openpyxl import Workbook
 
+from processors.coupons import appliance
 from processors.coupons import sources as coupon_sources
 from processors.coupons.appliance import (
     COUPON_OUTPUT_HEADER,
@@ -106,7 +107,10 @@ class CouponReferenceSupplementTest(unittest.TestCase):
     def test_ambiguous_references_do_not_change_row(self) -> None:
         row = self.coupon_row("1001", date(2026, 7, 6), "待补充")
         rows = [list(COUPON_OUTPUT_HEADER), row]
-        references = frozenset({"12345678901N", "12345678902N"})
+        original = list(row)
+        # Unsorted input: the recorded candidates must come out sorted so the
+        # console warning is stable across runs.
+        references = frozenset({"12345678902N", "12345678901N"})
 
         result = fill_coupon_reference_supplement(
             rows,
@@ -119,6 +123,20 @@ class CouponReferenceSupplementTest(unittest.TestCase):
         self.assertEqual(row[COUPON_OUTPUT_HEADER.index("明细摘要")], "待补充")
         self.assertEqual(result[2], set())
         self.assertEqual(result[3], {})
+        # No column touched — upload and payment statuses stay exactly as the
+        # row carried them.
+        self.assertEqual(row, original)
+        self.assertEqual(
+            result[4],
+            (
+                appliance.SupplementReferenceConflict(
+                    document_number="1001",
+                    document_date=date(2026, 7, 6),
+                    current_reference="待补充",
+                    candidates=("12345678901N", "12345678902N"),
+                ),
+            ),
+        )
 
     def test_known_reference_and_excluded_bottom_row_are_unchanged(self) -> None:
         known = "12345678901N"

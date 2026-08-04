@@ -6,6 +6,7 @@ variant, so this lives at the top level rather than under either project's
 package.
 """
 
+from dataclasses import dataclass
 from datetime import date, datetime
 from pathlib import Path
 
@@ -104,6 +105,20 @@ RECEIPTS_EXCLUDED_PRODUCT_KEYWORD = "北国"
 
 ISSUES_SHEET_NAME = "问题明细"
 ISSUES_HEADER = ("问题类型", "行号", "内容", "说明")
+
+
+@dataclass(frozen=True)
+class ExcludedProductRecord:
+    """One row excluded by the 北国 product rule, for the console warning.
+
+    Deliberately not an issue: the exclusion is business policy, not a data
+    problem, so these records never reach 问题明细. They only let the
+    operator warning name actual rows instead of a bare count.
+    """
+
+    source_row: int
+    document_number: str
+    product_name: str
 
 
 def configure_data_dir(data_dir: Path) -> None:
@@ -296,6 +311,7 @@ def prepare_receipt_data(kept_rows: list[list[object]], source_name: str):
     referenced_original_invoice_numbers: set[str] = set()
     bridge_originals_by_match_key: dict[str, set[str]] = {}
     excluded_product_count = 0
+    excluded_product_records: list[ExcludedProductRecord] = []
     blank_row_count = 0
     total_row_count = 0
 
@@ -314,6 +330,13 @@ def prepare_receipt_data(kept_rows: list[list[object]], source_name: str):
         product_name = normalize_receipt_identifier(row[3])
         if RECEIPTS_EXCLUDED_PRODUCT_KEYWORD in product_name:
             excluded_product_count += 1
+            excluded_product_records.append(
+                ExcludedProductRecord(
+                    source_row=source_row,
+                    document_number=normalize_document_number(row[0]),
+                    product_name=product_name,
+                )
+            )
             continue
 
         document_number = normalize_document_number(row[0])
@@ -516,6 +539,9 @@ def prepare_receipt_data(kept_rows: list[list[object]], source_name: str):
         ),
         "原票号格式异常数量": invalid_original_count,
         "缺少匹配键数量": missing_match_key_count,
+        # Console-warning only; never written to 问题明细 (the exclusion is
+        # business policy, not a data problem).
+        "北国剔除明细": tuple(excluded_product_records),
     }
     return output_rows, stats, issues
 
@@ -891,10 +917,21 @@ def process_receipts() -> None:
             f"跳过空白行：{stats['跳过空白行数']}；"
             f"跳过合计行：{stats['跳过合计行数']}"
         )
-    print(
-        f"剔除含“{RECEIPTS_EXCLUDED_PRODUCT_KEYWORD}”的行："
-        f"{stats['删除北国商品行数']}"
-    )
+    excluded_records = stats["北国剔除明细"]
+    if excluded_records:
+        print(
+            f"[收款单] 警告：商品名称含“{RECEIPTS_EXCLUDED_PRODUCT_KEYWORD}”的 "
+            f"{len(excluded_records)} 行已按业务规则剔除"
+        )
+        for record in excluded_records[:10]:
+            print(
+                f"[收款单] 源第 {record.source_row} 行，单据号 "
+                f"{record.document_number or '(空)'}，"
+                f"商品名称 {record.product_name}"
+            )
+        remaining = len(excluded_records) - 10
+        if remaining > 0:
+            print(f"[收款单] 其余 {remaining} 行未展开")
     if issues:
         print(f"问题已记录到“{ISSUES_SHEET_NAME}”：{len(issues)}")
     else:

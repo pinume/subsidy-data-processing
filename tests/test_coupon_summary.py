@@ -3,6 +3,7 @@ import tempfile
 import unittest
 from collections import Counter
 from contextlib import redirect_stdout
+from datetime import date
 from decimal import Decimal
 from pathlib import Path
 
@@ -304,6 +305,7 @@ class SummarySheetLayoutTest(unittest.TestCase):
             reference_supplement_count=0,
             ambiguous_reference_supplement_count=0,
             reference_supplement_matches=Counter(),
+            supplement_conflicts=(),
             corrected_count=0,
             unresolved_count=0,
             correction_collision_count=0,
@@ -607,6 +609,142 @@ class SubsidyCorrectionWarningTests(unittest.TestCase):
         self.assertIn("第 5346 行单据 ZG2J000016", warning_lines[0])
         self.assertIn("314.85", warning_lines[0])
         self.assertIn("第 5347 行单据 ZG2J000017", warning_lines[1])
+
+
+class SupplementConflictWarningTests(unittest.TestCase):
+    """The ambiguous-supplement warning names every candidate; the row is
+    never modified."""
+
+    def test_format_names_every_field(self) -> None:
+        from processors.coupon_report import format_supplement_conflict_warning
+
+        conflict = appliance.SupplementReferenceConflict(
+            document_number="ZFEG000042",
+            document_date=date(2026, 3, 19),
+            current_reference="",
+            candidates=("16658845684N", "16691539894N"),
+        )
+        message = format_supplement_conflict_warning(conflict)
+        self.assertIn("补充参考号候选不唯一", message)
+        self.assertIn("单据号 ZFEG000042", message)
+        self.assertIn("日期 2026-03-19", message)
+        self.assertIn("当前参考号为空", message)
+        self.assertIn("候选 16658845684N、16691539894N", message)
+        self.assertIn("已保留原值，请人工核对", message)
+
+    def test_format_shows_a_nonempty_current_reference(self) -> None:
+        from processors.coupon_report import format_supplement_conflict_warning
+
+        conflict = appliance.SupplementReferenceConflict(
+            document_number="ZFEG000042",
+            document_date=date(2026, 3, 19),
+            current_reference="16658845684N",
+            candidates=("16658845684N", "16691539894N"),
+        )
+        self.assertIn("当前参考号为 16658845684N", format_supplement_conflict_warning(conflict))
+
+    def test_process_coupon_sales_prints_the_conflict_warning(self) -> None:
+        """Flow-level check: an ambiguous supplement match surfaces as a
+        warning line naming every candidate."""
+        from contextlib import ExitStack
+        from unittest.mock import patch
+
+        from processors import coupon_report
+
+        conflict = appliance.SupplementReferenceConflict(
+            document_number="ZFEG000042",
+            document_date=date(2026, 3, 19),
+            current_reference="",
+            candidates=("16658845684N", "16691539894N"),
+        )
+        export = sources.CouponExport(
+            appliance_rows=[list(sources.APPLIANCE_PROFILE.output_header)],
+            digital_rows=[list(sources.DIGITAL_PROFILE.output_header)],
+            source_total=None,
+            subsidy_corrections=(),
+        )
+        with ExitStack() as stack:
+            stack.enter_context(
+                patch.object(
+                    coupon_report.sources,
+                    "COUPON_SOURCE_FILE",
+                    Path("销售用券情况统计.xlsx"),
+                    create=True,
+                )
+            )
+            stack.enter_context(
+                patch.object(
+                    coupon_report.sources,
+                    "COUPON_REFERENCE_SUPPLEMENT_FILE",
+                    Path("参考号补充.xlsx"),
+                    create=True,
+                )
+            )
+            stack.enter_context(
+                patch.object(
+                    coupon_report.sources,
+                    "read_coupon_export",
+                    return_value=export,
+                )
+            )
+            stack.enter_context(
+                patch.object(
+                    coupon_report.sources,
+                    "load_payment_reference_locations",
+                    return_value={"家电": {}, "数码": {}},
+                )
+            )
+            stack.enter_context(
+                patch.object(
+                    coupon_report,
+                    "load_coupon_remark_lookup",
+                    return_value={},
+                )
+            )
+            stack.enter_context(
+                patch.object(
+                    appliance,
+                    "load_uploaded_summary",
+                    return_value=({}, 0, Decimal("0")),
+                )
+            )
+            stack.enter_context(
+                patch.object(
+                    appliance,
+                    "load_coupon_reference_supplement",
+                    return_value={},
+                )
+            )
+            stack.enter_context(
+                patch.object(
+                    appliance,
+                    "fill_coupon_reference_supplement",
+                    return_value=(0, 1, set(), Counter(), (conflict,)),
+                )
+            )
+            stack.enter_context(
+                patch.object(
+                    coupons_digital,
+                    "load_uploaded_summary",
+                    return_value=({}, 0, Decimal("0")),
+                )
+            )
+            stack.enter_context(
+                patch.object(coupon_report, "CalamineWorkbook")
+            )
+            stack.enter_context(
+                patch.object(coupon_report, "write_xlsx_atomically")
+            )
+            output = io.StringIO()
+            with redirect_stdout(output):
+                coupon_report.process_coupon_sales()
+
+        text = output.getvalue()
+        self.assertIn("补充参考号候选不唯一", text)
+        self.assertIn("ZFEG000042", text)
+        self.assertIn("2026-03-19", text)
+        self.assertIn("16658845684N、16691539894N", text)
+        self.assertIn("已保留原值，请人工核对", text)
 
 
 class SheetHeaderContractTests(unittest.TestCase):
