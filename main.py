@@ -71,9 +71,9 @@ def process_all(processors: tuple[tuple[str, Path, Callable[[], None]], ...]) ->
             "a later failure rolls every output back."
         )
         for _, source_path, processor in processors:
-            print(f"Processing: {source_path}")
+            print(f"处理中：{source_path}")
             processor()
-        print("All processing modes completed; output transaction committed.")
+        print("全部处理模式已完成；输出已统一提交。")
 
     run_with_output_rollback(all_output_files(), process_everything)
 
@@ -82,48 +82,47 @@ def choose_data_processor() -> Callable[[], None] | None:
     processors = build_processors()
     all_choice = len(processors) + 1
 
-    print("Select a processing mode:")
+    print("请选择处理模式：")
     for index, (label, _, _) in enumerate(processors, start=1):
         print(f"  {index}. {label}")
     print(f"  {all_choice}. all")
-    print("  0. Exit")
+    print("  0. 退出")
 
     while True:
         try:
-            choice = input("Enter a number: ").strip()
+            choice = input("输入编号后回车：").strip()
         except (EOFError, KeyboardInterrupt):
-            print("\nProcessing cancelled")
+            print("\n处理已取消")
             return None
 
         if choice == "0":
-            print("Exited")
+            print("已退出")
             return None
         if choice == str(all_choice) or choice.lower() == "all":
-            print(f"Processing all data in order: 1-{len(processors)}")
+            print(f"按顺序处理全部数据：1-{len(processors)}")
             return lambda: process_all(processors)
         if choice.isdigit():
             selected_index = int(choice) - 1
             if 0 <= selected_index < len(processors):
                 _, source_path, processor = processors[selected_index]
-                print(f"Processing: {source_path}")
+                print(f"处理中：{source_path}")
                 return processor
 
-        print("Invalid input. Enter a menu number or all.")
+        print("输入无效，请输入菜单编号或 all。")
 
 
 def report_failure(error: BaseException) -> None:
     """Show operators the cause, not a Python stack trace."""
-    print(f"\nProcessing failed: {error}", file=sys.stderr)
+    print(f"\n处理失败：{error}", file=sys.stderr)
     print(
-        "Existing output files were left unchanged. "
-        "Check the source files named above, then run the program again.",
+        "现有输出文件保持不变。请检查上方指出的源文件后重新运行。",
         file=sys.stderr,
     )
     if os.environ.get("UPLOAD_DATA_DEBUG"):
         traceback.print_exc()
     else:
         print(
-            "Set UPLOAD_DATA_DEBUG=1 for the full traceback.",
+            "设置 UPLOAD_DATA_DEBUG=1 可查看完整堆栈。",
             file=sys.stderr,
         )
 
@@ -148,14 +147,14 @@ def main() -> int:
         # that was interrupted before it could.
         removed = remove_stale_temporary_files(submitted.OUTPUT_DIR)
         if removed:
-            print(f"Removed {len(removed)} leftover file(s): {'、'.join(removed)}")
+            print(f"已清理 {len(removed)} 个残留临时文件：{'、'.join(removed)}")
 
         processor = choose_data_processor()
         if processor is None:
             return 0
         processor()
     except KeyboardInterrupt:
-        print("\nProcessing cancelled", file=sys.stderr)
+        print("\n处理已取消", file=sys.stderr)
         return 130
     except Exception as error:
         report_failure(error)

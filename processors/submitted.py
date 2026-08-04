@@ -503,8 +503,8 @@ def process_submitted_files(profile_name: str) -> None:
     )
 
     print(
-        "Submitted data complete: "
-        f"merged {report.file_count} files, {report.data_row_count} rows"
+        "已上传数据处理完成："
+        f"合并 {report.file_count} 个文件，共 {report.data_row_count} 行"
     )
     # Reported, never fatal: an unrecognised status is still uploaded data and
     # belongs in Summary; it just has no status sheet of its own, so silence
@@ -524,7 +524,7 @@ def process_submitted_files(profile_name: str) -> None:
             f"未归入状态工作表的行：{unknown_total}（仅在 Summary 中）；"
             f"状态为 {detail}"
         )
-    print(f"Output file: {output_file}")
+    print(f"输出文件：{output_file}")
 
 
 def process_all() -> None:

@@ -457,7 +457,7 @@ def remove_stale_temporary_files(
             path.chmod(path.stat().st_mode | stat.S_IWRITE)
             path.unlink()
         except OSError as error:
-            print(f"Could not remove leftover file {path.name}: {error}")
+            print(f"无法删除残留文件 {path.name}：{error}")
             continue
         removed.append(path.name)
     return removed

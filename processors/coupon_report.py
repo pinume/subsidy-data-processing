@@ -102,7 +102,7 @@ def report_source_total_gap(
     if source_total is None or source_total == computed_total:
         return
     print(
-        f"[{label}] WARNING: 源文件合计行为 {source_total:,.2f}，"
+        f"[{label}] 警告：源文件合计行为 {source_total:,.2f}，"
         f"但其明细行合计为 {computed_total:,.2f}，"
         f"相差 {computed_total - source_total:,.2f}。"
         "报表采用明细行合计以与明细总表保持一致；"
@@ -124,7 +124,7 @@ def format_subsidy_correction_warning(
     entry consumes the same records.
     """
     return (
-        f"WARNING: {source_name} 第 {correction.row_number} 行单据 "
+        f"警告：{source_name} 第 {correction.row_number} 行单据 "
         f"{correction.document_number} 的财务大类为"
         f"{correction.financial_category!r}，"
         f"已将 {correction.amount} 从“{correction.from_header}”"
@@ -309,68 +309,59 @@ def process_coupon_sales() -> None:
     )
 
     la = appliance_computation
+    print(f"[家电] 销售用券统计完成：{la.data_row_count} 行")
+    print(f"[家电] 退换货（粉色）行数：{la.matched_count}")
+    print(f"[家电] 补充参考号匹配：{la.reference_supplement_count}")
     print(
-        "[家电] Subsidy coupon statistics complete: "
-        f"{la.data_row_count} rows"
-    )
-    print(f"[家电] Pink return or exchange rows: {la.matched_count}")
-    print(
-        "[家电] Supplemental reference matches: "
-        f"{la.reference_supplement_count}"
-    )
-    print(
-        "[家电] Ambiguous supplemental reference candidates: "
+        "[家电] 补充参考号候选不唯一："
         f"{la.ambiguous_reference_supplement_count}"
     )
-    print(f"[家电] Submitted status matches: {la.uploaded_count}")
-    print(f"[家电] Payment status matches: {la.payment_match_count}")
+    print(f"[家电] 已上传状态匹配：{la.uploaded_count}")
+    print(f"[家电] 已回款匹配：{la.payment_match_count}")
     print(
-        "[家电] Rows not found in submitted data (marked 未上传): "
+        "[家电] 未在已上传数据中找到（标记未上传）："
         f"{la.unmatched_count}"
     )
     print(
-        f"[家电] Automatic reference corrections: {la.corrected_count}; "
-        f"no unique candidate: {la.unresolved_count}; "
-        f"duplicate conflicts: {la.correction_collision_count}"
+        f"[家电] 参考号自动纠正：{la.corrected_count}；"
+        f"无唯一候选：{la.unresolved_count}；"
+        f"目标冲突：{la.correction_collision_count}"
     )
     print(
-        "[家电] Total 2026 appliance subsidy counted as revenue for "
-        f"matched rows: {la.matched_subsidy_total:.2f}"
+        "[家电] 匹配行计入收入的2026家电国补合计："
+        f"{la.matched_subsidy_total:.2f}"
     )
     if la.zero_subsidy_count:
         print(
-            f"[家电] WARNING: {la.zero_subsidy_count} rows have a zero "
-            "2026家电国补（计入收入）, which should not occur; they are "
-            "counted as 0 — check those source rows"
+            f"[家电] 警告：{la.zero_subsidy_count} 行的 "
+            "2026家电国补（计入收入）为 0，不应出现；"
+            "按 0 计入，请检查这些源数据行"
         )
     report_source_total_gap("家电", la.source_total, la.computed_total)
 
     dg = digital_computation
+    print(f"[数码] 销售用券统计完成：{dg.data_row_count} 行")
+    print(f"[数码] 备注匹配：{dg.matched_count}")
+    print(f"[数码] 已上传状态匹配：{dg.uploaded_match_count}")
+    print(f"[数码] 已回款匹配：{dg.payment_match_count}")
     print(
-        "[数码] Subsidy coupon statistics complete: "
-        f"{dg.data_row_count} rows"
-    )
-    print(f"[数码] Remark matches: {dg.matched_count}")
-    print(f"[数码] Submitted status matches: {dg.uploaded_match_count}")
-    print(f"[数码] Payment status matches: {dg.payment_match_count}")
-    print(
-        "[数码] Uploaded subsidy rows used in Summary: "
-        f"{dg.uploaded_subsidy_count}; total: {dg.uploaded_subsidy_total:.2f}"
+        "[数码] 汇总采用的已上传补贴行："
+        f"{dg.uploaded_subsidy_count}；合计：{dg.uploaded_subsidy_total:.2f}"
     )
     print(
-        "[数码] Rows not found in submitted data (marked 未上传): "
+        "[数码] 未在已上传数据中找到（标记未上传）："
         f"{dg.unmatched_count}"
     )
     print(
-        f"[数码] Automatic reference corrections: {dg.corrected_count}; "
-        f"no unique candidate: {dg.unresolved_count}; "
-        f"duplicate conflicts: {dg.correction_collision_count}"
+        f"[数码] 参考号自动纠正：{dg.corrected_count}；"
+        f"无唯一候选：{dg.unresolved_count}；"
+        f"目标冲突：{dg.correction_collision_count}"
     )
     print(
-        "[数码] Total 2026 digital subsidy counted as revenue for "
-        f"matched rows: {dg.matched_subsidy_total:.2f}"
+        "[数码] 匹配行计入收入的2026数码国补合计："
+        f"{dg.matched_subsidy_total:.2f}"
     )
-    print(f"Output file: {OUTPUT_FILE}")
+    print(f"输出文件：{OUTPUT_FILE}")
 
 
 def _comparable_output_value(value: object) -> object:

@@ -880,23 +880,23 @@ def process_receipts() -> None:
         ),
         lambda path: validate_receipts_output(path, output_rows, issues),
     )
-    print(f"Receipt statistics complete: {row_count} rows")
+    print(f"收款单统计完成：{row_count} 行")
     print(
-        f"Remarks: {stats['备注总数']}; "
-        f"unmatched original invoices: {stats['未匹配原票号数量']}; "
-        f"duplicate match keys: {stats['重复匹配键数量']}"
+        f"备注：{stats['备注总数']}；"
+        f"未匹配原票号：{stats['未匹配原票号数量']}；"
+        f"重复匹配键：{stats['重复匹配键数量']}"
     )
     if stats["跳过空白行数"] or stats["跳过合计行数"]:
         print(
-            f"Skipped blank rows: {stats['跳过空白行数']}; "
-            f"total rows: {stats['跳过合计行数']}"
+            f"跳过空白行：{stats['跳过空白行数']}；"
+            f"跳过合计行：{stats['跳过合计行数']}"
         )
     print(
-        f"Excluded rows containing "
-        f"'{RECEIPTS_EXCLUDED_PRODUCT_KEYWORD}': {stats['删除北国商品行数']}"
+        f"剔除含“{RECEIPTS_EXCLUDED_PRODUCT_KEYWORD}”的行："
+        f"{stats['删除北国商品行数']}"
     )
     if issues:
-        print(f"Issues logged in '{ISSUES_SHEET_NAME}': {len(issues)}")
+        print(f"问题已记录到“{ISSUES_SHEET_NAME}”：{len(issues)}")
     else:
-        print(f"No issues; '{ISSUES_SHEET_NAME}' sheet was not created")
-    print(f"Output file: {OUTPUT_FILE}")
+        print(f"无问题；未创建“{ISSUES_SHEET_NAME}”工作表")
+    print(f"输出文件：{OUTPUT_FILE}")

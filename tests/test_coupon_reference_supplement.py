@@ -39,7 +39,7 @@ class CouponReferenceSupplementTest(unittest.TestCase):
 
             self.assertEqual(lookup, {})
             self.assertIn(
-                "Optional reference supplement file not found; skipping",
+                "未找到可选参考号补充文件，跳过",
                 output.getvalue(),
             )
             self.assertIn(str(source), output.getvalue())

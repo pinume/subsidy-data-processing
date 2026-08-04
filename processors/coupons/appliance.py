@@ -111,7 +111,7 @@ def load_coupon_reference_supplement(
     source: Path,
 ) -> dict[tuple[str, date], frozenset[str]]:
     if not source.exists():
-        print(f"Optional reference supplement file not found; skipping: {source}")
+        print(f"未找到可选参考号补充文件，跳过：{source}")
         return {}
 
     workbook = CalamineWorkbook.from_path(str(source))

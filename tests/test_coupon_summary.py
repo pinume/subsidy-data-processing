@@ -601,7 +601,7 @@ class SubsidyCorrectionWarningTests(unittest.TestCase):
         warning_lines = [
             line
             for line in output.getvalue().splitlines()
-            if line.startswith("WARNING:")
+            if line.startswith("警告：")
         ]
         self.assertEqual(len(warning_lines), 2)
         self.assertIn("第 5346 行单据 ZG2J000016", warning_lines[0])
