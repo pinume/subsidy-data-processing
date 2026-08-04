@@ -603,9 +603,9 @@ class SubsidyCorrectionWarningTests(unittest.TestCase):
         self.assertEqual(reporter.warning_count, 2)
         text = output.getvalue()
         self.assertIn("补贴归属已自动调整", text)
-        self.assertIn("单据：ZG2J000016", text)
+        self.assertIn("│ 单据 │ ZG2J000016", text)
         self.assertIn("314.85", text)
-        self.assertIn("单据：ZG2J000017", text)
+        self.assertIn("│ 单据 │ ZG2J000017", text)
 
 
 class SupplementConflictWarningTests(unittest.TestCase):
@@ -740,9 +740,9 @@ class SupplementConflictWarningTests(unittest.TestCase):
         self.assertEqual(reporter.warning_count, 1)
         text = output.getvalue()
         self.assertIn("补充参考号候选不唯一", text)
-        self.assertIn("单据：ZFEG000042", text)
-        self.assertIn("日期：2026-03-19", text)
-        self.assertIn("候选：16658845684N、16691539894N", text)
+        self.assertIn("ZFEG000042", text)
+        self.assertIn("2026-03-19", text)
+        self.assertIn("16658845684N、16691539894N", text)
         self.assertIn("已保留原值，请人工核对", text)
 
 

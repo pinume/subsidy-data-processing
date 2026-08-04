@@ -16,6 +16,7 @@ from pathlib import Path
 from processors.common.console import (
     ConsoleReporter,
     display_path,
+    display_width,
     format_amount,
     format_count,
 )
@@ -73,14 +74,57 @@ class ConsoleReporterTests(unittest.TestCase):
         )
         self.assertEqual(reporter.warning_count, 0)
 
-    def test_warning_counts_and_prints_block(self) -> None:
+    def test_warning_counts_and_prints_a_table(self) -> None:
         reporter = ConsoleReporter(stream=io.StringIO())
-        reporter.warning("测试警告", ("明细一", "明细二"))
+        reporter.warning("测试警告", ("单据：ZG2J000016", "金额：314.85"))
         self.assertEqual(reporter.warning_count, 1)
         self.assertEqual(
             reporter.stream.getvalue(),
-            "[警告] 测试警告\n       明细一\n       明细二\n",
+            "[警告] 测试警告\n"
+            "┌──────┬────────────┐\n"
+            "│ 单据 │ ZG2J000016 │\n"
+            "│ 金额 │ 314.85     │\n"
+            "└──────┴────────────┘\n",
         )
+
+    def test_warning_table_aligns_cjk_keys_by_display_width(self) -> None:
+        reporter = ConsoleReporter(stream=io.StringIO())
+        reporter.warning("对齐", ("当前参考号：为空", "单：1"))
+        lines = reporter.stream.getvalue().splitlines()
+        # 当前参考号 occupies 10 columns (5 CJK chars), 单 only 2; the value
+        # column must start at the same display column on both rows (char
+        # indexes differ because CJK chars count as two columns).
+        first_value = display_width(lines[2][: lines[2].index("为空")])
+        second_value = display_width(lines[3][: lines[3].index("1")])
+        self.assertEqual(first_value, second_value)
+
+    def test_warning_bare_note_becomes_an_empty_key_row(self) -> None:
+        reporter = ConsoleReporter(stream=io.StringIO())
+        reporter.warning("说明", ("其余 2 行未展开",))
+        lines = reporter.stream.getvalue().splitlines()
+        self.assertIn("其余 2 行未展开", lines[2])
+        self.assertTrue(lines[2].startswith("│ "))
+
+    def test_warning_renders_red_when_color_is_enabled(self) -> None:
+        reporter = ConsoleReporter(stream=io.StringIO(), color=True)
+        reporter.warning("测试警告", ("单据：1",))
+        text = reporter.stream.getvalue()
+        self.assertIn("\033[31m[警告] 测试警告\033[0m", text)
+        self.assertIn("\033[31m│", text)
+
+    def test_success_lines_render_green_when_color_is_enabled(self) -> None:
+        reporter = ConsoleReporter(stream=io.StringIO(), color=True)
+        reporter.step_success("审核明细")
+        reporter.output(Path.cwd() / "output" / "审核明细.xlsx")
+        text = reporter.stream.getvalue()
+        self.assertIn("\033[32m[成功] 已生成审核明细报表\033[0m", text)
+        self.assertIn("\033[32m输出  ", text)
+
+    def test_no_color_when_explicitly_disabled(self) -> None:
+        reporter = ConsoleReporter(stream=io.StringIO(), color=False)
+        reporter.warning("测试警告", ("单据：1",))
+        reporter.step_success("审核明细")
+        self.assertNotIn("\033[", reporter.stream.getvalue())
 
     def test_output_prints_relative_path(self) -> None:
         reporter = ConsoleReporter(stream=io.StringIO())
