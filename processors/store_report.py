@@ -44,7 +44,7 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 OUTPUT_DIR = BASE_DIR / "output"
 OUTPUT_FILE = OUTPUT_DIR / "2026年门店国补上传及回款情况表（益庄店）.xlsx"
 TEMPLATE_FILE_KEYWORD = "门店国补上传及回款情况表"
-DATA_DIR: Path
+DATA_DIR: Path | None = None
 
 SHANGHAI_TZ = ZoneInfo("Asia/Shanghai")
 FILLED_ALIGNMENT = Alignment(horizontal="left", vertical="center")
@@ -88,10 +88,15 @@ TEMPLATE_STRUCTURE_CELLS: dict[str, str] = {
 
 def configure_data_dir(data_dir: Path) -> None:
     global DATA_DIR
+
     DATA_DIR = data_dir
 
 
 def resolve_template_file() -> Path:
+    if DATA_DIR is None:
+        raise RuntimeError(
+            "resolve_template_file() 必须在 configure_data_dir() 之后调用"
+        )
     candidates = find_data_files(DATA_DIR, TEMPLATE_FILE_KEYWORD, (".xlsx",))
     template_file = resolve_unique_file(candidates)
     if template_file is None:
@@ -114,11 +119,17 @@ def validate_template(workbook: Workbook) -> None:
         )
     sheet = workbook[workbook.sheetnames[0]]
     if sheet.title != EXPECTED_SHEET_TITLE:
-        raise ValueError(f"空白模板工作表名称应为 {EXPECTED_SHEET_TITLE!r}，实际为 {sheet.title!r}")
+        raise ValueError(
+            f"空白模板工作表名称应为 {EXPECTED_SHEET_TITLE!r}，实际为 {sheet.title!r}"
+        )
     if sheet.max_column != EXPECTED_COLUMN_COUNT:
-        raise ValueError(f"空白模板列数应为 {EXPECTED_COLUMN_COUNT}，实际为 {sheet.max_column}")
+        raise ValueError(
+            f"空白模板列数应为 {EXPECTED_COLUMN_COUNT}，实际为 {sheet.max_column}"
+        )
     if sheet.max_row < MIN_TEMPLATE_ROW_COUNT:
-        raise ValueError(f"空白模板行数至少应为 {MIN_TEMPLATE_ROW_COUNT}，实际为 {sheet.max_row}")
+        raise ValueError(
+            f"空白模板行数至少应为 {MIN_TEMPLATE_ROW_COUNT}，实际为 {sheet.max_row}"
+        )
 
     mismatches = [
         f"{coordinate}（应为 {expected!r}，实际为 {sheet[coordinate].value!r}）"
@@ -127,7 +138,8 @@ def validate_template(workbook: Workbook) -> None:
     ]
     if mismatches:
         raise ValueError(
-            "空白模板结构校验失败，可能选错了文件或模板已被改动：" + "；".join(mismatches)
+            "空白模板结构校验失败，可能选错了文件或模板已被改动："
+            + "；".join(mismatches)
         )
 
 
@@ -144,8 +156,16 @@ class RowRule:
 ROW_RULES = (
     RowRule(4, "冰箱", ("海尔", "卡萨帝"), "冰箱", ("海尔", "卡萨帝")),
     RowRule(5, "洗衣机", ("海尔", "卡萨帝"), "洗衣机", ("海尔", "卡萨帝")),
-    RowRule(6, "冰箱", ("美的", "COLMO", "东芝"), "冰箱", ("美的系", "COLMO", "东芝JX")),
-    RowRule(7, "洗衣机", ("美的", "小天鹅", "COLMO"), "洗衣机", ("美的系", "小天鹅", "COLMO")),
+    RowRule(
+        6, "冰箱", ("美的", "COLMO", "东芝"), "冰箱", ("美的系", "COLMO", "东芝JX")
+    ),
+    RowRule(
+        7,
+        "洗衣机",
+        ("美的", "小天鹅", "COLMO"),
+        "洗衣机",
+        ("美的系", "小天鹅", "COLMO"),
+    ),
     RowRule(8, "冰箱", ("西门子",), "冰箱", ("西门子",)),
     RowRule(9, "洗衣机", ("西门子",), "洗衣机", ("西门子",)),
     RowRule(10, "冰箱", ("博世",), "冰箱", ("博世",)),
@@ -262,7 +282,8 @@ def to_count(value: object) -> int:
     count = to_decimal(value)
     if count != count.to_integral_value():
         raise ValueError(f"数量应为整数，实际为 {value!r}")
-    return int(count)
+    # count is guaranteed integral by the check above
+    return int(count.to_integral_value())
 
 
 def normalize_text(value: object) -> str:
@@ -360,6 +381,61 @@ def _validate_header(
         )
 
 
+def _load_group_uploaded_amounts(
+    workbook,
+    amounts: dict[tuple[str, str], dict[str, Decimal]],
+    source_name: str,
+) -> None:
+    """Fill each category-brand's 已上传 amount from audit group sheets.
+
+    数据汇总 intentionally exposes only 未上传 rows per brand. The group
+    sheets retain the row-level 备注, so they are the authoritative source for
+    the missing brand-level 已上传 split required by the store report.
+    """
+    non_group_sheets = frozenset(
+        {
+            UPLOAD_SHEET_NAME,
+            "家电-明细总表",
+            "数码-明细总表",
+            "Processing Report",
+        }
+    )
+    for sheet_name in workbook.sheet_names:
+        if sheet_name in non_group_sheets or "-" not in sheet_name:
+            continue
+        category_raw, brand_raw = sheet_name.split("-", 1)
+        category = normalize_text(category_raw)
+        brand = normalize_text(brand_raw)
+        if not category or not brand:
+            continue
+
+        rows = iter(calamine_rows(workbook.get_sheet_by_name(sheet_name)))
+        header = next(rows, None)
+        if header is None:
+            continue
+        try:
+            remark_index = header.index("备注")
+            subsidy_index = next(
+                index
+                for index, value in enumerate(header)
+                if "国补" in str(value or "")
+            )
+        except (ValueError, StopIteration) as error:
+            raise ValueError(
+                f"{source_name} 的分组表 {sheet_name!r} 缺少备注或国补字段"
+            ) from error
+
+        bucket = amounts.setdefault(
+            (category, brand),
+            {"已上传": Decimal("0"), "未上传": Decimal("0")},
+        )
+        for row in rows:
+            remark = row[remark_index] if remark_index < len(row) else None
+            subsidy = row[subsidy_index] if subsidy_index < len(row) else None
+            if str(remark or "").strip() == "已上传" and subsidy not in (None, ""):
+                bucket["已上传"] += to_decimal(subsidy)
+
+
 def load_upload_data(
     upload_file: Path = UPLOAD_FILE,
 ) -> tuple[
@@ -367,9 +443,13 @@ def load_upload_data(
     dict[str, Decimal],
     dict[str, dict[str, CountAmount]],
 ]:
-    workbook = _open_source_workbook(upload_file, "审核明细", "审核明细（销售用券情况统计）")
+    workbook = _open_source_workbook(
+        upload_file, "审核明细", "审核明细（销售用券情况统计）"
+    )
     try:
-        rows = _sheet_rows_or_raise(workbook, UPLOAD_SHEET_NAME, upload_file.name, "审核明细")
+        rows = _sheet_rows_or_raise(
+            workbook, UPLOAD_SHEET_NAME, upload_file.name, "审核明细"
+        )
         _validate_header(rows, UPLOAD_HEADER, upload_file.name, "审核明细")
         header_width = len(UPLOAD_HEADER)
 
@@ -385,45 +465,54 @@ def load_upload_data(
         }
 
         for row in (r[:header_width] for r in rows[1:]):
-            category_raw, brand_raw, status_raw, count_raw, amount_raw = row
+            category_raw, brand_raw, count_raw, amount_raw, *_rest = row
             if category_raw:
                 current_category = normalize_text(category_raw)
                 if not brand_raw:
                     current_brand = ""
             if brand_raw:
-                current_brand = normalize_text(brand_raw)
+                brand_text = normalize_text(brand_raw)
+                # Project rows have status (已上传/未上传/合计) in the 品牌 column;
+                # brand rows have an actual brand name there.
+                if brand_text in {"已上传", "未上传", "合计"}:
+                    status = brand_text
+                    # Strip "合计" suffix to get the project key (家电/数码)
+                    project_key = current_category
+                    if project_key.endswith("合计"):
+                        project_key = project_key[:-2]
+                    if project_key in project_metrics:
+                        project_metrics[project_key][status] = CountAmount(
+                            to_count(count_raw),
+                            to_decimal(amount_raw),
+                        )
+                    if project_key == "数码":
+                        amount = to_decimal(amount_raw)
+                        if status == "已上传":
+                            digital_uploaded += amount
+                        elif status == "未上传":
+                            digital_not_uploaded += amount
+                        elif status == "合计":
+                            digital_total = amount
+                    current_brand = ""
+                    continue
+                current_brand = brand_text
             if current_category in {"财务大类", "合计"}:
                 current_brand = ""
-                continue
-
-            status = normalize_text(status_raw)
-            amount = to_decimal(amount_raw)
-
-            if current_category in project_metrics and not current_brand:
-                if status in {"已上传", "未上传", "合计"}:
-                    project_metrics[current_category][status] = CountAmount(
-                        to_count(count_raw),
-                        amount,
-                    )
-                if current_category == "数码":
-                    if status == "已上传":
-                        digital_uploaded += amount
-                    elif status == "未上传":
-                        digital_not_uploaded += amount
-                    elif status == "合计":
-                        digital_total = amount
                 continue
 
             if not current_brand:
                 continue
 
-            brand = current_brand
-            key = (current_category, brand)
+            # Brand row: status is implicit (always 未上传 in the new layout).
+            # 已上传 bucket stays 0 since brand rows no longer carry that split.
+            amount = to_decimal(amount_raw)
             bucket = amounts.setdefault(
-                key,
+                (current_category, current_brand),
                 {"已上传": Decimal("0"), "未上传": Decimal("0")},
             )
-            bucket[status] = bucket.get(status, Decimal("0")) + amount
+            bucket["未上传"] = bucket.get("未上传", Decimal("0")) + amount
+
+        _load_group_uploaded_amounts(workbook, amounts, upload_file.name)
     finally:
         workbook.close()
 
@@ -456,8 +545,10 @@ def load_payment_data(
 ]:
     workbook = _open_source_workbook(payment_file, "回款明细", "回款明细（家电+数码）")
     try:
-        rows = _sheet_rows_or_raise(workbook, PAYMENT_SHEET_NAME, payment_file.name, "回款明细")
-        _validate_header(rows, PAYMENT_HEADER, payment_file.name, "回款明细")
+        rows = _sheet_rows_or_raise(
+            workbook, PAYMENT_SHEET_NAME, payment_file.name, "回款明细"
+        )
+        _validate_header(rows, tuple(PAYMENT_HEADER), payment_file.name, "回款明细")
         header_width = len(PAYMENT_HEADER)
 
         amounts: dict[tuple[str, str], Decimal] = {}
@@ -527,7 +618,9 @@ def sum_upload_amount(
         if not values:
             continue
         uploaded += values.get("已上传", Decimal("0"))
-        occurred += values.get("已上传", Decimal("0")) + values.get("未上传", Decimal("0"))
+        occurred += values.get("已上传", Decimal("0")) + values.get(
+            "未上传", Decimal("0")
+        )
 
     return occurred, uploaded
 
@@ -603,7 +696,9 @@ def validate_rule_coverage(
     unmatched: list[str] = [
         f"审核明细未配置规则：{category}/{brand}，发生额 {occurred}"
         for (category, brand), values in upload_data.items()
-        for occurred in (values.get("已上传", Decimal("0")) + values.get("未上传", Decimal("0")),)
+        for occurred in (
+            values.get("已上传", Decimal("0")) + values.get("未上传", Decimal("0")),
+        )
         if (category, brand) not in upload_claims and occurred != 0
     ]
     unmatched += [
@@ -733,16 +828,42 @@ def write_row(
         uploaded = digital_upload["上传额"]
         paid = digital_payment
         write_metrics_row(
-            sheet, row_rule.row, "E", "G", "K", "I", "M", ("D", "F", "H", "J", "L"),
-            occurred, uploaded, paid, font, expected_cells,
+            sheet,
+            row_rule.row,
+            "E",
+            "G",
+            "K",
+            "I",
+            "M",
+            ("D", "F", "H", "J", "L"),
+            occurred,
+            uploaded,
+            paid,
+            font,
+            expected_cells,
         )
         return
 
-    occurred, uploaded = sum_upload_amount(upload_data, row_rule.upload_category, row_rule.upload_brands)
-    paid = sum_payment_amount(payment_data, row_rule.payment_category, row_rule.payment_brands)
+    occurred, uploaded = sum_upload_amount(
+        upload_data, row_rule.upload_category, row_rule.upload_brands
+    )
+    paid = sum_payment_amount(
+        payment_data, row_rule.payment_category, row_rule.payment_brands
+    )
     write_metrics_row(
-        sheet, row_rule.row, "D", "F", "J", "H", "L", ("E", "G", "I", "K", "M"),
-        occurred, uploaded, paid, font, expected_cells,
+        sheet,
+        row_rule.row,
+        "D",
+        "F",
+        "J",
+        "H",
+        "L",
+        ("E", "G", "I", "K", "M"),
+        occurred,
+        uploaded,
+        paid,
+        font,
+        expected_cells,
     )
 
 
@@ -750,7 +871,12 @@ def update_totals(sheet, font: Font, expected_cells: dict[str, object]) -> None:
     update_totals_row(
         sheet,
         amount_columns=("D", "E", "F", "G", "J", "K"),
-        ratio_columns={"H": ("F", "D"), "I": ("G", "E"), "L": ("J", "D"), "M": ("K", "E")},
+        ratio_columns={
+            "H": ("F", "D"),
+            "I": ("G", "E"),
+            "L": ("J", "D"),
+            "M": ("K", "E"),
+        },
         source_rows=DETAIL_ROWS,
         total_row=TOTAL_ROW,
         font=font,
@@ -773,7 +899,9 @@ def sum_brand_group(
         )
         occurred += category_occurred
         uploaded += category_uploaded
-        paid += sum_payment_amount(payment_data, category.payment_category, category.brands)
+        paid += sum_payment_amount(
+            payment_data, category.payment_category, category.brands
+        )
 
     return occurred, uploaded, paid
 
@@ -786,14 +914,29 @@ def write_brand_group_row(
     font: Font,
     expected_cells: dict[str, object],
 ) -> None:
-    occurred, uploaded, paid = sum_brand_group(upload_data, payment_data, brand_group_rule.categories)
+    occurred, uploaded, paid = sum_brand_group(
+        upload_data, payment_data, brand_group_rule.categories
+    )
     write_metrics_row(
-        sheet, brand_group_rule.row, "D", "E", "F", "G", "H", (),
-        occurred, uploaded, paid, font, expected_cells,
+        sheet,
+        brand_group_rule.row,
+        "D",
+        "E",
+        "F",
+        "G",
+        "H",
+        (),
+        occurred,
+        uploaded,
+        paid,
+        font,
+        expected_cells,
     )
 
 
-def update_brand_group_totals(sheet, font: Font, expected_cells: dict[str, object]) -> None:
+def update_brand_group_totals(
+    sheet, font: Font, expected_cells: dict[str, object]
+) -> None:
     update_totals_row(
         sheet,
         amount_columns=("D", "E", "F"),
@@ -859,7 +1002,9 @@ def current_timestamp() -> datetime:
     return datetime.now(SHANGHAI_TZ)
 
 
-def update_header(sheet, timestamp: datetime, expected_cells: dict[str, object]) -> None:
+def update_header(
+    sheet, timestamp: datetime, expected_cells: dict[str, object]
+) -> None:
     formatted_timestamp = timestamp.strftime("%Y-%m-%d %H:%M:%S")
     value = f"       2026年（益庄店 ）门店国补上传及回款情况表        更新时间：{formatted_timestamp}"
     sheet["A1"] = value
@@ -869,9 +1014,11 @@ def update_header(sheet, timestamp: datetime, expected_cells: dict[str, object])
 def _values_match(expected: object, actual: object) -> bool:
     if expected is None or actual is None:
         return expected == actual
-    if isinstance(expected, float) or isinstance(actual, float):
+    if isinstance(expected, (int, float)) and isinstance(actual, (int, float)):
         try:
-            return math.isclose(float(expected), float(actual), rel_tol=1e-9, abs_tol=1e-9)
+            return math.isclose(
+                float(expected), float(actual), rel_tol=1e-9, abs_tol=1e-9
+            )
         except (TypeError, ValueError):
             return False
     return expected == actual
@@ -891,7 +1038,10 @@ def _validate_totals_match_details(sheet, path_name: str) -> None:
             )
     for column in ("D", "E", "F"):
         recomputed = sum(
-            (to_decimal(sheet[f"{column}{row}"].value) for row in BRAND_GROUP_DETAIL_ROWS),
+            (
+                to_decimal(sheet[f"{column}{row}"].value)
+                for row in BRAND_GROUP_DETAIL_ROWS
+            ),
             Decimal("0"),
         )
         actual = to_decimal(sheet[f"{column}{BRAND_GROUP_TOTAL_ROW}"].value)
@@ -908,11 +1058,17 @@ def _validate_ratios_match_totals(sheet, path_name: str) -> None:
     denominator mixup that expected-cell comparison alone would miss, since
     that comparison reuses the same safe_ratio() call that wrote the cell."""
     checks = (
-        (TOTAL_ROW, {"H": ("F", "D"), "I": ("G", "E"), "L": ("J", "D"), "M": ("K", "E")}),
+        (
+            TOTAL_ROW,
+            {"H": ("F", "D"), "I": ("G", "E"), "L": ("J", "D"), "M": ("K", "E")},
+        ),
         (BRAND_GROUP_TOTAL_ROW, {"G": ("E", "D"), "H": ("F", "D")}),
     )
     for total_row, ratio_columns in checks:
-        for ratio_column, (numerator_column, denominator_column) in ratio_columns.items():
+        for ratio_column, (
+            numerator_column,
+            denominator_column,
+        ) in ratio_columns.items():
             numerator = to_decimal(sheet[f"{numerator_column}{total_row}"].value)
             denominator = to_decimal(sheet[f"{denominator_column}{total_row}"].value)
             expected_ratio = safe_ratio(numerator, denominator)
@@ -939,7 +1095,9 @@ def validate_output(
             )
         sheet = workbook[workbook.sheetnames[0]]
         if sheet.title != expected_sheet_title:
-            raise ValueError(f"{path.name} 工作表名称应为 {expected_sheet_title!r}，实际为 {sheet.title!r}")
+            raise ValueError(
+                f"{path.name} 工作表名称应为 {expected_sheet_title!r}，实际为 {sheet.title!r}"
+            )
         if sheet.max_column != EXPECTED_COLUMN_COUNT:
             raise ValueError(
                 f"{path.name} 列数应为 {EXPECTED_COLUMN_COUNT}，实际为 {sheet.max_column}"
@@ -982,13 +1140,22 @@ def process_store_report() -> None:
 
         for row_rule in ROW_RULES:
             write_row(
-                sheet, row_rule, upload_data, payment_data, digital_upload, digital_payment, font, expected_cells
+                sheet,
+                row_rule,
+                upload_data,
+                payment_data,
+                digital_upload,
+                digital_payment,
+                font,
+                expected_cells,
             )
 
         update_totals(sheet, font, expected_cells)
 
         for brand_group_rule in BRAND_GROUP_RULES:
-            write_brand_group_row(sheet, brand_group_rule, upload_data, payment_data, font, expected_cells)
+            write_brand_group_row(
+                sheet, brand_group_rule, upload_data, payment_data, font, expected_cells
+            )
 
         update_brand_group_totals(sheet, font, expected_cells)
         write_table3(

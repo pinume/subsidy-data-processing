@@ -27,7 +27,9 @@ def _build_minimal_template() -> Workbook:
     sheet = workbook.active
     sheet.title = "益庄"
     for column_index in range(1, store_report.EXPECTED_COLUMN_COUNT + 1):
-        sheet.cell(row=1, column=column_index, value="标题" if column_index == 1 else "")
+        sheet.cell(
+            row=1, column=column_index, value="标题" if column_index == 1 else ""
+        )
     for coordinate, value in store_report.TEMPLATE_STRUCTURE_CELLS.items():
         sheet[coordinate] = value
     return workbook
@@ -45,23 +47,27 @@ class ReportRatioTests(unittest.TestCase):
         household_sheet = workbook.active
         household_sheet.title = store_report.UPLOAD_SHEET_NAME
         household_sheet.append(store_report.UPLOAD_HEADER)
-        household_sheet.append(("冰箱", "海尔", "已上传", 1, 100))
-        household_sheet.append((None, None, "未上传", 1, 50))
-        household_sheet.append(("家电", None, "已上传", 2, 100))
-        household_sheet.append((None, None, "未上传", 1, 50))
-        household_sheet.append((None, None, "合计", 3, 150))
-        household_sheet.append(("数码", None, "已上传", 4, 200))
-        household_sheet.append((None, None, "未上传", 1, 40))
-        household_sheet.append((None, None, "合计", 5, 240))
+        # New 6-column format: 财务大类, 品牌, 数量, 补贴金额, 回款金额, 回款数量
+        household_sheet.append(("冰箱", "海尔", 1, 100, None, None))
+        household_sheet.append((None, "海尔", 1, 50, None, None))
+        household_sheet.append(("家电合计", "已上传", 2, 100, None, None))
+        household_sheet.append((None, "未上传", 1, 50, None, None))
+        household_sheet.append((None, "合计", 3, 150, None, None))
+        household_sheet.append(("数码合计", "已上传", 4, 200, None, None))
+        household_sheet.append((None, "未上传", 1, 40, None, None))
+        household_sheet.append((None, "合计", 5, 240, None, None))
 
         with TemporaryDirectory() as directory:
             upload_file = Path(directory) / "审核明细.xlsx"
             workbook.save(upload_file)
-            upload_data, digital_totals, project_metrics = store_report.load_upload_data(upload_file)
+            upload_data, digital_totals, project_metrics = (
+                store_report.load_upload_data(upload_file)
+            )
 
         self.assertEqual(
             upload_data[("冰箱", "海尔")],
-            {"已上传": Decimal("100"), "未上传": Decimal("50")},
+            # Brand rows only populate 未上传 in the new format
+            {"已上传": Decimal("0"), "未上传": Decimal("150")},
         )
         self.assertNotIn(("家电", "海尔"), upload_data)
         self.assertEqual(
@@ -101,7 +107,9 @@ class ReportRatioTests(unittest.TestCase):
         with TemporaryDirectory() as directory:
             payment_file = Path(directory) / "回款明细.xlsx"
             workbook.save(payment_file)
-            payment_data, digital_amount, project_metrics = store_report.load_payment_data(payment_file)
+            payment_data, digital_amount, project_metrics = (
+                store_report.load_payment_data(payment_file)
+            )
 
         self.assertEqual(payment_data, {("冰箱", "海尔"): Decimal("100")})
         self.assertEqual(digital_amount, Decimal("100"))
@@ -129,12 +137,20 @@ class ReportRatioTests(unittest.TestCase):
     def test_household_row_ratio_uses_occurred_amount(self) -> None:
         sheet = Workbook().active
         rule = store_report.RowRule(8, "冰箱", ("西门子",), "冰箱", ("西门子",))
-        upload_data = {("冰箱", "西门子"): {"已上传": Decimal("100"), "未上传": Decimal("50")}}
+        upload_data = {
+            ("冰箱", "西门子"): {"已上传": Decimal("100"), "未上传": Decimal("50")}
+        }
         payment_data = {("冰箱", "西门子"): Decimal("40")}
 
         store_report.write_row(
-            sheet, rule, upload_data, payment_data,
-            {"发生额": Decimal("0"), "上传额": Decimal("0")}, Decimal("0"), FONT, {},
+            sheet,
+            rule,
+            upload_data,
+            payment_data,
+            {"发生额": Decimal("0"), "上传额": Decimal("0")},
+            Decimal("0"),
+            FONT,
+            {},
         )
 
         self.assertAlmostEqual(sheet["L8"].value, 40 / 150)
@@ -145,7 +161,9 @@ class ReportRatioTests(unittest.TestCase):
         rule = store_report.RowRule(33, None, (), "数码", (), fill_digital=True)
         digital_upload = {"发生额": Decimal("1000"), "上传额": Decimal("800")}
 
-        store_report.write_row(sheet, rule, {}, {}, digital_upload, Decimal("300"), FONT, {})
+        store_report.write_row(
+            sheet, rule, {}, {}, digital_upload, Decimal("300"), FONT, {}
+        )
 
         self.assertEqual(sheet["E33"].value, 1000)
         self.assertEqual(sheet["G33"].value, 800)
@@ -240,7 +258,9 @@ class SourceHeaderValidationTests(unittest.TestCase):
         workbook = Workbook()
         sheet = workbook.active
         sheet.title = store_report.UPLOAD_SHEET_NAME
-        sheet.append(("财务大类", "品牌", "备注", "数量", "金额"))  # missing the year-specific label
+        sheet.append(
+            ("财务大类", "品牌", "备注", "数量", "金额")
+        )  # missing the year-specific label
 
         with TemporaryDirectory() as directory:
             upload_file = Path(directory) / "审核明细.xlsx"
@@ -263,20 +283,26 @@ class SourceHeaderValidationTests(unittest.TestCase):
 
 class RuleCoverageTests(unittest.TestCase):
     def test_accepts_when_every_group_is_claimed_by_a_rule(self) -> None:
-        upload_data = {("冰箱", "海尔"): {"已上传": Decimal("100"), "未上传": Decimal("0")}}
+        upload_data = {
+            ("冰箱", "海尔"): {"已上传": Decimal("100"), "未上传": Decimal("0")}
+        }
         payment_data = {("冰箱", "海尔"): Decimal("80")}
 
         store_report.validate_rule_coverage(upload_data, payment_data)
 
     def test_ignores_a_zero_amount_unclaimed_group(self) -> None:
-        upload_data = {("平板电脑", "未知品牌"): {"已上传": Decimal("0"), "未上传": Decimal("0")}}
+        upload_data = {
+            ("平板电脑", "未知品牌"): {"已上传": Decimal("0"), "未上传": Decimal("0")}
+        }
         payment_data = {("平板电脑", "未知品牌"): Decimal("0")}
 
         store_report.validate_rule_coverage(upload_data, payment_data)
 
     def test_rejects_an_unclaimed_nonzero_upload_group(self) -> None:
         """Simulates a brand newly appearing upstream that ROW_RULES hasn't been updated for."""
-        upload_data = {("冰箱", "新品牌"): {"已上传": Decimal("500"), "未上传": Decimal("0")}}
+        upload_data = {
+            ("冰箱", "新品牌"): {"已上传": Decimal("500"), "未上传": Decimal("0")}
+        }
         payment_data: dict[tuple[str, str], Decimal] = {}
 
         with self.assertRaisesRegex(ValueError, "新品牌"):
@@ -298,7 +324,9 @@ class RuleCoverageTests(unittest.TestCase):
 
 class BrandGroupTests(unittest.TestCase):
     def test_haier_group_sums_across_categories(self) -> None:
-        rule = next(rule for rule in store_report.BRAND_GROUP_RULES if rule.name == "海尔系")
+        rule = next(
+            rule for rule in store_report.BRAND_GROUP_RULES if rule.name == "海尔系"
+        )
         upload_data = {
             ("冰箱", "海尔"): {"已上传": Decimal("100"), "未上传": Decimal("20")},
             ("国产彩电", "卡萨帝"): {"已上传": Decimal("50"), "未上传": Decimal("0")},
@@ -308,14 +336,18 @@ class BrandGroupTests(unittest.TestCase):
             ("电视", "卡萨帝"): Decimal("30"),
         }
 
-        occurred, uploaded, paid = store_report.sum_brand_group(upload_data, payment_data, rule.categories)
+        occurred, uploaded, paid = store_report.sum_brand_group(
+            upload_data, payment_data, rule.categories
+        )
 
         self.assertEqual(occurred, Decimal("170"))
         self.assertEqual(uploaded, Decimal("150"))
         self.assertEqual(paid, Decimal("90"))
 
     def test_midea_group_sums_across_categories(self) -> None:
-        rule = next(rule for rule in store_report.BRAND_GROUP_RULES if rule.name == "美的系")
+        rule = next(
+            rule for rule in store_report.BRAND_GROUP_RULES if rule.name == "美的系"
+        )
         upload_data = {
             ("冰箱", "美的"): {"已上传": Decimal("40"), "未上传": Decimal("10")},
             ("空调", "美的"): {"已上传": Decimal("200"), "未上传": Decimal("50")},
@@ -325,7 +357,9 @@ class BrandGroupTests(unittest.TestCase):
             ("空调", "美的"): Decimal("150"),
         }
 
-        occurred, uploaded, paid = store_report.sum_brand_group(upload_data, payment_data, rule.categories)
+        occurred, uploaded, paid = store_report.sum_brand_group(
+            upload_data, payment_data, rule.categories
+        )
 
         self.assertEqual(occurred, Decimal("300"))
         self.assertEqual(uploaded, Decimal("240"))
@@ -333,11 +367,17 @@ class BrandGroupTests(unittest.TestCase):
 
     def test_upload_category_differs_from_payment_category_for_tv_brands(self) -> None:
         """Regression test: TV rows are 国产彩电 in 审核明细 but 电视 in 回款明细."""
-        rule = next(rule for rule in store_report.BRAND_GROUP_RULES if rule.name == "创维")
-        upload_data = {("国产彩电", "创维"): {"已上传": Decimal("70"), "未上传": Decimal("10")}}
+        rule = next(
+            rule for rule in store_report.BRAND_GROUP_RULES if rule.name == "创维"
+        )
+        upload_data = {
+            ("国产彩电", "创维"): {"已上传": Decimal("70"), "未上传": Decimal("10")}
+        }
         payment_data = {("电视", "创维"): Decimal("50")}
 
-        occurred, uploaded, paid = store_report.sum_brand_group(upload_data, payment_data, rule.categories)
+        occurred, uploaded, paid = store_report.sum_brand_group(
+            upload_data, payment_data, rule.categories
+        )
 
         self.assertEqual(occurred, Decimal("80"))
         self.assertEqual(uploaded, Decimal("70"))
@@ -429,7 +469,9 @@ class ValidateOutputTests(unittest.TestCase):
             workbook.save(path)
             store_report.validate_output(path, {"D4": 100.0}, "益庄")
 
-    def test_rejects_a_workbook_whose_total_disagrees_with_its_detail_rows(self) -> None:
+    def test_rejects_a_workbook_whose_total_disagrees_with_its_detail_rows(
+        self,
+    ) -> None:
         workbook = Workbook()
         sheet = workbook.active
         sheet.title = "益庄"
@@ -444,7 +486,9 @@ class ValidateOutputTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 store_report.validate_output(path, {}, "益庄")
 
-    def test_rejects_a_workbook_whose_written_cell_does_not_match_expectation(self) -> None:
+    def test_rejects_a_workbook_whose_written_cell_does_not_match_expectation(
+        self,
+    ) -> None:
         workbook = Workbook()
         sheet = workbook.active
         sheet.title = "益庄"
@@ -490,14 +534,17 @@ class ProcessStoreReportIntegrationTests(unittest.TestCase):
         sheet = workbook.active
         sheet.title = store_report.UPLOAD_SHEET_NAME
         sheet.append(store_report.UPLOAD_HEADER)
-        sheet.append(("冰箱", "海尔", "已上传", 1, 100))
-        sheet.append((None, None, "未上传", 1, 20))
-        sheet.append(("家电", None, "已上传", 1, 100))
-        sheet.append((None, None, "未上传", 1, 20))
-        sheet.append((None, None, "合计", 2, 120))
-        sheet.append(("数码", None, "已上传", 1, 40))
-        sheet.append((None, None, "未上传", 1, 10))
-        sheet.append((None, None, "合计", 2, 50))
+        # New 6-column format: 财务大类, 品牌, 数量, 补贴金额, 回款金额, 回款数量
+        # Brand rows: brand in col 1, status is implicit (未上传)
+        sheet.append(("冰箱", "海尔", 1, 100, None, None))
+        sheet.append((None, None, 1, 20, None, None))
+        # Project rows: status in col 1
+        sheet.append(("家电合计", "已上传", 1, 100, None, None))
+        sheet.append((None, "未上传", 1, 20, None, None))
+        sheet.append((None, "合计", 2, 120, 80, 1))
+        sheet.append(("数码合计", "已上传", 1, 40, None, None))
+        sheet.append((None, "未上传", 1, 10, None, None))
+        sheet.append((None, "合计", 2, 50, 30, 1))
         workbook.save(path)
 
     def _write_payment_file(self, path: Path) -> None:
@@ -542,7 +589,8 @@ class ProcessStoreReportIntegrationTests(unittest.TestCase):
             result = load_workbook(output_file, data_only=True)
             sheet = result[result.sheetnames[0]]
             self.assertEqual(sheet["D4"].value, 120)
-            self.assertEqual(sheet["F4"].value, 100)
+            # Brand rows only have 未上传 in the new format; uploaded=0 → None
+            self.assertIsNone(sheet["F4"].value)
             self.assertEqual(sheet["J4"].value, 60)
             self.assertEqual(sheet["E33"].value, 50)
             self.assertEqual(sheet["G33"].value, 40)
@@ -560,13 +608,13 @@ class ProcessStoreReportIntegrationTests(unittest.TestCase):
             self.assertEqual(sheet["F51"].value, 2)
             self.assertEqual(sheet["G51"].value, 30)
             self.assertIn("更新时间：", sheet["A1"].value)
-            output_fonts = {
-                cell.font.name
-                for row in sheet.iter_rows()
-                for cell in row
-            }
+            output_fonts = {cell.font.name for row in sheet.iter_rows() for cell in row}
             self.assertEqual(output_fonts, {"Maple Mono NF CN"})
-            leftover = [entry.name for entry in output_file.parent.iterdir() if entry.name.startswith(".")]
+            leftover = [
+                entry.name
+                for entry in output_file.parent.iterdir()
+                if entry.name.startswith(".")
+            ]
             self.assertEqual(leftover, [])
 
 
@@ -584,7 +632,9 @@ class RollbackTests(unittest.TestCase):
                 raise ValueError("门店报表处理失败")
 
             with self.assertRaisesRegex(ValueError, "门店报表处理失败"):
-                run_with_output_rollback((other_output, output_file), fail_after_writing_other)
+                run_with_output_rollback(
+                    (other_output, output_file), fail_after_writing_other
+                )
 
             self.assertEqual(output_file.read_bytes(), b"old report")
             self.assertEqual(other_output.read_bytes(), b"old other")

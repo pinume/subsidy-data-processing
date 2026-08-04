@@ -103,7 +103,7 @@ PROFILES: dict[str, SubmittedProfile] = {
 PROFILE_ORDER = ("家电", "数码")
 OUTPUT_FILES = tuple(PROFILES[name].output_file for name in PROFILE_ORDER)
 
-DATA_DIR: Path
+DATA_DIR: Path | None = None
 SUBMITTED_FILE_MARKERS: dict[str, str] = {}
 INPUT_FILES: dict[str, tuple[Path, ...]] = {}
 
@@ -185,9 +185,7 @@ def build_report(profile_name: str) -> SubmittedReport:
             f"“{SUBMITTED_FILE_MARKERS[profile_name]}”的 .xlsx 文件"
         )
 
-    status_priority = {
-        status: index for index, status in enumerate(STATUS_ORDER)
-    }
+    status_priority = {status: index for index, status in enumerate(STATUS_ORDER)}
 
     expected_header: list[object] | None = None
     output_header: list[object] | None = None
@@ -276,7 +274,9 @@ def build_report(profile_name: str) -> SubmittedReport:
     status_column_index = output_header.index("状态")
     data_rows.sort(
         key=lambda row: status_priority.get(
-            str(row[status_column_index]) if row[status_column_index] is not None else "",
+            str(row[status_column_index])
+            if row[status_column_index] is not None
+            else "",
             len(STATUS_ORDER),
         )
     )
@@ -372,8 +372,7 @@ def validate_output(path: Path, expected_data_rows: int, profile_name: str) -> N
         expected_columns = len(KEPT_SOURCE_COLUMNS) + 1
         if len(header) != expected_columns:
             raise RuntimeError(
-                f"输出校验失败：预期 {expected_columns} 列，"
-                f"实际 {len(header)} 列"
+                f"输出校验失败：预期 {expected_columns} 列，实际 {len(header)} 列"
             )
 
         status_column = header.index("状态")
@@ -417,17 +416,13 @@ def validate_output(path: Path, expected_data_rows: int, profile_name: str) -> N
                     f"Summary 第 {row_number} 行补贴金额无效：{subsidy!r}"
                 ) from error
             if actual_subsidy != expected_subsidy:
-                raise RuntimeError(
-                    f"Summary 第 {row_number} 行补贴金额计算错误"
-                )
+                raise RuntimeError(f"Summary 第 {row_number} 行补贴金额计算错误")
 
         status_total = sum(
             max(len(sheet_rows[status]) - 1, 0) for status in STATUS_ORDER
         )
         known_status_total = sum(
-            1
-            for row in summary_rows[1:]
-            if row[status_column] in STATUS_ORDER
+            1 for row in summary_rows[1:] if row[status_column] in STATUS_ORDER
         )
         if status_total != known_status_total:
             raise RuntimeError(
@@ -444,19 +439,13 @@ def validate_output(path: Path, expected_data_rows: int, profile_name: str) -> N
         # several identical detail rows, and a status sheet that dropped one
         # of them must not pass.
         expected_status_rows = Counter(
-            tuple(row)
-            for row in summary_rows[1:]
-            if row[status_column] in STATUS_ORDER
+            tuple(row) for row in summary_rows[1:] if row[status_column] in STATUS_ORDER
         )
         actual_status_rows = Counter(
-            tuple(row)
-            for status in STATUS_ORDER
-            for row in sheet_rows[status][1:]
+            tuple(row) for status in STATUS_ORDER for row in sheet_rows[status][1:]
         )
         if actual_status_rows != expected_status_rows:
-            raise RuntimeError(
-                "状态工作表校验失败：数据行内容与 Summary 不一致"
-            )
+            raise RuntimeError("状态工作表校验失败：数据行内容与 Summary 不一致")
 
         for status in STATUS_ORDER:
             status_rows = sheet_rows[status]
@@ -475,9 +464,7 @@ def validate_output(path: Path, expected_data_rows: int, profile_name: str) -> N
                     blank_description_found = True
                 else:
                     if blank_description_found:
-                        raise RuntimeError(
-                            f"{status}工作表的空白描述未全部排在末尾"
-                        )
+                        raise RuntimeError(f"{status}工作表的空白描述未全部排在末尾")
                     descriptions.append(str(description))
 
             if descriptions != sorted(descriptions, reverse=True):
@@ -514,8 +501,7 @@ def process_submitted_files(profile_name: str) -> None:
             )
         )
         print(
-            f"未归入状态工作表的行：{unknown_total}（仅在 Summary 中）；"
-            f"状态为 {detail}"
+            f"未归入状态工作表的行：{unknown_total}（仅在 Summary 中）；状态为 {detail}"
         )
     print(f"Output file: {output_file}")
 
@@ -526,6 +512,7 @@ def process_all() -> None:
     An operator has no reason to run one project without the other, so the
     two outputs are rolled back together if either one fails.
     """
+
     def process_both() -> None:
         for name in PROFILE_ORDER:
             process_submitted_files(name)

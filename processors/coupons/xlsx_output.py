@@ -81,9 +81,7 @@ class CouponFormatCache:
             "valign": "vcenter",
         }
         if key.header:
-            properties.update(
-                bold=True, font_color="#FFFFFF", bg_color="#000000"
-            )
+            properties.update(bold=True, font_color="#FFFFFF", bg_color="#000000")
         else:
             properties["font_color"] = "#000000"
             if key.pink:
@@ -187,9 +185,7 @@ def _write_table(
     if autofilter:
         sheet.autofilter(0, 0, len(rows), len(header) - 1)
     for column, maximum_pixels in enumerate(maximum_widths):
-        sheet.set_column_pixels(
-            column, column, pixels_to_column_pixels(maximum_pixels)
-        )
+        sheet.set_column_pixels(column, column, pixels_to_column_pixels(maximum_pixels))
     return sheet
 
 
@@ -215,9 +211,7 @@ def write_detail_sheet(
         formats,
         measurement_font,
         left_aligned_headers=left_aligned_headers,
-        number_formats=column_number_formats(
-            text_columns=(0,), date_columns=(1,)
-        ),
+        number_formats=column_number_formats(text_columns=(0,), date_columns=(1,)),
         pink_rows=pink_rows if matched_count else frozenset(),
     )
 
@@ -248,9 +242,7 @@ def write_group_sheet(
         formats,
         measurement_font,
         left_aligned_headers=left_aligned_headers,
-        number_formats=column_number_formats(
-            text_columns=(0,), date_columns=(1,)
-        ),
+        number_formats=column_number_formats(text_columns=(0,), date_columns=(1,)),
         pink_rows=pink_rows,
     )
 
@@ -288,6 +280,7 @@ def write_summary_sheet(
     *,
     group_merges,
     project_merges,
+    currency_columns: tuple[int, ...] | None = None,
 ) -> None:
     """数据汇总: bordered throughout, with merged 财务大类/品牌 runs.
 
@@ -295,6 +288,8 @@ def write_summary_sheet(
     appliance.coupon_summary_group_merges), because XlsxWriter cannot read
     back what it has written the way the openpyxl version did.
     """
+    if currency_columns is None:
+        currency_columns = (len(header) - 1,)
     bordered_rows = len(rows) + 1
     sheet = _write_table(
         workbook,
@@ -303,9 +298,7 @@ def write_summary_sheet(
         rows,
         formats,
         measurement_font,
-        number_formats=column_number_formats(
-            currency_columns=(len(header) - 1,)
-        ),
+        number_formats=column_number_formats(currency_columns=currency_columns),
         bordered_rows=bordered_rows,
     )
     merged_format = formats.get(FormatKey(border=True))

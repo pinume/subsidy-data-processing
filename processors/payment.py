@@ -35,8 +35,8 @@ from processors.common.paths import find_data_files
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 OUTPUT_DIR = BASE_DIR / "output"
-DATA_DIR: Path
-SOURCE_FILES: tuple[Path, ...]
+DATA_DIR: Path | None = None
+SOURCE_FILES: tuple[Path, ...] = ()
 OUTPUT_FILE = OUTPUT_DIR / "回款明细.xlsx"
 
 # Both programs name their export "...补贴明细"; which program a file belongs
@@ -119,6 +119,35 @@ MODEL_TOKEN_PATTERN = re.compile(
     r"(?=[A-Z0-9._/+\-]*\d)[A-Z0-9]+(?:[._/+\-][A-Z0-9]+)*",
     re.IGNORECASE,
 )
+
+# ASCII-only keywords use word-boundary lookaround so that e.g. "LG" matches
+# "LG 空调" but not model numbers like "LGA2" or "LG-xxx".  Chinese brand
+# names are immune to this problem and keep plain substring matching.
+# The character class lists every character allowed adjacent to an ASCII
+# keyword token: letters, digits, plus common model-number separators.
+
+_ASCII_KEYWORD = re.compile(r"^[A-Za-z0-9]+\Z")
+_ASCII_BOUNDARY = r"A-Za-z0-9_./+-"
+
+
+def _keyword_matches(keyword: str, normalized_name: str) -> bool:
+    """Return True when *keyword* appears in *normalized_name*.
+
+    ASCII-only keywords (letters and digits, no spaces) are matched with
+    lookaround boundaries so they don't accidentally latch onto model
+    numbers or hyphenated suffixes.  Everything else uses casefolded
+    substring matching, which is the right default for Chinese brand
+    names and multi-word phrases like "MAC MINI".
+    """
+    kw_cf = keyword.casefold()
+    if _ASCII_KEYWORD.match(kw_cf):
+        escaped = re.escape(kw_cf)
+        pattern = re.compile(
+            rf"(?<![{_ASCII_BOUNDARY}]){escaped}(?![{_ASCII_BOUNDARY}])",
+            re.IGNORECASE,
+        )
+        return bool(pattern.search(normalized_name))
+    return kw_cf in normalized_name
 SUMMARY_SHEET_NAME = "汇总"
 SUMMARY_HEADERS = ["财务大类", "品牌", "补贴金额合计", "补贴金额计数"]
 DETAIL_SORT_HEADERS = ("财务大类", "品牌", "交易时间", "商品名称")
@@ -229,17 +258,13 @@ def _normalize_header_names(row: tuple) -> list[str]:
     for value in row:
         normalized = value.strip() if isinstance(value, str) else value
         headers.append(
-            HEADER_ALIASES.get(normalized, normalized)
-            if normalized is not None
-            else ""
+            HEADER_ALIASES.get(normalized, normalized) if normalized is not None else ""
         )
     return headers
 
 
 def _is_header_row(row: tuple) -> bool:
-    return any(
-        isinstance(value, str) and value.strip() == "拨付批次" for value in row
-    )
+    return any(isinstance(value, str) and value.strip() == "拨付批次" for value in row)
 
 
 def _missing_required_headers(
@@ -380,7 +405,9 @@ def _collect_normalized_detail(
             continue
 
         normalized = [
-            _cell_value(row, source_positions[name]) if name in source_positions else None
+            _cell_value(row, source_positions[name])
+            if name in source_positions
+            else None
             for name in profile.detail_headers
         ]
         subsidy_value = normalized[subsidy_index_in_headers]
@@ -427,7 +454,7 @@ def _extract_brand(product_name, profile: ProcessingProfile) -> str | None:
         return None
     normalized_name = str(product_name).strip().casefold()
     for brand, keywords in profile.brand_keywords:
-        if any(keyword.casefold() in normalized_name for keyword in keywords):
+        if any(_keyword_matches(keyword, normalized_name) for keyword in keywords):
             return profile.brand_normalization_map.get(brand, brand)
     for model, brand in profile.brand_model_aliases.items():
         if model.casefold() in normalized_name:
@@ -438,10 +465,7 @@ def _extract_brand(product_name, profile: ProcessingProfile) -> str | None:
 def _normalize_financial_brand(
     brand: str | None, financial_category: str
 ) -> str | None:
-    if (
-        financial_category in MIDEA_GROUP_CATEGORIES
-        and brand in MIDEA_GROUP_BRANDS
-    ):
+    if financial_category in MIDEA_GROUP_CATEGORIES and brand in MIDEA_GROUP_BRANDS:
         return "美的系"
     return brand
 
@@ -456,9 +480,7 @@ def _extract_model_tokens(product_name) -> set[str]:
     }
 
 
-def _infer_missing_brands(
-    rows: list[list[object]], headers: tuple[str, ...]
-) -> int:
+def _infer_missing_brands(rows: list[list[object]], headers: tuple[str, ...]) -> int:
     """Infer brands in plain records before they become worksheet cells."""
     product_column = headers.index("商品名称")
     brand_column = headers.index("品牌")
@@ -518,7 +540,9 @@ def _sort_detail_rows(
         return data_row_count
 
     header_positions = {header: index for index, header in enumerate(headers)}
-    missing = [header for header in DETAIL_SORT_HEADERS if header not in header_positions]
+    missing = [
+        header for header in DETAIL_SORT_HEADERS if header not in header_positions
+    ]
     if missing:
         raise ValueError(f"明细缺少排序字段：{missing}")
 
@@ -569,9 +593,7 @@ def _sum_detail_groups(detail_sections) -> dict[tuple[str, str], list]:
             brand = row[brand_column]
             subsidy = row[subsidy_column]
             if category in (None, ""):
-                raise ValueError(
-                    f"{sheet_name}第 {row_number} 行缺少财务大类"
-                )
+                raise ValueError(f"{sheet_name}第 {row_number} 行缺少财务大类")
             key = (str(category), "" if brand in (None, "") else str(brand))
             if key not in groups:
                 groups[key] = [Decimal("0"), 0]
@@ -900,9 +922,7 @@ def _write_summary_sheet(
 
     sheet.freeze_panes(1, 0)
     for column, maximum_pixels in enumerate(maximum_widths):
-        sheet.set_column_pixels(
-            column, column, pixels_to_column_pixels(maximum_pixels)
-        )
+        sheet.set_column_pixels(column, column, pixels_to_column_pixels(maximum_pixels))
 
 
 def _summary_snapshot(rows) -> list[tuple[object, ...]]:

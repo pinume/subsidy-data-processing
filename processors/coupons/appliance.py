@@ -11,10 +11,12 @@ with a bundle of feature flags.
 
 import re
 from collections import Counter
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import date, datetime
-from decimal import Decimal, InvalidOperation
+from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from pathlib import Path
+from typing import cast
 
 from python_calamine import CalamineWorkbook
 
@@ -84,9 +86,12 @@ COUPON_DETAIL_INDEX = COUPON_OUTPUT_HEADER.index("详细情况")
 COUPON_MATCH_FILL_COLOR = "FFC7CE"
 COUPON_BRAND_REPLACEMENTS = sources.COUPON_BRAND_REPLACEMENTS
 # report_contract.py hardcodes this header's text rather than deriving it
-# from COUPON_SUBSIDY_HEADER, so this assertion is what actually keeps the
-# two in sync — see report_contract.py's module docstring.
-assert SUMMARY_HEADER[-1] == f"{COUPON_SUBSIDY_HEADER}合计"
+# from COUPON_SUBSIDY_HEADER, so this check is what keeps the two in sync
+# — see report_contract.py's module docstring.
+if SUMMARY_HEADER[-3] != "补贴金额":
+    raise RuntimeError(
+        f"report_contract 表头倒数第三列应为 '补贴金额'，实际为 '{SUMMARY_HEADER[-3]}'"
+    )
 COUPON_SUMMARY_HEADER = SUMMARY_HEADER
 # 财务大类 for this project's 已上传/未上传/合计 block at the foot of 数据汇总.
 COUPON_SUMMARY_PROJECT_LABEL = "家电"
@@ -124,30 +129,21 @@ def load_coupon_reference_supplement(
             for value in next(rows_iter, [])
         )
         if header != COUPON_REFERENCE_SUPPLEMENT_HEADER:
-            raise ValueError(
-                f"{source.name} 字段标题不符合要求：实际为 {header}"
-            )
+            raise ValueError(f"{source.name} 字段标题不符合要求：实际为 {header}")
 
         references_by_key: dict[tuple[str, date], set[str]] = {}
         for row_number, row in enumerate(rows_iter, start=2):
             if all(value in (None, "") for value in row):
                 continue
-            reference = validated_reference(
-                row[0], f"{source.name} 第 {row_number} 行"
-            )
+            reference = validated_reference(row[0], f"{source.name} 第 {row_number} 行")
             document_number = normalize_document_number(row[1])
             if not document_number:
-                raise ValueError(
-                    f"{source.name} 第 {row_number} 行单据号为空"
-                )
-            document_date = normalize_coupon_date(
-                row[2], row_number, source.name
-            )
+                raise ValueError(f"{source.name} 第 {row_number} 行单据号为空")
+            document_date = normalize_coupon_date(row[2], row_number, source.name)
             key = (document_number, document_date)
             references_by_key.setdefault(key, set()).add(reference)
         return {
-            key: frozenset(references)
-            for key, references in references_by_key.items()
+            key: frozenset(references) for key, references in references_by_key.items()
         }
     finally:
         workbook.close()
@@ -165,13 +161,12 @@ def fill_coupon_reference_supplement(
     ambiguous_count = 0
     matched_row_ids: set[int] = set()
     matched_values: Counter[tuple[str, date, str]] = Counter()
-    for row in included_rows:
-        current_reference = normalize_receipt_identifier(
-            row[summary_index]
-        ).upper()
+    for row_number, row in enumerate(included_rows, start=1):
+        current_reference = normalize_receipt_identifier(row[summary_index]).upper()
         if current_reference in reference_universe:
             continue
-        key = (normalize_document_number(row[0]), row[1])
+        document_date = normalize_coupon_date(row[1], row_number, "销售用券")
+        key = (normalize_document_number(row[0]), document_date)
         references = reference_lookup.get(key)
         if references is None:
             continue
@@ -260,6 +255,14 @@ def sort_coupon_detail_rows(
     rows[1:] = [*regular_rows, *pink_rows]
 
 
+def summary_amount_cell_value(amount: Decimal) -> float:
+    """Convert a rounded summary Decimal to the numeric XLSX cell value."""
+    try:
+        return float(amount.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
+    except (OverflowError, ValueError) as error:
+        raise ValueError(f"汇总补贴金额无法写入 Excel：{amount}") from error
+
+
 def coupon_subsidy_count(amount: Decimal) -> int:
     """Count a coupon row as +1, or as -1 when its 国补 is a reversal.
 
@@ -283,13 +286,10 @@ def build_coupon_summary(
 ) -> tuple[list[tuple[object, ...]], int]:
     """Build the 数据汇总 table.
 
-    The table lists 财务大类 / 品牌 / 备注 groups, then closes with 已上传 /
-    未上传 / 合计: 已上传 comes from the generated 已上传 workbook's 补贴金额,
-    合计 is this coupon file's own 国补 总, and 未上传 is the difference —
-    the same three-way split digital already reports.
+    Brand-level rows only show 未上传 (已上传 is kept at the project summary
+    level). The table closes with per-project 已上传 / 未上传 / 合计 rows.
 
-    Also returns how many rows carried a zero 国补, which is invalid source
-    data worth telling the operator about.
+    Also returns how many rows carried a zero 国补.
     """
     category_index = COUPON_CATEGORY_INDEX
     brand_index = COUPON_BRAND_INDEX
@@ -324,39 +324,38 @@ def build_coupon_summary(
             if amount == 0:
                 zero_subsidy_count += 1
 
-    summary_rows = [
+    # Brand-level rows: only 未上传 (已上传 is shown at the project level).
+    # 4 columns: (财务大类, 品牌, 数量, 补贴金额) — payment columns added later.
+    summary_rows: list[tuple[object, ...]] = [
         (
-            *key,
+            key[0],
+            key[1],
             grouped_counts[key],
-            float(grouped_totals[key].quantize(Decimal("0.01"))),
+            summary_amount_cell_value(grouped_totals[key]),
         )
         for key in sorted(grouped_counts)
+        if key[2] != "已上传"
     ]
-    # Labelled 财务大类=家电 with the status in 备注, so this block reads the
-    # same way as the 数码 block appended after it in the merged 审核明细
-    # workbook (see processors/coupon_report.py).
+    # Project summary: 家电合计 / 已上传/未上传/合计 in 品牌列.
     summary_rows.extend(
         (
             (
-                COUPON_SUMMARY_PROJECT_LABEL,
-                None,
+                f"{COUPON_SUMMARY_PROJECT_LABEL}合计",
                 "已上传",
                 uploaded_subsidy_count,
-                float(as_currency(uploaded_subsidy_total)),
+                summary_amount_cell_value(uploaded_subsidy_total),
             ),
             (
-                COUPON_SUMMARY_PROJECT_LABEL,
                 None,
                 "未上传",
                 coupon_count - uploaded_subsidy_count,
-                float(as_currency(coupon_total - uploaded_subsidy_total)),
+                summary_amount_cell_value(coupon_total - uploaded_subsidy_total),
             ),
             (
-                COUPON_SUMMARY_PROJECT_LABEL,
                 None,
                 "合计",
                 coupon_count,
-                float(as_currency(coupon_total)),
+                summary_amount_cell_value(coupon_total),
             ),
         )
     )
@@ -376,7 +375,7 @@ def coupon_group_sheet_title(
     used_title_keys = {used_title.casefold() for used_title in used_titles}
     while title.casefold() in used_title_keys:
         suffix_text = f"-{suffix}"
-        title = f"{base_title[:31 - len(suffix_text)]}{suffix_text}"
+        title = f"{base_title[: 31 - len(suffix_text)]}{suffix_text}"
         suffix += 1
     used_titles.add(title)
     return title
@@ -427,7 +426,7 @@ def build_coupon_group_sheets(
 
 
 def coupon_summary_group_merges(
-    rows: list[tuple[object, ...]],
+    rows: Sequence[Sequence[object]],
     row_count: int,
     header_rows: int = 1,
 ) -> list[tuple[int, int, int]]:
@@ -454,31 +453,31 @@ def coupon_summary_group_merges(
             ):
                 end += 1
             if end > index:
-                merges.append(
-                    (index + 1 + header_rows, end + 1 + header_rows, column)
-                )
+                merges.append((index + 1 + header_rows, end + 1 + header_rows, column))
             index = end + 1
     return merges
 
 
 def project_summary_blocks(
-    rows: list[tuple[object, ...]],
+    rows: Sequence[Sequence[object]],
 ) -> list[tuple[int, int]]:
-    """Locate the trailing per-project 已上传/未上传/合计 blocks.
+    """Locate project summary blocks (家电合计/数码合计 + 已上传/未上传/合计).
 
-    They are the rows carrying a 财务大类 but no 品牌 (家电 first, then any
-    project appended by processors/coupon_report.py). Returned as inclusive
-    0-based (start, end) spans so the caller can merge 财务大类 and 品牌 into
-    one cell across each block — the split is meaningless there, and leaving
-    an empty 品牌 column beside the label reads as a missing value.
+    Project rows have status strings in column 1; a new block starts when
+    column 0 carries a project label (ends with 合计). Returns 0-based
+    inclusive spans.
     """
+    PROJECT_STATUSES = frozenset({"已上传", "未上传", "合计"})
     blocks: list[tuple[int, int]] = []
     start: int | None = None
     for index, row in enumerate(rows):
-        if row[1] is None:
+        col0 = str(row[0] or "").strip()
+        col1 = str(row[1] or "").strip()
+        if col1 in PROJECT_STATUSES:
             if start is None:
                 start = index
-            elif rows[start][0] != row[0]:
+            # A new non-empty project label starts a fresh block
+            elif col0 and col0 != rows[start][0]:
                 blocks.append((start, index - 1))
                 start = index
         elif start is not None:
@@ -493,39 +492,28 @@ def coupon_summary_project_merges(
     blocks: list[tuple[int, int]],
     header_rows: int = 1,
 ) -> list[tuple[int, int, int, int]]:
-    """Each project block as (first_row, last_row, first_column, last_column).
+    """Each project block merges column A (财务大类) vertically only.
 
-    The 财务大类/品牌 split is meaningless on these trailing 已上传/未上传/合计
-    rows, so both columns become one cell.
+    Only column 1 is merged — column 2 (品牌/状态) stays per-row.
     """
     return [
-        (start + 1 + header_rows, end + 1 + header_rows, 1, 2)
-        for start, end in blocks
+        (start + 1 + header_rows, end + 1 + header_rows, 1, 1) for start, end in blocks
     ]
 
 
 def merged_coupon_summary_values(
-    rows: list[tuple[object, ...]],
+    rows: Sequence[Sequence[object]],
 ) -> list[tuple[object, ...]]:
     merged_rows: list[tuple[object, ...]] = []
     previous_category = None
     previous_brand = None
     for row in rows:
-        if row[0] == "合计":
-            merged_rows.append(row)
-            continue
         category, brand, *remaining = row
-        displayed_category = (
-            None if category == previous_category else category
-        )
+        displayed_category = None if category == previous_category else category
         displayed_brand = (
-            None
-            if category == previous_category and brand == previous_brand
-            else brand
+            None if category == previous_category and brand == previous_brand else brand
         )
-        merged_rows.append(
-            (displayed_category, displayed_brand, *remaining)
-        )
+        merged_rows.append((displayed_category, displayed_brand, *remaining))
         previous_category = category
         previous_brand = brand
     return merged_rows
@@ -559,7 +547,6 @@ class CouponComputation:
     final_unresolved_reference_count: int
     uploaded_count: int
     unmatched_count: int
-    excluded_category_row_count: int
     uploaded_subsidy_count: int
     uploaded_subsidy_total: Decimal
     zero_subsidy_count: int
@@ -569,7 +556,11 @@ class CouponComputation:
     group_sheets: list[tuple[str, str, str, list[tuple[list[object], bool]]]]
 
 
-_SOURCE_TOTAL_UNSET = object()
+class _SourceTotalUnset:
+    """Private sentinel distinguishing an omitted source total from None."""
+
+
+_SOURCE_TOTAL_UNSET = _SourceTotalUnset()
 
 
 def compute_coupon_data(
@@ -577,7 +568,7 @@ def compute_coupon_data(
     rows: list[list[object]] | None = None,
     remark_lookup: dict[tuple[str, date], str] | None = None,
     payment_reference_locations: dict[str, str] | None = None,
-    source_total: Decimal | None | object = _SOURCE_TOTAL_UNSET,
+    source_total: Decimal | None | _SourceTotalUnset = _SOURCE_TOTAL_UNSET,
 ) -> CouponComputation:
     if sources.COUPON_SOURCE_FILE is None:
         raise FileNotFoundError(
@@ -657,12 +648,6 @@ def compute_coupon_data(
         )
     )
     sort_coupon_detail_rows(rows, matched_count)
-    excluded_category_row_count = sum(
-        1
-        for row in coupon_data_rows(rows, matched_count)
-        if str(row[COUPON_CATEGORY_INDEX] or "").strip()
-        == COUPON_EXCLUDED_CATEGORY
-    )
     summary_rows, zero_subsidy_count = build_coupon_summary(
         rows,
         matched_count,
@@ -670,9 +655,9 @@ def compute_coupon_data(
         uploaded_subsidy_total,
     )
     group_sheets = build_coupon_group_sheets(rows, matched_count)
-    if source_total is _SOURCE_TOTAL_UNSET:
+    if isinstance(source_total, _SourceTotalUnset):
         source_total = sources.read_coupon_source_total(sources.COUPON_SOURCE_FILE)
-    computed_total = Decimal(str(summary_rows[-1][4]))
+    computed_total = Decimal(str(summary_rows[-1][3]))
 
     return CouponComputation(
         rows=rows,
@@ -686,9 +671,7 @@ def compute_coupon_data(
         payment_references=payment_references,
         payment_match_count=payment_match_count,
         reference_supplement_count=reference_supplement_count,
-        ambiguous_reference_supplement_count=(
-            ambiguous_reference_supplement_count
-        ),
+        ambiguous_reference_supplement_count=(ambiguous_reference_supplement_count),
         reference_supplement_matches=reference_supplement_matches,
         corrected_count=corrected_count,
         unresolved_count=unresolved_count,
@@ -697,7 +680,6 @@ def compute_coupon_data(
         final_unresolved_reference_count=final_unresolved_reference_count,
         uploaded_count=uploaded_count,
         unmatched_count=unmatched_count,
-        excluded_category_row_count=excluded_category_row_count,
         uploaded_subsidy_count=uploaded_subsidy_count,
         uploaded_subsidy_total=uploaded_subsidy_total,
         zero_subsidy_count=zero_subsidy_count,
@@ -710,15 +692,13 @@ def compute_coupon_data(
 
 def validate_computation(
     computation: CouponComputation,
-    extra_summary_rows: list[tuple[object, ...]] = (),
+    extra_summary_rows: list[tuple[object, ...]],
 ) -> None:
     """Validate business invariants before serializing the workbook."""
     expected_data_rows = computation.data_row_count
     expected_matched_rows = computation.matched_count
     remark_lookup = computation.remark_lookup
-    expected_reference_supplement_matches = (
-        computation.reference_supplement_matches
-    )
+    expected_reference_supplement_matches = computation.reference_supplement_matches
     expected_matched_subsidy_total = computation.matched_subsidy_total
     detail_lookup = computation.detail_lookup
     expected_uploaded_rows = computation.uploaded_count
@@ -727,7 +707,6 @@ def validate_computation(
     expected_paid_rows = computation.payment_match_count
     expected_unresolved_rows = computation.final_unresolved_reference_count
     expected_unmatched_rows = computation.unmatched_count
-    expected_excluded_category_rows = computation.excluded_category_row_count
     expected_summary_rows = computation.summary_rows
     combined_summary_rows = [*expected_summary_rows, *extra_summary_rows]
 
@@ -777,44 +756,35 @@ def validate_computation(
     } & COUPON_BRAND_REPLACEMENTS.keys()
     if remaining_source_brands:
         raise RuntimeError(
-            "销售用券品牌替换校验失败："
-            f"{sorted(remaining_source_brands)}"
+            f"销售用券品牌替换校验失败：{sorted(remaining_source_brands)}"
         )
     actual_matched_subsidy_total = Decimal("0")
-    actual_reference_supplement_matches: Counter[
-        tuple[str, date, str]
-    ] = Counter()
+    actual_reference_supplement_matches: Counter[tuple[str, date, str]] = Counter()
     subsidy_column = COUPON_OUTPUT_HEADER.index(COUPON_SUBSIDY_HEADER)
     for row_number, row in enumerate(rows[1:], start=2):
         document = row[0]
-        document_date = validate_document_and_date_values(
-            document, row[1], row_number
+        document_date = validate_document_and_date_values(document, row[1], row_number)
+        reference = normalize_receipt_identifier(row[summary_column]).upper()
+        in_matched_partition = (
+            expected_matched_rows > 0 and row_number - 1 >= matched_start
         )
-        receipt_remark = remark_lookup.get(
-            (
+        if document_date is not None:
+            receipt_remark = remark_lookup.get(
+                (normalize_document_number(document), document_date),
+                "",
+            )
+            supplement_match = (
                 normalize_document_number(document),
                 document_date,
-            ),
-            "",
-        )
-        reference = normalize_receipt_identifier(
-            row[summary_column]
-        ).upper()
-        in_matched_partition = (
-            expected_matched_rows > 0
-            and row_number - 1 >= matched_start
-        )
-        supplement_match = (
-            normalize_document_number(document),
-            document_date,
-            reference,
-        )
-        if (
-            not in_matched_partition
-            and supplement_match
-            in expected_reference_supplement_matches
-        ):
-            actual_reference_supplement_matches[supplement_match] += 1
+                reference,
+            )
+            if (
+                not in_matched_partition
+                and supplement_match in expected_reference_supplement_matches
+            ):
+                actual_reference_supplement_matches[supplement_match] += 1
+        else:
+            receipt_remark = ""
         if in_matched_partition:
             expected_detail = ""
             expected_remark = receipt_remark
@@ -840,51 +810,60 @@ def validate_computation(
 
     if any(
         actual_reference_supplement_matches[match] < expected_count
-        for match, expected_count
-        in expected_reference_supplement_matches.items()
+        for match, expected_count in expected_reference_supplement_matches.items()
     ):
-        raise RuntimeError(
-            "销售用券补充参考号逐行匹配结果校验失败"
-        )
+        raise RuntimeError("销售用券补充参考号逐行匹配结果校验失败")
     validate_matched_subsidy_total(
         actual_matched_subsidy_total, expected_matched_subsidy_total
     )
     actual_summary_rows = combined_summary_rows
-    # The 家电 portion ends in 已上传 / 未上传 / 合计 (in 备注, with 财务大类
-    # merged into a single 家电 cell); anything appended after it (digital's
-    # rows) is covered by the row-for-row equality check above.
-    remark_column = COUPON_SUMMARY_HEADER.index("备注")
+    # Project summary rows have status (已上传/未上传/合计) in column 1;
+    # brand rows have the brand name there. The 家电 tail is the last 3 rows
+    # of its own project block.
+    status_column = 1
     tail_start = len(expected_summary_rows) - 3
     if tail_start < 0 or [
-        row[remark_column]
-        for row in actual_summary_rows[tail_start:tail_start + 3]
+        row[status_column] for row in actual_summary_rows[tail_start : tail_start + 3]
     ] != ["已上传", "未上传", "合计"]:
         raise RuntimeError("销售用券汇总缺少已上传/未上传/合计三行")
     brand_summary_rows = actual_summary_rows[:tail_start]
     uploaded_row, unuploaded_row, total_row = actual_summary_rows[
-        tail_start:tail_start + 3
+        tail_start : tail_start + 3
     ]
-    if sum(row[3] for row in brand_summary_rows) != (
-        expected_data_rows
-        - expected_matched_rows
-        - expected_excluded_category_rows
-    ):
-        raise RuntimeError("销售用券汇总包含匹配分区数据或数量不完整")
+    # Brand-level rows now only show 未上传 (已上传 is at the project level).
+    # Rows in the excluded category remain in the detail sheet and matching
+    # counts, but are intentionally absent from this brand summary.
+    excluded_unmatched_rows = sum(
+        1
+        for row in coupon_data_rows(computation.rows, expected_matched_rows)
+        if str(row[COUPON_CATEGORY_INDEX] or "").strip() == COUPON_EXCLUDED_CATEGORY
+        and str(row[COUPON_REMARK_INDEX] or "").strip() != "已上传"
+    )
+    expected_brand_summary_count = expected_unmatched_rows - excluded_unmatched_rows
+    # count=col 2, amount=col 3 in the new 4-column layout.
+    brand_summary_count = sum(cast(int, row[2]) for row in brand_summary_rows)
+    if brand_summary_count != expected_brand_summary_count:
+        raise RuntimeError(
+            "销售用券汇总品牌行数量与未上传数量不一致："
+            f"品牌行合计 {brand_summary_count}，"
+            f"应汇总未上传 {expected_brand_summary_count}"
+        )
     # 已上传 is measured from the generated 已上传 workbook, so it must equal
     # what that file reports rather than anything derived from the coupon rows.
-    if (
-        uploaded_row[3] != computation.uploaded_subsidy_count
-        or Decimal(str(uploaded_row[4]))
-        != as_currency(computation.uploaded_subsidy_total)
-    ):
+    summary_uploaded_count = cast(int, uploaded_row[2])
+    summary_unuploaded_count = cast(int, unuploaded_row[2])
+    summary_total_count = cast(int, total_row[2])
+    if summary_uploaded_count != computation.uploaded_subsidy_count or Decimal(
+        str(uploaded_row[3])
+    ) != as_currency(computation.uploaded_subsidy_total):
         raise RuntimeError(
-            "销售用券汇总“已上传”未与家电_已上传的补贴金额一致："
-            f"{uploaded_row[3]} / {uploaded_row[4]}"
+            "销售用券汇总「已上传」未与家电_已上传的补贴金额一致："
+            f"{summary_uploaded_count} / {uploaded_row[3]}"
         )
-    if uploaded_row[3] + unuploaded_row[3] != total_row[3]:
+    if summary_uploaded_count + summary_unuploaded_count != summary_total_count:
         raise RuntimeError("销售用券汇总合计数量校验失败")
-    if Decimal(str(uploaded_row[4])) + Decimal(str(unuploaded_row[4])) != (
-        Decimal(str(total_row[4]))
+    if Decimal(str(uploaded_row[3])) + Decimal(str(unuploaded_row[3])) != (
+        Decimal(str(total_row[3]))
     ):
         raise RuntimeError("销售用券汇总合计金额校验失败")
     # 合计 must be this coupon file's own 国补 total, counted with reversals
@@ -892,9 +871,7 @@ def validate_computation(
     expected_total = Decimal("0")
     expected_count = 0
     for row in coupon_data_rows(computation.rows, expected_matched_rows):
-        if str(row[COUPON_CATEGORY_INDEX] or "").strip() == (
-            COUPON_EXCLUDED_CATEGORY
-        ):
+        if str(row[COUPON_CATEGORY_INDEX] or "").strip() == (COUPON_EXCLUDED_CATEGORY):
             continue
         subsidy = row[COUPON_SUBSIDY_INDEX]
         if subsidy in (None, ""):
@@ -902,11 +879,11 @@ def validate_computation(
         amount = Decimal(str(subsidy))
         expected_total += amount
         expected_count += coupon_subsidy_count(amount)
-    if total_row[3] != expected_count or Decimal(str(total_row[4])) != (
+    if summary_total_count != expected_count or Decimal(str(total_row[3])) != (
         as_currency(expected_total)
     ):
         raise RuntimeError(
-            "销售用券汇总“合计”未与明细总表的国补合计一致："
+            "销售用券汇总「合计」未与明细总表的国补合计一致："
             f"预期 {expected_count} / {as_currency(expected_total)}，"
-            f"实际 {total_row[3]} / {total_row[4]}"
+            f"实际 {total_row[2]} / {total_row[3]}"
         )
