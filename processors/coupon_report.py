@@ -21,6 +21,7 @@ from pathlib import Path
 from python_calamine import CalamineWorkbook
 from xlsxwriter import Workbook as XlsxWorkbook
 
+from processors.common.config import load_payment_brand_config
 from processors.common.excel import (
     calamine_rows,
     load_measurement_font,
@@ -31,6 +32,8 @@ from processors.coupons import appliance, digital, matching, sources, xlsx_outpu
 from processors.coupons.report_contract import SUMMARY_HEADER, SUMMARY_SHEET_NAME
 from processors.coupons.sources import load_coupon_remark_lookup
 from processors.payment import OUTPUT_FILE as PAYMENT_FILE
+from processors.payment import SUMMARY_HEADERS as PAYMENT_SUMMARY_HEADERS
+from processors.payment import SUMMARY_SHEET_NAME as PAYMENT_SUMMARY_SHEET_NAME
 
 # Not unused despite the lack of a local reference: re-exported for
 # store_report.py, which imports SUMMARY_SHEET_NAME/SUMMARY_HEADER from this
@@ -61,6 +64,267 @@ REPORT_PROJECT_ORDER = ("家电", "数码")
 # 财务大类 for digital's 已上传/未上传/合计 block at the foot of 数据汇总.
 DIGITAL_SUMMARY_PROJECT_LABEL = "数码"
 
+# Maps coupon-side 财务大类 values to payment-side 财务大类 values for
+# matching against 回款明细. Coupon categories come from the source export,
+# payment categories from config/payment_brands.yaml — they use different
+# coding systems (e.g. "国产彩电" vs "电视").
+COUPON_TO_PAYMENT_CATEGORY: dict[str, str] = {
+    "国产彩电": "电视",
+}
+
+# Maps coupon-side brand names to payment-side brand names.
+COUPON_TO_PAYMENT_BRAND: dict[str, str] = {
+    "AO史密斯": "A.O.史密斯",
+}
+
+# (财务大类, 品牌) pairs where the payment data uses "美的系" instead of
+# the individual brand name (see config/payment_brands.yaml midea_group).
+_PAYMENT_BRAND_CONFIG = load_payment_brand_config()
+MIDEA_GROUP_MAP: dict[tuple[str, str], str] = {
+    (category, brand): "美的系"
+    for category in _PAYMENT_BRAND_CONFIG.midea_group_categories
+    for brand in _PAYMENT_BRAND_CONFIG.midea_group_brands
+}
+
+# Payment categories that belong to each project, for aggregating
+# project-level summary rows (where 品牌 is None).
+HOUSEHOLD_PAYMENT_CATEGORIES = frozenset({"冰箱", "洗衣机", "电视", "空调", "厨卫"})
+DIGITAL_PAYMENT_CATEGORIES = frozenset({"手机", "平板", "智能穿戴"})
+
+
+def load_payment_summary(
+    path: Path,
+) -> dict[tuple[str, str], tuple[Decimal, int]]:
+    """Read 回款明细.xlsx 汇总 and return {(财务大类, 品牌): (补贴金额合计, 补贴金额计数)}."""
+    if not path.exists():
+        raise FileNotFoundError(f"未找到回款明细文件：{path}")
+
+    workbook = CalamineWorkbook.from_path(str(path))
+    try:
+        if PAYMENT_SUMMARY_SHEET_NAME not in workbook.sheet_names:
+            raise ValueError(
+                f"回款明细缺少 {PAYMENT_SUMMARY_SHEET_NAME!r} 工作表"
+            )
+        rows = list(
+            calamine_rows(workbook.get_sheet_by_name(PAYMENT_SUMMARY_SHEET_NAME))
+        )
+        if not rows:
+            raise ValueError("回款明细汇总工作表为空")
+
+        actual_header = tuple(rows[0][: len(PAYMENT_SUMMARY_HEADERS)])
+        if actual_header != tuple(PAYMENT_SUMMARY_HEADERS):
+            raise ValueError(
+                f"回款明细汇总表头不符合预期：{actual_header}"
+            )
+
+        result: dict[tuple[str, str], tuple[Decimal, int]] = {}
+        current_category = ""
+        for row in rows[1:]:
+            category_raw = row[0]
+            if category_raw not in (None, ""):
+                current_category = str(category_raw).strip()
+            category = current_category
+            brand = str(row[1] or "").strip()
+            amount_raw = row[2]
+            count_raw = row[3]
+            if not category or category == "合计":
+                continue
+            if not brand:
+                continue
+            if amount_raw in (None, ""):
+                amount = Decimal("0")
+            else:
+                amount = Decimal(str(amount_raw))
+            if count_raw in (None, ""):
+                count = 0
+            else:
+                count = int(Decimal(str(count_raw)).to_integral_value())
+            key = (category, brand)
+            result[key] = (amount, count)
+        return result
+    finally:
+        workbook.close()
+
+
+def _resolve_payment_data(
+    coupon_category: str,
+    coupon_brand: str | None,
+    payment_summary: dict[tuple[str, str], tuple[Decimal, int]],
+    project_label: str,
+) -> tuple[Decimal, int]:
+    """Look up (回款金额, 回款数量) for a single row."""
+    if coupon_brand is not None:
+        # An empty brand is a real brand-level row with no identifiable brand;
+        # only None means that the caller is resolving a project total.
+        if not coupon_brand:
+            return (Decimal("0"), 0)
+        key = (coupon_category, coupon_brand)
+        if key in payment_summary:
+            return payment_summary[key]
+
+        mapped_category = COUPON_TO_PAYMENT_CATEGORY.get(
+            coupon_category, coupon_category
+        )
+        if mapped_category != coupon_category:
+            mapped_key = (mapped_category, coupon_brand)
+            if mapped_key in payment_summary:
+                return payment_summary[mapped_key]
+
+        mapped_brand = COUPON_TO_PAYMENT_BRAND.get(coupon_brand, coupon_brand)
+        if mapped_brand != coupon_brand:
+            mapped_key = (coupon_category, mapped_brand)
+            if mapped_key in payment_summary:
+                return payment_summary[mapped_key]
+            if mapped_category != coupon_category:
+                mapped_key = (mapped_category, mapped_brand)
+                if mapped_key in payment_summary:
+                    return payment_summary[mapped_key]
+
+        midea_brand = MIDEA_GROUP_MAP.get((coupon_category, coupon_brand))
+        if midea_brand is not None:
+            midea_key = (coupon_category, midea_brand)
+            if midea_key in payment_summary:
+                return payment_summary[midea_key]
+            if mapped_category != coupon_category:
+                midea_key = (mapped_category, midea_brand)
+                if midea_key in payment_summary:
+                    return payment_summary[midea_key]
+
+        return (Decimal("0"), 0)
+
+    # Project-level row: aggregate all payment data for this project
+    if project_label == "家电":
+        entries = [
+            v
+            for (cat, _brand), v in payment_summary.items()
+            if cat in HOUSEHOLD_PAYMENT_CATEGORIES
+        ]
+    elif project_label == "数码":
+        entries = [
+            v
+            for (cat, _brand), v in payment_summary.items()
+            if cat in DIGITAL_PAYMENT_CATEGORIES
+        ]
+    else:
+        return (Decimal("0"), 0)
+
+    total_amount = sum((a for a, _ in entries), Decimal("0"))
+    total_count = sum(c for _, c in entries)
+    return (total_amount, total_count)
+
+
+def enrich_summary_rows_with_payment(
+    summary_rows: list[tuple[object, ...]],
+    payment_summary: dict[tuple[str, str], tuple[Decimal, int]],
+    project_label: str,
+) -> list[tuple[object, ...]]:
+    """Append 回款金额 and 回款数量 to every summary row.
+
+    Brand rows and project 合计 rows get payment data; project 已上传/未上传
+    rows leave both columns empty.  Brands with payment data but no 未上传
+    rows are added with zero counts so their 回款 is still visible.
+    """
+    if not payment_summary:
+        return [(*row, None, None) for row in summary_rows]
+
+    # Collect existing brand keys (only brand-level rows, not project rows).
+    # Project rows have status (已上传/未上传/合计) in column 1; brand rows
+    # have a brand name there.
+    PROJECT_STATUSES = frozenset({"已上传", "未上传", "合计"})
+    existing_brand_keys: set[tuple[str, str]] = set()
+    brand_rows: list[tuple[object, ...]] = []
+    project_rows: list[tuple[object, ...]] = []
+    for row in summary_rows:
+        col1 = str(row[1] or "").strip()
+        if col1 in PROJECT_STATUSES:
+            project_rows.append(row)
+        else:
+            category = str(row[0] or "").strip()
+            existing_brand_keys.add((category, col1))
+            brand_rows.append(row)
+
+    # Find payment brands missing from the brand rows.
+    # Only add missing brands when brand rows already exist (家电);
+    # digital has no brand rows, and we don't want to invent them.
+    # Only consider categories that already appear in the coupon summary
+    # (avoids pulling 数码 brands into 家电, and vice versa).
+    extra_brands: list[tuple[str, str]] = []
+    if brand_rows:
+        coupon_categories = {str(r[0] or "").strip() for r in brand_rows}
+        # Also include the mapped payment equivalents of coupon categories
+        eligible_payment_categories = set(coupon_categories)
+        for coupon_cat in coupon_categories:
+            mapped = COUPON_TO_PAYMENT_CATEGORY.get(coupon_cat)
+            if mapped:
+                eligible_payment_categories.add(mapped)
+
+        # Collect coupon brands that are already represented (including
+        # mapped equivalents, to avoid duplicates like 美的 + 美的系).
+        represented_brands: set[tuple[str, str]] = set()
+        for coupon_cat, coupon_brand in existing_brand_keys:
+            represented_brands.add((coupon_cat, coupon_brand))
+            # Also mark the payment-side equivalent of this category
+            mapped_cat = COUPON_TO_PAYMENT_CATEGORY.get(coupon_cat, coupon_cat)
+            if mapped_cat != coupon_cat:
+                represented_brands.add((mapped_cat, coupon_brand))
+            # If this brand maps to something else in payment, mark that too
+            mapped_brand = COUPON_TO_PAYMENT_BRAND.get(coupon_brand)
+            if mapped_brand:
+                represented_brands.add((coupon_cat, mapped_brand))
+                if mapped_cat != coupon_cat:
+                    represented_brands.add((mapped_cat, mapped_brand))
+            midea = MIDEA_GROUP_MAP.get((coupon_cat, coupon_brand))
+            if midea:
+                represented_brands.add((coupon_cat, midea))
+                if mapped_cat != coupon_cat:
+                    represented_brands.add((mapped_cat, midea))
+
+        for (cat, brand), _ in sorted(payment_summary.items()):
+            if cat not in eligible_payment_categories:
+                continue
+            if (cat, brand) in represented_brands:
+                continue
+            extra_brands.append((cat, brand))
+
+    # Enrich brand rows
+    enriched: list[tuple[object, ...]] = []
+    for row in brand_rows:
+        category = str(row[0] or "").strip()
+        brand_str = str(row[1] or "").strip()
+        amount, count = _resolve_payment_data(
+            category, brand_str, payment_summary, project_label
+        )
+        display_amount: float | None = float(amount) if amount else None
+        display_count: int | None = count if count else None
+        enriched.append((*row, display_amount, display_count))
+
+    # Add extra brand rows (no 未上传 data, but have 回款)
+    for cat, brand in extra_brands:
+        pay_amount, pay_count = payment_summary[(cat, brand)]
+        display_amount: float | None = float(pay_amount) if pay_amount else None
+        display_count: int | None = pay_count if pay_count else None
+        enriched.append((cat, brand, 0, 0.0, display_amount, display_count))
+
+    # Re-sort brand rows: by (category, brand)
+    enriched.sort(key=lambda r: (str(r[0] or ""), str(r[1] or "")))
+
+    # Append project rows (已上传/未上传 leave payment empty, 合计 gets totals)
+    for row in project_rows:
+        category = str(row[0] or "").strip()
+        # Status is in column 1 for project rows (former 品牌 column)
+        status = str(row[1] or "").strip()
+        if status in ("已上传", "未上传"):
+            enriched.append((*row, None, None))
+        else:
+            amount, count = _resolve_payment_data(
+                category, None, payment_summary, project_label
+            )
+            display_amount: float | None = float(amount) if amount else None
+            display_count: int | None = count if count else None
+            enriched.append((*row, display_amount, display_count))
+
+    return enriched
+
 
 def merged_reference_decisions(
     appliance_computation: appliance.CouponComputation,
@@ -72,12 +336,8 @@ def merged_reference_decisions(
     automatic corrections with no audit trail at all.
     """
     decisions = [
-        ("家电", *decision)
-        for decision in appliance_computation.reference_decisions
-    ] + [
-        ("数码", *decision)
-        for decision in digital_computation.reference_decisions
-    ]
+        ("家电", *decision) for decision in appliance_computation.reference_decisions
+    ] + [("数码", *decision) for decision in digital_computation.reference_decisions]
     decisions.sort(
         key=lambda decision: (
             REFERENCE_REPORT_ORDER[decision[1]],
@@ -119,9 +379,18 @@ def digital_extra_summary_rows(
     own "合计" row) with 财务大类="数码" and no 品牌, so the block mirrors the
     家电 one that precedes it (see appliance.COUPON_SUMMARY_PROJECT_LABEL)."""
     return [
-        (DIGITAL_SUMMARY_PROJECT_LABEL, None, remark, count, total)
+        (f"{DIGITAL_SUMMARY_PROJECT_LABEL}合计", remark, count, total)
         for remark, count, total in digital_computation.summary_rows
     ]
+
+
+def _pad_row_to_width(
+    row: tuple[object, ...], width: int, pad_value: object = None
+) -> tuple[object, ...]:
+    """Ensure a row tuple has exactly `width` elements, padding if needed."""
+    if len(row) >= width:
+        return row[:width]
+    return (*row, *(pad_value for _ in range(width - len(row))))
 
 
 def write_coupon_workbook(
@@ -134,8 +403,11 @@ def write_coupon_workbook(
     """Write all 30 sheets in workbook order: 数据汇总, the two 明细总表, the
     group sheets, then the Processing Report."""
     combined_summary_rows = [
-        *appliance_computation.summary_rows,
-        *extra_summary_rows,
+        _pad_row_to_width(row, len(appliance.COUPON_SUMMARY_HEADER))
+        for row in (
+            *appliance_computation.summary_rows,
+            *extra_summary_rows,
+        )
     ]
     project_blocks = appliance.project_summary_blocks(combined_summary_rows)
     brand_rows_end = (
@@ -170,8 +442,10 @@ def write_coupon_workbook(
                 if brand_rows_end
                 else []
             ),
-            project_merges=appliance.coupon_summary_project_merges(
-                project_blocks
+            project_merges=appliance.coupon_summary_project_merges(project_blocks),
+            currency_columns=(
+                len(appliance.COUPON_SUMMARY_HEADER) - 3,
+                len(appliance.COUPON_SUMMARY_HEADER) - 2,
             ),
         )
         # computation.rows already opens with the header row; the openpyxl
@@ -230,9 +504,7 @@ def process_coupon_sales() -> None:
             "家电、数码用券导出格式的 .XLSX 文件"
         )
 
-    payment_reference_locations = sources.load_payment_reference_locations(
-        PAYMENT_FILE
-    )
+    payment_reference_locations = sources.load_payment_reference_locations(PAYMENT_FILE)
     source_workbook = CalamineWorkbook.from_path(str(coupon_source))
     try:
         export = sources.read_coupon_export(coupon_source, source_workbook)
@@ -262,6 +534,17 @@ def process_coupon_sales() -> None:
         extra_summary_rows,
     )
     digital.validate_computation(digital_computation)
+
+    # Enrich the four-column summary rows with payment amount and count.
+    # Validation above deliberately runs against the pre-enrichment layout.
+    payment_summary = load_payment_summary(PAYMENT_FILE)
+    appliance_computation.summary_rows = enrich_summary_rows_with_payment(
+        appliance_computation.summary_rows, payment_summary, "家电"
+    )
+    extra_summary_rows = enrich_summary_rows_with_payment(
+        extra_summary_rows, payment_summary, "数码"
+    )
+
     write_xlsx_atomically(
         OUTPUT_FILE,
         lambda path: write_coupon_workbook(
@@ -281,16 +564,10 @@ def process_coupon_sales() -> None:
     )
 
     la = appliance_computation
-    print(
-        "[家电] Subsidy coupon statistics complete: "
-        f"{la.data_row_count} rows"
-    )
+    print(f"[家电] Subsidy coupon statistics complete: {la.data_row_count} rows")
     print(f"[家电] Receipt remark matches: {la.receipt_remark_count}")
     print(f"[家电] Pink return or exchange rows: {la.matched_count}")
-    print(
-        "[家电] Supplemental reference matches: "
-        f"{la.reference_supplement_count}"
-    )
+    print(f"[家电] Supplemental reference matches: {la.reference_supplement_count}")
     print(
         "[家电] Ambiguous supplemental reference candidates: "
         f"{la.ambiguous_reference_supplement_count}"
@@ -298,8 +575,7 @@ def process_coupon_sales() -> None:
     print(f"[家电] Submitted status matches: {la.uploaded_count}")
     print(f"[家电] Payment status matches: {la.payment_match_count}")
     print(
-        "[家电] Rows not found in submitted data (marked 未上传): "
-        f"{la.unmatched_count}"
+        f"[家电] Rows not found in submitted data (marked 未上传): {la.unmatched_count}"
     )
     print(
         f"[家电] Automatic reference corrections: {la.corrected_count}; "
@@ -319,10 +595,7 @@ def process_coupon_sales() -> None:
     report_source_total_gap("家电", la.source_total, la.computed_total)
 
     dg = digital_computation
-    print(
-        "[数码] Subsidy coupon statistics complete: "
-        f"{dg.data_row_count} rows"
-    )
+    print(f"[数码] Subsidy coupon statistics complete: {dg.data_row_count} rows")
     print(f"[数码] Remark matches: {dg.matched_count}")
     print(f"[数码] Submitted status matches: {dg.uploaded_match_count}")
     print(f"[数码] Payment status matches: {dg.payment_match_count}")
@@ -331,8 +604,7 @@ def process_coupon_sales() -> None:
         f"{dg.uploaded_subsidy_count}; total: {dg.uploaded_subsidy_total:.2f}"
     )
     print(
-        "[数码] Rows not found in submitted data (marked 未上传): "
-        f"{dg.unmatched_count}"
+        f"[数码] Rows not found in submitted data (marked 未上传): {dg.unmatched_count}"
     )
     print(
         f"[数码] Automatic reference corrections: {dg.corrected_count}; "
@@ -355,9 +627,9 @@ def _comparable_output_value(value: object) -> object:
     if isinstance(value, date):
         return value
     if isinstance(value, Decimal):
-        return round(float(value), 9)
+        return value.quantize(Decimal("0.000000001"))
     if isinstance(value, float):
-        return round(value, 9)
+        return Decimal(str(round(value, 9)))
     return value
 
 
@@ -375,9 +647,7 @@ def _validate_sheet_rows(
     for row_number, (actual, expected) in enumerate(
         zip(actual_rows, expected_rows), start=1
     ):
-        comparable_actual = tuple(
-            _comparable_output_value(value) for value in actual
-        )
+        comparable_actual = tuple(_comparable_output_value(value) for value in actual)
         comparable_expected = tuple(
             _comparable_output_value(value) for value in expected
         )
@@ -398,8 +668,11 @@ def _expected_coupon_output(
     dict[str, set[tuple[tuple[int, int], tuple[int, int]]]],
 ]:
     combined_summary_rows = [
-        *appliance_computation.summary_rows,
-        *extra_summary_rows,
+        _pad_row_to_width(row, len(appliance.COUPON_SUMMARY_HEADER))
+        for row in (
+            *appliance_computation.summary_rows,
+            *extra_summary_rows,
+        )
     ]
     expected_rows = {
         appliance.SUMMARY_SHEET_NAME: [
@@ -409,17 +682,12 @@ def _expected_coupon_output(
         appliance.DETAILS_SHEET_NAME: [
             tuple(row) for row in appliance_computation.rows
         ],
-        digital.DETAILS_SHEET_NAME: [
-            tuple(row) for row in digital_computation.rows
-        ],
+        digital.DETAILS_SHEET_NAME: [tuple(row) for row in digital_computation.rows],
     }
     for sheet_name, _, _, grouped_rows in appliance_computation.group_sheets:
         expected_rows[sheet_name] = [
             appliance.COUPON_GROUP_HEADER,
-            *(
-                appliance.select_coupon_group_columns(row)
-                for row, _ in grouped_rows
-            ),
+            *(appliance.select_coupon_group_columns(row) for row, _ in grouped_rows),
         ]
     expected_rows[REFERENCE_REPORT_SHEET] = [
         REFERENCE_REPORT_HEADER,
@@ -433,9 +701,7 @@ def _expected_coupon_output(
     summary_merges = {
         ((first - 1, column - 1), (last - 1, column - 1))
         for first, last, column in (
-            appliance.coupon_summary_group_merges(
-                combined_summary_rows, brand_rows_end
-            )
+            appliance.coupon_summary_group_merges(combined_summary_rows, brand_rows_end)
             if brand_rows_end
             else []
         )

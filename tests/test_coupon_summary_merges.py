@@ -15,16 +15,16 @@ from processors.coupons.appliance import (
     project_summary_blocks,
 )
 
-# 财务大类, 品牌, then three columns the merging ignores.
+# 财务大类, 品牌, 数量, 补贴金额 (4-column format without 上传状态)
 SUMMARY_ROWS = [
-    ("空调", "格力", 1, 2, 3.0),
-    ("空调", "格力", 1, 2, 3.0),
-    ("空调", "美的", 1, 2, 3.0),
-    ("冰箱", "海尔", 1, 2, 3.0),
-    ("冰箱", "海尔", 1, 2, 3.0),
-    ("冰箱", "海尔", 1, 2, 3.0),
-    ("家电", None, 1, 2, 3.0),
-    ("家电", None, 1, 2, 3.0),
+    ("空调", "格力", 1, 2.0),
+    ("空调", "格力", 1, 2.0),
+    ("空调", "美的", 1, 2.0),
+    ("冰箱", "海尔", 1, 2.0),
+    ("冰箱", "海尔", 1, 2.0),
+    ("冰箱", "海尔", 1, 2.0),
+    ("家电合计", "已上传", 1, 2.0),
+    (None, "合计", 1, 2.0),
 ]
 
 
@@ -62,6 +62,9 @@ class GroupMergeRangesTest(unittest.TestCase):
 
 class ProjectMergeRangesTest(unittest.TestCase):
     def test_blocks_become_two_column_ranges(self) -> None:
+        """Project blocks now merge only column A (not A:B)."""
         blocks = project_summary_blocks(SUMMARY_ROWS)
+        # Blocks: rows 6-7 (0-based), merge only col 1 vertically
         self.assertEqual(blocks, [(6, 7)])
-        self.assertEqual(coupon_summary_project_merges(blocks), [(8, 9, 1, 2)])
+        # (first_row, last_row, first_col, last_col) with header offset
+        self.assertEqual(coupon_summary_project_merges(blocks), [(8, 9, 1, 1)])

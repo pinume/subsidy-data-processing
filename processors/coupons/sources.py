@@ -43,8 +43,8 @@ COUPON_DIGITAL_SUBSIDY_HEADER = "2026数码国补（计入收入）"
 COUPON_KEPT_SOURCE_COLUMNS_PREFIX = (3, 4, 6, 8, 15, 18)
 COUPON_BRAND_REPLACEMENTS = load_brand_mapping()
 
-DATA_DIR: Path
-COUPON_SOURCE_FILE: Path | None
+DATA_DIR: Path | None = None
+COUPON_SOURCE_FILE: Path | None = None
 COUPON_REFERENCE_SUPPLEMENT_FILE: Path
 COUPON_REFERENCE_SUPPLEMENT_KEYWORD = "新建 Microsoft Excel 工作表"
 PAYMENT_DETAIL_SHEETS = {
@@ -141,9 +141,7 @@ def load_coupon_remark_lookup(source: Path) -> dict[tuple[str, date], str]:
             if required_header not in header
         ]
         if missing_headers:
-            raise ValueError(
-                f"{source.name} 缺少字段：{'、'.join(missing_headers)}"
-            )
+            raise ValueError(f"{source.name} 缺少字段：{'、'.join(missing_headers)}")
 
         document_index = header.index("单据号")
         date_index = header.index("日期")
@@ -193,9 +191,7 @@ def load_uploaded_summary(source: Path) -> tuple[dict[str, str], int, Decimal]:
             if required_header not in header
         ]
         if missing_headers:
-            raise ValueError(
-                f"{source.name} 缺少字段：{'、'.join(missing_headers)}"
-            )
+            raise ValueError(f"{source.name} 缺少字段：{'、'.join(missing_headers)}")
 
         reference_index = header.index("检索参考号")
         status_index = header.index("状态")
@@ -259,9 +255,7 @@ def load_payment_reference_locations(
             for row_number, row in enumerate(rows_iter, start=2):
                 location = f"{source.name} 的 {sheet_name} 第 {row_number} 行"
                 raw_reference = (
-                    row[reference_index]
-                    if reference_index < len(row)
-                    else None
+                    row[reference_index] if reference_index < len(row) else None
                 )
                 if raw_reference in (None, ""):
                     raise ValueError(f"{location}交易参考号为空")
@@ -343,11 +337,12 @@ def configure_data_dir(data_dir: Path) -> None:
     else:
         COUPON_SOURCE_FILE = matches[0]
 
-    COUPON_REFERENCE_SUPPLEMENT_FILE = resolve_unique_file(
-        find_data_files(
-            data_dir, COUPON_REFERENCE_SUPPLEMENT_KEYWORD, (".xlsx",)
+    COUPON_REFERENCE_SUPPLEMENT_FILE = (
+        resolve_unique_file(
+            find_data_files(data_dir, COUPON_REFERENCE_SUPPLEMENT_KEYWORD, (".xlsx",))
         )
-    ) or data_dir / f"{COUPON_REFERENCE_SUPPLEMENT_KEYWORD}.xlsx"
+        or data_dir / f"{COUPON_REFERENCE_SUPPLEMENT_KEYWORD}.xlsx"
+    )
 
 
 @dataclass(frozen=True)
@@ -383,9 +378,7 @@ def read_coupon_export(
         )
         header_row = all_rows[1]
         if len(header_row) < required_columns:
-            raise ValueError(
-                f"{source.name} 列数不足：至少需要 {required_columns} 列"
-            )
+            raise ValueError(f"{source.name} 列数不足：至少需要 {required_columns} 列")
         last_row = all_rows[-1]
         last_row_marker = last_row[0] if last_row else None
         if str(last_row_marker or "").strip() != "合计":
@@ -426,9 +419,7 @@ def read_coupon_export(
             if column >= len(values) or values[column] in (None, "")
         }
         if blank_subsidy_cells:
-            source_type_book = load_workbook(
-                source, read_only=True, data_only=False
-            )
+            source_type_book = load_workbook(source, read_only=True, data_only=False)
             try:
                 source_type_sheet = source_type_book.worksheets[0]
                 if hasattr(source_type_sheet, "reset_dimensions"):
@@ -504,9 +495,7 @@ def read_coupon_export(
                     digital_rows,
                 )
             document_number = (
-                ""
-                if row_values[0] is None
-                else str(row_values[0]).replace("收款", "")
+                "" if row_values[0] is None else str(row_values[0]).replace("收款", "")
             )
             document_date = normalize_coupon_date(
                 row_values[1], row_number, source.name

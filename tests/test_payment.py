@@ -66,14 +66,76 @@ class DetailProcessingTests(unittest.TestCase):
             [source_positions["商户编号"]],
         )
 
-    def test_lg_keyword_does_not_match_the_leader_lga2_model(self) -> None:
+    def test_ascii_keywords_use_lookaround_boundaries(self) -> None:
+        """ASCII-only keywords (LG, HP, OMEN, VICTUS, Y50) use lookaround
+        boundaries so they don't latch onto model numbers or suffixes."""
         profile = payment.PROFILES["家电"]
+        digital = payment.PROFILES["数码"]
 
+        # LG: should match when surrounded by non-boundary characters.
+        self.assertEqual(
+            payment._extract_brand("LG 空调KFR-35GW", profile), "LG"
+        )
+        self.assertEqual(
+            payment._extract_brand("(LG) 空调", profile), "LG"
+        )
+        self.assertEqual(
+            payment._extract_brand("some text LG", profile), "LG"
+        )
+        # LG: must NOT match when adjacent to model-number characters.
         self.assertEqual(
             payment._extract_brand("统帅空调KFR-35GW/LGA2-1套机", profile),
             "海尔",
         )
-        self.assertEqual(payment._extract_brand("LG 空调KFR-35GW", profile), "LG")
+        self.assertEqual(
+            payment._extract_brand("产品LG-TEST-A", profile), None
+        )
+        self.assertEqual(
+            payment._extract_brand("产品LG/42英寸", profile), None
+        )
+        self.assertEqual(
+            payment._extract_brand("产品LG_test", profile), None
+        )
+
+        # HP / OMEN / VICTUS: same boundary semantics.
+        self.assertEqual(
+            payment._extract_brand("HP 暗影精灵", profile), "惠普"
+        )
+        self.assertEqual(
+            payment._extract_brand("HP-TEST", profile), None
+        )
+        self.assertEqual(
+            payment._extract_brand("OMEN 笔记本", profile), "惠普"
+        )
+        self.assertEqual(
+            payment._extract_brand("OMEN-TEST", profile), None
+        )
+        self.assertEqual(
+            payment._extract_brand("VICTUS 台式机", profile), "惠普"
+        )
+        self.assertEqual(
+            payment._extract_brand("VICTUS/暗影", profile), None
+        )
+
+        # Y50 (digital profile): boundary semantics.
+        # Y500: "VIVO" matches but "Y50" must NOT match "Y500" (digit after).
+        self.assertEqual(
+            payment._extract_brand("vivo Y500 手机", digital), "vivo"
+        )
+
+        # Y50-5G: "VIVO" already matches, but "Y50" must NOT match "Y50-5G"
+        # because the hyphen is a boundary character.
+        self.assertEqual(
+            payment._extract_brand("vivo Y50-5G", digital), "vivo"
+        )
+
+        # Non-ASCII keywords (Chinese, multi-word) keep substring matching.
+        self.assertEqual(
+            payment._extract_brand("MAC MINI 主机", profile), "苹果"
+        )
+        self.assertEqual(
+            payment._extract_brand("MACBOOK PRO", profile), "苹果"
+        )
 
     def test_source_headers_are_trimmed(self) -> None:
         profile = payment.PROFILES["家电"]

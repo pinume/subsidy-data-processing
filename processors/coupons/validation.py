@@ -38,9 +38,7 @@ def validate_uploaded_and_unmatched_counts(
 ) -> tuple[int, int]:
     """Check counts; return the 0-based (详细情况, 备注) columns."""
     detail_column = header.index("详细情况")
-    actual_uploaded_rows = sum(
-        row[detail_column] not in (None, "") for row in rows[1:]
-    )
+    actual_uploaded_rows = sum(row[detail_column] not in (None, "") for row in rows[1:])
     if actual_uploaded_rows != expected_uploaded_rows:
         raise RuntimeError(
             "销售用券已上传匹配数校验失败：预期 "
@@ -73,7 +71,9 @@ def validate_document_and_date_values(
         raise RuntimeError(f"销售用券第 {row_number} 行单据日期不是日期值")
     if isinstance(document_date, datetime):
         return document_date.date()
-    return document_date
+    if isinstance(document_date, date):
+        return document_date
+    return None
 
 
 def validate_remark_and_detail_values(
@@ -110,9 +110,7 @@ def validate_payment_statuses(
     included_end = len(rows) - excluded_bottom_rows
     actual_paid_rows = 0
     for row_index, row in enumerate(rows[1:], start=1):
-        reference = normalize_receipt_identifier(
-            row[summary_column]
-        ).upper()
+        reference = normalize_receipt_identifier(row[summary_column]).upper()
         expected_status = (
             "已回款"
             if (
@@ -124,9 +122,7 @@ def validate_payment_statuses(
         )
         actual_status = str(row[payment_status_column] or "")
         if actual_status != expected_status:
-            raise RuntimeError(
-                f"销售用券第 {row_index + 1} 行回款情况匹配校验失败"
-            )
+            raise RuntimeError(f"销售用券第 {row_index + 1} 行回款情况匹配校验失败")
         actual_paid_rows += int(actual_status == "已回款")
     if actual_paid_rows != expected_paid_rows:
         raise RuntimeError(

@@ -36,7 +36,7 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 OUTPUT_DIR = BASE_DIR / "output"
 OUTPUT_FILE = OUTPUT_DIR / "收款单统计.xlsx"
 
-DATA_DIR: Path
+DATA_DIR: Path | None = None
 RECEIPTS_SOURCE_FILE: Path | None
 RECEIPT_STATISTICS_KEYWORD = "收款单统计"
 
@@ -152,12 +152,10 @@ def read_receipt_rows(source: Path) -> list[list[object]]:
         header_row = [normalize_calamine_value(value) for value in header_row]
 
         source_headers = [
-            str(value).strip() if value is not None else ""
-            for value in header_row
+            str(value).strip() if value is not None else "" for value in header_row
         ]
         missing_headers = [
-            header for header in RECEIPTS_SOURCE_HEADER
-            if header not in source_headers
+            header for header in RECEIPTS_SOURCE_HEADER if header not in source_headers
         ]
         if missing_headers:
             raise ValueError(
@@ -170,8 +168,7 @@ def read_receipt_rows(source: Path) -> list[list[object]]:
 
         def select(values: list[object]) -> list[object]:
             return [
-                normalize_calamine_value(values[index])
-                if index < len(values) else None
+                normalize_calamine_value(values[index]) if index < len(values) else None
                 for index in source_column_indexes
             ]
 
@@ -180,8 +177,7 @@ def read_receipt_rows(source: Path) -> list[list[object]]:
             rows.append(select(source_row))
 
         actual_header = tuple(
-            str(value).strip() if value is not None else ""
-            for value in rows[0]
+            str(value).strip() if value is not None else "" for value in rows[0]
         )
         if actual_header != RECEIPTS_SOURCE_HEADER:
             raise ValueError(
@@ -237,9 +233,7 @@ def _receipt_remark_flags(
 ) -> tuple[bool, bool]:
     match_key = str(record["match_key"])
     has_original = bool(record["original_invoice_number"])
-    is_referenced = bool(
-        match_key and match_key in referenced_original_invoice_numbers
-    )
+    is_referenced = bool(match_key and match_key in referenced_original_invoice_numbers)
     return has_original, is_referenced
 
 
@@ -282,7 +276,7 @@ def receipt_output_sort_key(
     has_no_date = not isinstance(normalized_date, date)
     return (
         RECEIPTS_REMARK_ORDER.get(normalized_remark, len(RECEIPTS_REMARK_ORDER)),
-        "" if known_remark else normalized_remark,
+        "" if known_remark else (normalized_remark or ""),
         has_no_date,
         date.max if has_no_date else normalized_date,
         normalize_receipt_identifier(document_number),
@@ -466,9 +460,7 @@ def prepare_receipt_data(kept_rows: list[list[object]], source_name: str):
             is_prior_period_reference = (
                 min_receipt_year is not None
                 and is_valid_original_invoice_number(original_invoice_number)
-                and datetime.strptime(
-                    original_invoice_number[:6], "%y%m%d"
-                ).year
+                and datetime.strptime(original_invoice_number[:6], "%y%m%d").year
                 < min_receipt_year
             )
             if not is_prior_period_reference:
@@ -642,8 +634,7 @@ def validate_receipts_output(
         header = tuple(cell.value for cell in header_cells)
         if header != RECEIPTS_OUTPUT_HEADER:
             raise RuntimeError(
-                f"收款单表头校验失败：预期 {RECEIPTS_OUTPUT_HEADER}，"
-                f"实际 {header}"
+                f"收款单表头校验失败：预期 {RECEIPTS_OUTPUT_HEADER}，实际 {header}"
             )
 
         snapshots = []
@@ -670,9 +661,7 @@ def validate_receipts_output(
                 )
             )
 
-        actual_rows = [
-            _comparable_receipt_row(snapshot[1:4]) for snapshot in snapshots
-        ]
+        actual_rows = [_comparable_receipt_row(snapshot[1:4]) for snapshot in snapshots]
         if actual_rows != [_comparable_receipt_row(row) for row in expected_rows]:
             raise RuntimeError("收款单数据行与生成结果不一致")
 
@@ -688,19 +677,13 @@ def validate_receipts_output(
                 not isinstance(document_number, str)
                 or document_number.startswith("收款")
             ):
-                raise RuntimeError(
-                    f"收款单第 {row_number} 行的单据号格式不正确"
-                )
+                raise RuntimeError(f"收款单第 {row_number} 行的单据号格式不正确")
 
             if date_value is not None:
                 if not isinstance(date_value, (date, datetime)):
-                    raise RuntimeError(
-                        f"收款单第 {row_number} 行的日期不是有效日期"
-                    )
+                    raise RuntimeError(f"收款单第 {row_number} 行的日期不是有效日期")
                 if date_number_format != "yyyymmdd":
-                    raise RuntimeError(
-                        f"收款单第 {row_number} 行的日期格式不正确"
-                    )
+                    raise RuntimeError(f"收款单第 {row_number} 行的日期格式不正确")
 
             if actual_remark is not None and actual_remark not in RECEIPTS_REMARKS:
                 raise RuntimeError(
@@ -735,9 +718,7 @@ def validate_receipts_output(
             ) in snapshots
         ]
         if actual_sort_keys != sorted(actual_sort_keys):
-            raise RuntimeError(
-                "收款单排序校验失败：应按备注、日期、单据号升序排列"
-            )
+            raise RuntimeError("收款单排序校验失败：应按备注、日期、单据号升序排列")
 
         if expected_issues:
             issues_sheet = workbook[ISSUES_SHEET_NAME]
@@ -813,8 +794,8 @@ def _write_receipts_workbook(
                     properties["num_format"] = "@"
                 elif number_format_kind == "date":
                     properties["num_format"] = "yyyymmdd"
-                body_formats[(has_remark, number_format_kind)] = (
-                    workbook.add_format(properties)
+                body_formats[(has_remark, number_format_kind)] = workbook.add_format(
+                    properties
                 )
 
         measure = width_measurer(measurement_font)

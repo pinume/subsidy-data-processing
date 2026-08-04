@@ -76,7 +76,7 @@ brand_keywords:
     - brand: 索尼
       keywords: [索尼, SONY]
     - brand: LG
-      keywords: ["LG "]
+      keywords: ["LG"]
     - brand: 东芝
       keywords: [东芝, TOSHIBA]
     - brand: 松下
@@ -100,7 +100,7 @@ brand_keywords:
     - brand: 苹果
       keywords: [苹果, APPLE, MACBOOK, "MAC MINI"]
     - brand: 惠普
-      keywords: [惠普, "HP ", "OMEN ", "VICTUS "]
+      keywords: [惠普, "HP", "OMEN", "VICTUS"]
     - brand: 联想
       keywords: [联想, LENOVO, THINKBOOK, 小新]
     - brand: 华硕
@@ -132,7 +132,7 @@ brand_keywords:
       keywords: [OPPO]
     - brand: vivo
       keywords:
-        [VIVO, IQOO, X300, X200, Y600, Y500, Y300, "Y50 ", S50, S30]
+        [VIVO, IQOO, X300, X200, Y600, Y500, Y300, "Y50", S50, S30]
     - brand: 一加
       keywords: [一加, ONEPLUS]
     - brand: 苹果

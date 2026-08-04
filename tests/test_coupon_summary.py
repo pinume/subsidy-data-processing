@@ -5,8 +5,10 @@ from collections import Counter
 from contextlib import redirect_stdout
 from decimal import Decimal
 from pathlib import Path
+from types import ModuleType
 
 from openpyxl import Workbook, load_workbook
+from openpyxl.workbook.workbook import Workbook as OpenpyxlWorkbook
 from xlsxwriter import Workbook as XlsxWorkbook
 
 from processors.common.excel import load_measurement_font, resolve_font
@@ -15,7 +17,7 @@ from processors.coupons import digital as coupons_digital
 
 
 def summary_row(
-    module: object,
+    module: ModuleType,
     *,
     category: str,
     brand: str,
@@ -40,6 +42,7 @@ class CouponSummaryTest(unittest.TestCase):
             source = Path(directory) / "已上传.xlsx"
             workbook = Workbook()
             sheet = workbook.active
+            self.assertIsNotNone(sheet)
             sheet.title = "Summary"
             sheet.append(["检索参考号", "状态", "描述", "补贴金额"])
             sheet.append(["12345678901N", "已完成", "匹配成功", 10.1])
@@ -144,27 +147,20 @@ class CouponSummaryTest(unittest.TestCase):
             ),
         ]
 
-        summary, zero_subsidy_count = (
-            appliance.build_coupon_summary(
-                rows,
-                excluded_bottom_rows=1,
-                uploaded_subsidy_count=1,
-                uploaded_subsidy_total=Decimal("20.20"),
-            )
+        summary, zero_subsidy_count = appliance.build_coupon_summary(
+            rows,
+            excluded_bottom_rows=1,
+            uploaded_subsidy_count=1,
+            uploaded_subsidy_total=Decimal("20.20"),
         )
 
         self.assertEqual(
             summary,
             [
-                ("冰箱", "海尔", "已上传", 2, 30.31),
-                ("空调", "格力", "未上传", 1, 0.0),
-                # 已上传 is measured from the 已上传 workbook, 合计 from this
-                # coupon file's own 国补 column, and 未上传 is the difference.
-                # 财务大类=家电 with no 品牌 so the block matches the 数码 one
-                # appended after it in 审核明细.
-                ("家电", None, "已上传", 1, 20.20),
-                ("家电", None, "未上传", 1, 10.11),
-                ("家电", None, "合计", 2, 30.31),
+                ("空调", "格力", 1, 0.0),
+                ("家电合计", "已上传", 1, 20.20),
+                (None, "未上传", 1, 10.11),
+                (None, "合计", 2, 30.31),
             ],
         )
         self.assertEqual(zero_subsidy_count, 0)
@@ -203,17 +199,15 @@ class CouponSummaryTest(unittest.TestCase):
             ),
         ]
 
-        summary, zero_subsidy_count = (
-            appliance.build_coupon_summary(
-                rows,
-                excluded_bottom_rows=0,
-                uploaded_subsidy_count=0,
-                uploaded_subsidy_total=Decimal("0"),
-            )
+        summary, zero_subsidy_count = appliance.build_coupon_summary(
+            rows,
+            excluded_bottom_rows=0,
+            uploaded_subsidy_count=0,
+            uploaded_subsidy_total=Decimal("0"),
         )
 
         self.assertEqual(zero_subsidy_count, 1)
-        self.assertEqual(summary[-1], ("家电", None, "合计", 0, 0.0))
+        self.assertEqual(summary[-1], (None, "合计", 0, 0.0))
 
     def test_invalid_subsidy_is_rejected(self) -> None:
         for module in (coupons_digital, appliance):
@@ -273,7 +267,7 @@ class SummarySheetLayoutTest(unittest.TestCase):
     no test called the builder.
     """
 
-    def build_computation(self, **overrides) -> object:
+    def build_computation(self) -> appliance.CouponComputation:
         rows = [
             list(appliance.COUPON_OUTPUT_HEADER),
             summary_row(
@@ -291,7 +285,7 @@ class SummarySheetLayoutTest(unittest.TestCase):
             uploaded_subsidy_count=1,
             uploaded_subsidy_total=Decimal("10.11"),
         )
-        fields = dict(
+        return appliance.CouponComputation(
             rows=rows,
             data_row_count=1,
             matched_count=0,
@@ -312,7 +306,6 @@ class SummarySheetLayoutTest(unittest.TestCase):
             final_unresolved_reference_count=0,
             uploaded_count=0,
             unmatched_count=0,
-            excluded_category_row_count=0,
             uploaded_subsidy_count=1,
             uploaded_subsidy_total=Decimal("10.11"),
             zero_subsidy_count=zero,
@@ -321,10 +314,8 @@ class SummarySheetLayoutTest(unittest.TestCase):
             summary_rows=summary,
             group_sheets=[],
         )
-        fields.update(overrides)
-        return appliance.CouponComputation(**fields)
 
-    def build_sheet(self):
+    def build_sheet(self) -> tuple[OpenpyxlWorkbook, appliance.CouponComputation]:
         """Write 数据汇总 with the XlsxWriter writer and read it back.
 
         The assertions below are about the finished sheet — its rows, its
@@ -397,41 +388,33 @@ class SummarySheetLayoutTest(unittest.TestCase):
         try:
             sheet = workbook[appliance.SUMMARY_SHEET_NAME]
             tail_start = 1 + len(computation.summary_rows) - 3
-            remark_column = appliance.COUPON_SUMMARY_HEADER.index(
-                "备注"
-            ) + 1
+            status_column = 2  # column B in sheet (1-based)
             labels = [
-                sheet.cell(tail_start + offset + 1, remark_column).value
+                sheet.cell(tail_start + offset + 1, status_column).value
                 for offset in range(3)
             ]
             self.assertEqual(labels, ["已上传", "未上传", "合计"])
             categories = [
-                sheet.cell(tail_start + offset + 1, 1).value
-                for offset in range(3)
+                sheet.cell(tail_start + offset + 1, 1).value for offset in range(3)
             ]
             # Merged vertically, so only the first row keeps the label.
             self.assertEqual(
                 categories,
-                [appliance.COUPON_SUMMARY_PROJECT_LABEL, None, None],
+                ["家电合计", None, None],
             )
         finally:
             workbook.close()
 
     def test_project_block_spans_both_label_columns(self) -> None:
-        """财务大类 and 品牌 become one cell over each project's block.
-
-        The block is not a brand breakdown, so an empty 品牌 cell beside the
-        家电 label read as a missing value rather than an inapplicable one.
-        """
+        """Project rows no longer merge 财务大类/品牌 — each column stands alone."""
         workbook, computation = self.build_sheet()
         try:
             sheet = workbook[appliance.SUMMARY_SHEET_NAME]
             tail_start = 1 + len(computation.summary_rows) - 3
             merges = {str(r) for r in sheet.merged_cells.ranges}
-            self.assertIn(
-                f"A{tail_start + 1}:B{tail_start + 3}",
-                merges,
-            )
+            # No A:B merge for project block since 取消左右合并
+            a_b_merge = f"A{tail_start + 1}:B{tail_start + 3}"
+            self.assertNotIn(a_b_merge, merges)
         finally:
             workbook.close()
 
@@ -441,14 +424,15 @@ class ProjectSummaryBlocksTest(unittest.TestCase):
     from the bottom, so any number of projects can be appended."""
 
     def test_blocks_are_the_brandless_runs_split_per_project(self) -> None:
+        """Project rows detected by status in column 1, split by column 0 label."""
         rows = [
-            ("冰箱", "海尔", "已上传", 1, 1.0),
-            ("空调", "格力", "未上传", 1, 2.0),
-            ("家电", None, "已上传", 1, 1.0),
-            ("家电", None, "未上传", 1, 2.0),
-            ("家电", None, "合计", 2, 3.0),
-            ("数码", None, "已上传", 1, 4.0),
-            ("数码", None, "合计", 1, 4.0),
+            ("冰箱", "海尔", 1, 1.0),
+            ("空调", "格力", 1, 2.0),
+            ("家电合计", "已上传", 1, 1.0),
+            (None, "未上传", 1, 2.0),
+            (None, "合计", 2, 3.0),
+            ("数码合计", "已上传", 1, 4.0),
+            (None, "合计", 1, 4.0),
         ]
 
         self.assertEqual(
@@ -458,8 +442,8 @@ class ProjectSummaryBlocksTest(unittest.TestCase):
 
     def test_brand_only_rows_produce_no_blocks(self) -> None:
         rows = [
-            ("冰箱", "海尔", "已上传", 1, 1.0),
-            ("空调", "格力", "未上传", 1, 2.0),
+            ("冰箱", "海尔", 1, 1.0),
+            ("空调", "格力", 1, 2.0),
         ]
 
         self.assertEqual(appliance.project_summary_blocks(rows), [])
