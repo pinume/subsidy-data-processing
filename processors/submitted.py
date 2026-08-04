@@ -75,6 +75,7 @@ class SubmittedReport:
     summary_rows: list[list[object]]
     status_rows: dict[str, list[list[object]]]
     file_count: int
+    skipped_files: tuple[str, ...]
     data_row_count: int
     # Statuses the export carried that STATUS_ORDER does not name, counted per
     # status. Those rows reach Summary but no status sheet, so without this
@@ -191,15 +192,24 @@ def build_report(profile_name: str) -> SubmittedReport:
     output_header: list[object] | None = None
     reference_column_index: int | None = None
     reference_locations: dict[str, tuple[str, int]] = {}
+    skipped_files: list[str] = []
+    merged_file_count = 0
     data_row_count = 0
     data_rows: list[list[object]] = []
 
     for path in files:
         source_workbook = CalamineWorkbook.from_path(str(path))
         try:
+            if not source_workbook.sheet_names:
+                skipped_files.append(path.name)
+                continue
+
+            merged_file_count += 1
             rows = (
                 _trim_trailing_none(row)
-                for row in calamine_rows(source_workbook.get_sheet_by_index(0))
+                for row in calamine_rows(
+                    source_workbook.get_sheet_by_name(source_workbook.sheet_names[0])
+                )
             )
             title = next(rows, None)
             header = next(rows, None)
@@ -269,6 +279,11 @@ def build_report(profile_name: str) -> SubmittedReport:
             source_workbook.close()
 
     if output_header is None:
+        if skipped_files:
+            raise ValueError(
+                "已上传数据文件均为空，未找到可处理的工作表："
+                f"{'、'.join(skipped_files)}"
+            )
         raise RuntimeError("未能生成输出表头")
 
     status_column_index = output_header.index("状态")
@@ -306,7 +321,8 @@ def build_report(profile_name: str) -> SubmittedReport:
         header=tuple(output_header),
         summary_rows=data_rows,
         status_rows=rows_by_status,
-        file_count=len(files),
+        file_count=merged_file_count,
+        skipped_files=tuple(skipped_files),
         data_row_count=data_row_count,
         unknown_status_counts=dict(unknown_status_counts),
     )
@@ -486,6 +502,11 @@ def process_submitted_files(profile_name: str) -> None:
         "Submitted data complete: "
         f"merged {report.file_count} files, {report.data_row_count} rows"
     )
+    if report.skipped_files:
+        print(
+            "Skipped empty source files: "
+            f"{'、'.join(report.skipped_files)}"
+        )
     # Reported, never fatal: an unrecognised status is still uploaded data and
     # belongs in Summary; it just has no status sheet of its own, so silence
     # would hide it from an operator reading the status tabs. A status new to

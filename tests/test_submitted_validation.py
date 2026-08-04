@@ -3,6 +3,7 @@ import unittest
 from datetime import date
 from decimal import Decimal
 from pathlib import Path
+from unittest.mock import patch
 
 from openpyxl import Workbook, load_workbook
 from openpyxl.utils import column_index_from_string, get_column_letter
@@ -330,6 +331,40 @@ class SubmittedHeaderValidationTest(unittest.TestCase):
                 )
                 self.assertEqual(report.file_count, 1)
                 self.assertEqual(report.data_row_count, 1)
+
+    def test_workbook_without_worksheets_is_skipped(self) -> None:
+        class EmptyWorkbook:
+            sheet_names = ()
+
+            def close(self) -> None:
+                pass
+
+        with tempfile.TemporaryDirectory() as directory:
+            data_dir = Path(directory)
+            marker = submitted_file_marker("数码")
+            empty_path = data_dir / f"{marker}_000_empty.xlsx"
+            empty_path.touch()
+            valid_path = data_dir / f"{marker}_001_valid.xlsx"
+            write_submitted_source(valid_path, SUBMITTED_HEADER)
+
+            real_from_path = submitted.CalamineWorkbook.from_path
+
+            def open_source(path: str):
+                if Path(path).name == empty_path.name:
+                    return EmptyWorkbook()
+                return real_from_path(path)
+
+            with patch.object(
+                submitted.CalamineWorkbook,
+                "from_path",
+                side_effect=open_source,
+            ):
+                submitted.configure_data_dir(data_dir)
+                report = submitted.build_report("数码")
+
+        self.assertEqual(report.file_count, 1)
+        self.assertEqual(report.skipped_files, (empty_path.name,))
+        self.assertEqual(report.data_row_count, 1)
 
     def test_output_carries_only_the_kept_columns(self) -> None:
         """详细地址/tel/发票金额/图片1/S/N码 were dropped from both projects.

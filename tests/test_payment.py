@@ -206,6 +206,12 @@ class DetailProcessingTests(unittest.TestCase):
         )
         self.assertEqual(bold_rows, [3, 4])
 
+    def test_summary_snapshot_normalizes_blank_brand(self) -> None:
+        self.assertEqual(
+            payment._summary_snapshot([["空调", "", 10.0, 1]]),
+            [("空调", None, 10.0, 1)],
+        )
+
     def test_large_read_only_detail_uses_streaming_iteration(self) -> None:
         with TemporaryDirectory(dir=".") as temporary_dir:
             path = Path(temporary_dir) / "detail.xlsx"

@@ -929,10 +929,14 @@ def _summary_snapshot(rows) -> list[tuple[object, ...]]:
     """Truncate 汇总 to its declared columns so the two sides compare equal.
 
     calamine pads every row out to the sheet's used width, and openpyxl's
-    max_col did the truncating before; doing it here keeps the snapshot taken
-    from the workbook being built comparable with the one read back.
+    max_col did the truncating before. It also returns an empty string for a
+    blank cell in the in-memory report but calamine reads that same saved cell
+    as None, so normalize both forms while taking the snapshot.
     """
-    return [tuple(row[: len(SUMMARY_HEADERS)]) for row in rows]
+    return [
+        tuple(None if value == "" else value for value in row[: len(SUMMARY_HEADERS)])
+        for row in rows
+    ]
 
 
 def validate_output(
