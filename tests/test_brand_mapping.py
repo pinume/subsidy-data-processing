@@ -36,7 +36,12 @@ class BrandMappingTest(unittest.TestCase):
         self.assertEqual(mapping["华凌"], "美的")
 
     def test_coupon_sources_uses_configured_brand_mapping(self):
-        self.assertIs(COUPON_BRAND_REPLACEMENTS, load_brand_mapping())
+        # Content, not identity: load_from() clears the lru_cache in its
+        # finally block, so any other test that ran before this one makes
+        # load_brand_mapping() return a fresh dict that can never be the
+        # import-time object COUPON_BRAND_REPLACEMENTS was bound to.
+        # assertIs here would fail or pass depending on test order.
+        self.assertEqual(COUPON_BRAND_REPLACEMENTS, load_brand_mapping())
 
     def test_values_are_nonempty_strings_and_are_stripped(self) -> None:
         self.assertEqual(

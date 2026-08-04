@@ -535,6 +535,17 @@ class SubsidyCorrectionWarningTests(unittest.TestCase):
                     create=True,
                 )
             )
+            # COUPON_REFERENCE_SUPPLEMENT_FILE only exists after
+            # configure_data_dir; without this patch the test fails whenever
+            # it runs before any test that configured the module globals.
+            stack.enter_context(
+                patch.object(
+                    coupon_report.sources,
+                    "COUPON_REFERENCE_SUPPLEMENT_FILE",
+                    Path("参考号补充.xlsx"),
+                    create=True,
+                )
+            )
             stack.enter_context(
                 patch.object(
                     coupon_report.sources,
