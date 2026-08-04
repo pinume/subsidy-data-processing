@@ -1,7 +1,7 @@
 """数码 side of 销售用券情况统计 processing.
 
 数码 has no group sheets, reference-supplement file, or approved-detail
-panel, so its summary is a simpler three-column (备注, 数量, 合计) table
+panel, so its summary is a simpler three-column (上传状态, 数量, 合计) table
 instead of 家电's five-column one — see processors/coupons/appliance.py's
 module docstring for why this stays a separate module rather than a
 feature-flagged variant of that one.
@@ -118,14 +118,16 @@ def compute_coupon_data(
             f"“{COUPON_SUBSIDY_HEADER}”的 .XLSX 文件"
         )
 
-    if rows is None:
-        rows = sources.read_coupon_rows(
-            sources.COUPON_SOURCE_FILE, sources.DIGITAL_PROFILE
-        )
     if remark_lookup is None:
         remark_lookup = load_coupon_remark_lookup(COUPON_REMARK_SOURCE_FILE)
-    matched_count, matched_subsidy_total, _receipt_remark_count = (
-        matching.fill_coupon_remarks(rows, remark_lookup, "2026数码国补")
+    if rows is None:
+        rows = sources.read_coupon_rows(
+            sources.COUPON_SOURCE_FILE,
+            sources.DIGITAL_PROFILE,
+            remark_lookup=remark_lookup,
+        )
+    matched_count, matched_subsidy_total = matching.fill_coupon_remarks(
+        rows, remark_lookup, "2026数码国补"
     )
     detail_lookup, uploaded_subsidy_count, uploaded_subsidy_total = (
         load_uploaded_summary(COUPON_UPLOADED_SOURCE_FILE)
@@ -154,14 +156,15 @@ def compute_coupon_data(
     ) = matching.correct_coupon_references(
         rows, reference_universe, matched_count
     )
-    uploaded_match_count, unmatched_count, payment_match_count = (
-        matching.fill_reference_statuses(
-            rows,
-            detail_lookup,
-            reference_universe,
-            payment_references,
-            matched_count,
-        )
+    uploaded_match_count, unmatched_count = matching.fill_upload_statuses(
+        rows,
+        detail_lookup,
+        matched_count,
+    )
+    payment_match_count = matching.fill_payment_statuses(
+        rows,
+        payment_references,
+        matched_count,
     )
     summary_rows = build_coupon_summary(
         rows,

@@ -85,7 +85,7 @@ class CouponStatusLookupTest(unittest.TestCase):
 
 
 class CouponStatusFillTest(unittest.TestCase):
-    def test_uploaded_and_payment_matches_are_filled_in_one_pass(self) -> None:
+    def test_upload_status_is_filled_before_payment_matching(self) -> None:
         reference = "12345678901N"
         for header in HEADERS:
             with self.subTest(header=header):
@@ -93,17 +93,17 @@ class CouponStatusFillTest(unittest.TestCase):
                 rows = [list(header), row]
                 lookup = {reference: "已完成：匹配成功"}
 
-                counts = matching.fill_reference_statuses(
+                upload_counts = matching.fill_upload_statuses(
                     rows,
                     lookup,
-                    {reference},
-                    {reference},
                 )
+                paid_count = matching.fill_payment_statuses(rows, {reference})
 
                 remark_index = header.index("备注")
                 detail_index = header.index("详细情况")
                 payment_index = header.index("回款情况")
-                self.assertEqual(counts, (1, 0, 1))
+                self.assertEqual(upload_counts, (1, 0))
+                self.assertEqual(paid_count, 1)
                 self.assertEqual(row[remark_index], "已上传")
                 self.assertEqual(row[detail_index], "已完成：匹配成功")
                 self.assertEqual(row[payment_index], "已回款")
@@ -115,16 +115,16 @@ class CouponStatusFillTest(unittest.TestCase):
                 row = coupon_row(header, "99999999999Z")
                 rows = [list(header), row]
 
-                counts = matching.fill_reference_statuses(
+                upload_counts = matching.fill_upload_statuses(
                     rows,
                     {},
-                    {"12345678901N"},
-                    set(),
                 )
+                paid_count = matching.fill_payment_statuses(rows, set())
 
                 remark_index = header.index("备注")
                 payment_index = header.index("回款情况")
-                self.assertEqual(counts, (0, 1, 0))
+                self.assertEqual(upload_counts, (0, 1))
+                self.assertEqual(paid_count, 0)
                 self.assertEqual(row[remark_index], "未上传")
                 self.assertIsNone(row[payment_index])
 
@@ -135,16 +135,30 @@ class CouponStatusFillTest(unittest.TestCase):
                 row = coupon_row(header, reference)
                 rows = [list(header), row]
 
-                counts = matching.fill_reference_statuses(
-                    rows,
-                    {},
-                    {reference},
-                    {reference},
-                )
+                paid_count = matching.fill_payment_statuses(rows, {reference})
 
-                self.assertEqual(counts, (0, 0, 0))
+                self.assertEqual(paid_count, 0)
                 self.assertEqual(row[header.index("备注")], "")
                 self.assertIsNone(row[header.index("回款情况")])
+
+    def test_only_exact_uploaded_remark_is_eligible_for_payment(self) -> None:
+        reference = "12345678901N"
+        header = appliance.COUPON_OUTPUT_HEADER
+        rows = [
+            list(header),
+            coupon_row(header, reference, remark="已上传"),
+            coupon_row(header, reference, remark="未上传"),
+            coupon_row(header, reference, remark="退换货/倒票（退单）"),
+            coupon_row(header, reference, remark=" 已上传 "),
+        ]
+
+        paid_count = matching.fill_payment_statuses(rows, {reference})
+
+        payment_index = header.index("回款情况")
+        self.assertEqual(paid_count, 1)
+        self.assertEqual(rows[1][payment_index], "已回款")
+        for row in rows[2:]:
+            self.assertIsNone(row[payment_index])
 
     def test_excluded_bottom_rows_are_left_alone(self) -> None:
         reference = "12345678901N"
@@ -158,17 +172,21 @@ class CouponStatusFillTest(unittest.TestCase):
         bottom_row = coupon_row(header, "99999999999Z")
         rows = [list(header), uploaded_row, bottom_row]
 
-        counts = matching.fill_reference_statuses(
+        upload_counts = matching.fill_upload_statuses(
             rows,
             {reference: "已完成：匹配成功"},
-            {reference},
+            excluded_bottom_rows=1,
+        )
+        paid_count = matching.fill_payment_statuses(
+            rows,
             {reference},
             excluded_bottom_rows=1,
         )
 
         remark_index = header.index("备注")
         payment_index = header.index("回款情况")
-        self.assertEqual(counts, (1, 0, 1))
+        self.assertEqual(upload_counts, (1, 0))
+        self.assertEqual(paid_count, 1)
         self.assertEqual(uploaded_row[remark_index], "已上传")
         self.assertEqual(uploaded_row[payment_index], "已回款")
         self.assertEqual(bottom_row[remark_index], "")

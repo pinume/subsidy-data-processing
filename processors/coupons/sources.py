@@ -42,6 +42,10 @@ COUPON_FAMILY_SUBSIDY_HEADER = "2026家电国补（计入收入）"
 COUPON_DIGITAL_SUBSIDY_HEADER = "2026数码国补（计入收入）"
 COUPON_KEPT_SOURCE_COLUMNS_PREFIX = (3, 4, 6, 8, 15, 18)
 COUPON_BRAND_REPLACEMENTS = load_brand_mapping()
+APPLIANCE_FINANCIAL_CATEGORIES = frozenset(
+    {"冰箱", "厨卫", "国产彩电", "空调", "洗衣机"}
+)
+DIGITAL_FINANCIAL_CATEGORIES = frozenset({"数码", "新业务类"})
 
 DATA_DIR: Path
 COUPON_SOURCE_FILE: Path | None
@@ -102,15 +106,15 @@ def classify_coupon_row(
     digital_subsidy: object,
     row_number: int,
     source_name: str,
+    financial_category: object = None,
+    has_receipt_remark: bool = False,
 ) -> str:
     """Classify a merged 销售用券情况统计 row as "家电" or "数码".
 
-    The merged export carries exactly one of the two 国补 columns populated
-    per row — that is what tells the two projects apart in a file where their
-    rows sit side by side. Both populated is source data corruption
-    serious enough to stop the run rather than silently pick a side; neither
-    populated defaults to 家电, where the existing zero-国补 warning already
-    surfaces it to the operator as bad data.
+    财务大类 determines the project for known categories unless the receipt
+    lookup marks the row as a return/exchange. Other categories retain the
+    export's original column-based classification. Both subsidy columns
+    populated is source data corruption serious enough to stop the run.
     """
     appliance_nonzero = appliance_subsidy not in (None, "", 0)
     digital_nonzero = digital_subsidy not in (None, "", 0)
@@ -120,6 +124,12 @@ def classify_coupon_row(
             f"（{appliance_subsidy}）与数码国补（{digital_subsidy}），"
             "无法确定该行所属项目"
         )
+    category = str(financial_category or "").strip()
+    if not has_receipt_remark:
+        if category in APPLIANCE_FINANCIAL_CATEGORIES:
+            return "家电"
+        if category in DIGITAL_FINANCIAL_CATEGORIES:
+            return "数码"
     return "数码" if digital_nonzero else "家电"
 
 
@@ -360,6 +370,7 @@ class CouponExport:
 def read_coupon_export(
     source: Path,
     source_workbook=None,
+    remark_lookup: dict[tuple[str, date], str] | None = None,
 ) -> CouponExport:
     """Read the merged export once: classify every row for both projects and
     extract the source's own 合计 total in the same iter_rows() pass.
@@ -373,6 +384,7 @@ def read_coupon_export(
     """
     owns_workbook = source_workbook is None
     workbook = source_workbook or CalamineWorkbook.from_path(str(source))
+    remark_lookup = remark_lookup or {}
     try:
         sheet = workbook.get_sheet_by_index(0)
         all_rows = list(calamine_rows(sheet))
@@ -485,12 +497,64 @@ def read_coupon_export(
             digital_subsidy = (
                 values[digital_column] if digital_column < len(values) else None
             )
+            document_number = (
+                ""
+                if appliance_values[0] is None
+                else str(appliance_values[0]).replace("收款", "")
+            )
+            document_date = normalize_coupon_date(
+                appliance_values[1], row_number, source.name
+            )
+            remark = remark_lookup.get(
+                (normalize_document_number(document_number), document_date),
+                "",
+            )
+            # The export's own column-based classification: whichever subsidy
+            # column is non-zero decides the project. Same rule
+            # classify_coupon_row applies when no 财务大类 or receipt remark
+            # is available, so this stays in sync without a second call.
+            original_classification = (
+                "数码" if digital_subsidy not in (None, "", 0) else "家电"
+            )
             classification = classify_coupon_row(
                 appliance_subsidy=appliance_subsidy,
                 digital_subsidy=digital_subsidy,
                 row_number=row_number,
                 source_name=source.name,
+                financial_category=appliance_values[4],
+                has_receipt_remark=bool(remark),
             )
+            if classification != original_classification:
+                if classification == "家电":
+                    moved_subsidy = digital_subsidy
+                    appliance_values[-1] = moved_subsidy
+                    from_header = COUPON_DIGITAL_SUBSIDY_HEADER
+                    to_header = COUPON_FAMILY_SUBSIDY_HEADER
+                else:
+                    moved_subsidy = appliance_subsidy
+                    digital_values[-1] = moved_subsidy
+                    from_header = COUPON_FAMILY_SUBSIDY_HEADER
+                    to_header = COUPON_DIGITAL_SUBSIDY_HEADER
+                if moved_subsidy not in (None, "", 0):
+                    if source_total is not None:
+                        try:
+                            adjustment = Decimal(str(moved_subsidy))
+                        except InvalidOperation as error:
+                            raise ValueError(
+                                f"{source.name} 第 {row_number} 行补贴金额无效："
+                                f"{moved_subsidy!r}"
+                            ) from error
+                        if classification == "家电":
+                            source_total += adjustment
+                        else:
+                            source_total -= adjustment
+                    print(
+                        f"WARNING: {source.name} 第 {row_number} 行单据 "
+                        f"{document_number} 的财务大类为"
+                        f"{str(appliance_values[4] or '').strip()!r}，"
+                        f"已将 {moved_subsidy} 从“{from_header}”"
+                        f"调整到“{to_header}”"
+                    )
             if classification == "家电":
                 profile, row_values, target = (
                     APPLIANCE_PROFILE,
@@ -503,14 +567,6 @@ def read_coupon_export(
                     digital_values,
                     digital_rows,
                 )
-            document_number = (
-                ""
-                if row_values[0] is None
-                else str(row_values[0]).replace("收款", "")
-            )
-            document_date = normalize_coupon_date(
-                row_values[1], row_number, source.name
-            )
             result_row = [
                 document_number,
                 document_date,
@@ -533,6 +589,7 @@ def read_coupon_rows(
     source: Path,
     profile: CouponSourceProfile,
     source_workbook=None,
+    remark_lookup: dict[tuple[str, date], str] | None = None,
 ) -> list[list[object]]:
     """Read and classify just one project's rows.
 
@@ -544,13 +601,14 @@ def read_coupon_rows(
     the whole sheet once, just without reusing the other project's half of
     the classification.
     """
-    export = read_coupon_export(source, source_workbook)
+    export = read_coupon_export(source, source_workbook, remark_lookup)
     return export.appliance_rows if profile.name == "家电" else export.digital_rows
 
 
 def read_coupon_source_total(
     source: Path,
     source_workbook=None,
+    remark_lookup: dict[tuple[str, date], str] | None = None,
 ) -> Decimal | None:
     """Read the 国补 value the source file states in its own 合计 row.
 
@@ -559,4 +617,4 @@ def read_coupon_source_total(
     so this takes no profile — a parameter that accepted DIGITAL_PROFILE
     without honoring it would be misleading, not genuinely flexible.
     """
-    return read_coupon_export(source, source_workbook).source_total
+    return read_coupon_export(source, source_workbook, remark_lookup).source_total

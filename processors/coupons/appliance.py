@@ -2,7 +2,8 @@
 
 家电 is a strict superset of 数码's report: it additionally reads an optional
 reference-supplement file, builds 财务大类/品牌 group sheets, and closes
-数据汇总 with a five-column (财务大类, 品牌, 备注, 数量, 合计) summary instead
+数据汇总 with a five-column (财务大类, 品牌, 上传状态, 数量, 2026国补金额)
+summary instead
 of 数码's three-column one. Those are real differences in what gets built,
 not just different constants, so 数码 keeps its own module
 (processors/coupons/digital.py) rather than being forced through this one
@@ -83,10 +84,8 @@ COUPON_REMARK_INDEX = COUPON_OUTPUT_HEADER.index("备注")
 COUPON_DETAIL_INDEX = COUPON_OUTPUT_HEADER.index("详细情况")
 COUPON_MATCH_FILL_COLOR = "FFC7CE"
 COUPON_BRAND_REPLACEMENTS = sources.COUPON_BRAND_REPLACEMENTS
-# report_contract.py hardcodes this header's text rather than deriving it
-# from COUPON_SUBSIDY_HEADER, so this assertion is what actually keeps the
-# two in sync — see report_contract.py's module docstring.
-assert SUMMARY_HEADER[-1] == f"{COUPON_SUBSIDY_HEADER}合计"
+# 数据汇总 covers both projects with the generic 2026国补金额 label, so its
+# header is not derived from this project's subsidy header.
 COUPON_SUMMARY_HEADER = SUMMARY_HEADER
 # 财务大类 for this project's 已上传/未上传/合计 block at the foot of 数据汇总.
 COUPON_SUMMARY_PROJECT_LABEL = "家电"
@@ -543,7 +542,6 @@ class CouponComputation:
     data_row_count: int
     matched_count: int
     matched_subsidy_total: Decimal
-    receipt_remark_count: int
     remark_lookup: dict[tuple[str, date], str]
     detail_lookup: dict[str, str]
     reference_universe: set[str]
@@ -586,18 +584,18 @@ def compute_coupon_data(
             f"“{COUPON_SUBSIDY_HEADER}”的 .XLSX 文件"
         )
 
-    if rows is None:
-        rows = sources.read_coupon_rows(
-            sources.COUPON_SOURCE_FILE, sources.APPLIANCE_PROFILE
-        )
     if remark_lookup is None:
         remark_lookup = load_coupon_remark_lookup(COUPON_REMARK_SOURCE_FILE)
-    matched_count, matched_subsidy_total, receipt_remark_count = (
-        matching.fill_coupon_remarks(
-            rows,
-            remark_lookup,
-            "2026家电国补",
+    if rows is None:
+        rows = sources.read_coupon_rows(
+            sources.COUPON_SOURCE_FILE,
+            sources.APPLIANCE_PROFILE,
+            remark_lookup=remark_lookup,
         )
+    matched_count, matched_subsidy_total = matching.fill_coupon_remarks(
+        rows,
+        remark_lookup,
+        "2026家电国补",
     )
     detail_lookup, uploaded_subsidy_count, uploaded_subsidy_total = (
         load_uploaded_summary(COUPON_UPLOADED_SOURCE_FILE)
@@ -647,14 +645,15 @@ def compute_coupon_data(
         )
         if reference
     )
-    uploaded_count, unmatched_count, payment_match_count = (
-        matching.fill_reference_statuses(
-            rows,
-            detail_lookup,
-            reference_universe,
-            payment_references,
-            matched_count,
-        )
+    uploaded_count, unmatched_count = matching.fill_upload_statuses(
+        rows,
+        detail_lookup,
+        matched_count,
+    )
+    payment_match_count = matching.fill_payment_statuses(
+        rows,
+        payment_references,
+        matched_count,
     )
     sort_coupon_detail_rows(rows, matched_count)
     excluded_category_row_count = sum(
@@ -671,7 +670,10 @@ def compute_coupon_data(
     )
     group_sheets = build_coupon_group_sheets(rows, matched_count)
     if source_total is _SOURCE_TOTAL_UNSET:
-        source_total = sources.read_coupon_source_total(sources.COUPON_SOURCE_FILE)
+        source_total = sources.read_coupon_source_total(
+            sources.COUPON_SOURCE_FILE,
+            remark_lookup=remark_lookup,
+        )
     computed_total = Decimal(str(summary_rows[-1][4]))
 
     return CouponComputation(
@@ -679,7 +681,6 @@ def compute_coupon_data(
         data_row_count=max(len(rows) - 1, 0),
         matched_count=matched_count,
         matched_subsidy_total=matched_subsidy_total,
-        receipt_remark_count=receipt_remark_count,
         remark_lookup=remark_lookup,
         detail_lookup=detail_lookup,
         reference_universe=reference_universe,
@@ -850,10 +851,10 @@ def validate_computation(
         actual_matched_subsidy_total, expected_matched_subsidy_total
     )
     actual_summary_rows = combined_summary_rows
-    # The 家电 portion ends in 已上传 / 未上传 / 合计 (in 备注, with 财务大类
-    # merged into a single 家电 cell); anything appended after it (digital's
-    # rows) is covered by the row-for-row equality check above.
-    remark_column = COUPON_SUMMARY_HEADER.index("备注")
+    # The 家电 portion ends in 已上传 / 未上传 / 合计 (in 上传状态, with
+    # 财务大类 merged into a single 家电 cell); anything appended after it
+    # (digital's rows) is covered by the row-for-row equality check above.
+    remark_column = COUPON_SUMMARY_HEADER.index("上传状态")
     tail_start = len(expected_summary_rows) - 3
     if tail_start < 0 or [
         row[remark_column]

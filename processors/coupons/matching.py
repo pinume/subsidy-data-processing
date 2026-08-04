@@ -161,7 +161,7 @@ def fill_coupon_remarks(
     rows: list[list[object]],
     remark_lookup: dict[tuple[str, date], str],
     subsidy_label: str,
-) -> tuple[int, Decimal, int]:
+) -> tuple[int, Decimal]:
     """Fill 备注 from the receipt remark lookup and split rows into
     unmatched/matched order (matched rows sink to the bottom, to be pinned
     pink by the caller).
@@ -169,13 +169,10 @@ def fill_coupon_remarks(
     matched_rows: list[list[object]] = []
     unmatched_rows: list[list[object]] = []
     matched_subsidy_total = Decimal("0")
-    receipt_remark_count = 0
     for row in rows[1:]:
         key = (normalize_document_number(row[DOCUMENT_INDEX]), row[DATE_INDEX])
         remark = remark_lookup.get(key, "")
         row[REMARK_INDEX] = remark
-        if remark:
-            receipt_remark_count += 1
         if remark:
             matched_rows.append(row)
             subsidy = row[SUBSIDY_INDEX]
@@ -189,7 +186,7 @@ def fill_coupon_remarks(
         else:
             unmatched_rows.append(row)
     rows[1:] = [*unmatched_rows, *matched_rows]
-    return len(matched_rows), matched_subsidy_total, receipt_remark_count
+    return len(matched_rows), matched_subsidy_total
 
 
 def reference_decision(
@@ -299,17 +296,14 @@ def correct_coupon_references(
     return corrected_count, unresolved_count, collision_count, decisions
 
 
-def fill_reference_statuses(
+def fill_upload_statuses(
     rows: list[list[object]],
     detail_lookup: dict[str, str],
-    reference_universe: set[str],
-    payment_references: set[str] | frozenset[str],
     excluded_bottom_rows: int = 0,
-) -> tuple[int, int, int]:
-    """Fill upload and payment results together in one main-detail pass."""
+) -> tuple[int, int]:
+    """Fill 已上传/未上传 and uploaded detail without considering payment."""
     uploaded_count = 0
     unmatched_count = 0
-    paid_count = 0
     for row in coupon_data_rows(rows, excluded_bottom_rows):
         reference = normalize_receipt_identifier(row[SUMMARY_INDEX]).upper()
         detail = detail_lookup.get(reference, "")
@@ -317,13 +311,25 @@ def fill_reference_statuses(
         if detail:
             row[REMARK_INDEX] = UPLOADED_REMARK
             uploaded_count += 1
-        elif reference not in reference_universe:
+        else:
             row[REMARK_INDEX] = "未上传"
             unmatched_count += 1
-        is_paid = (
-            row[REMARK_INDEX] == UPLOADED_REMARK
-            and reference in payment_references
-        )
-        row[PAYMENT_STATUS_INDEX] = PAID_STATUS if is_paid else None
-        paid_count += int(is_paid)
-    return uploaded_count, unmatched_count, paid_count
+    return uploaded_count, unmatched_count
+
+
+def fill_payment_statuses(
+    rows: list[list[object]],
+    payment_references: set[str] | frozenset[str],
+    excluded_bottom_rows: int = 0,
+) -> int:
+    """Match payment only for rows already marked 已上传."""
+    paid_count = 0
+    for row in coupon_data_rows(rows, excluded_bottom_rows):
+        row[PAYMENT_STATUS_INDEX] = None
+        if row[REMARK_INDEX] != UPLOADED_REMARK:
+            continue
+        reference = normalize_receipt_identifier(row[SUMMARY_INDEX]).upper()
+        if reference in payment_references:
+            row[PAYMENT_STATUS_INDEX] = PAID_STATUS
+            paid_count += 1
+    return paid_count

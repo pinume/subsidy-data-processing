@@ -434,6 +434,85 @@ class ReadCouponSourceTotalTest(unittest.TestCase):
 
 
 class ReadCouponExportTest(unittest.TestCase):
+    def test_moves_wrong_subsidy_columns_by_financial_category_and_warns(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "销售用券情况统计.xlsx"
+            _write_coupon_source(
+                source,
+                [
+                    _coupon_row(
+                        document="收款001",
+                        day="2026-01-24",
+                        product="海尔冰箱",
+                        brand="海尔",
+                        category="冰箱",
+                        summary="ref1",
+                        digital_subsidy=100,
+                    ),
+                    _coupon_row(
+                        document="收款002",
+                        day="2026-01-25",
+                        product="数码商品",
+                        brand="品牌",
+                        category="新业务类",
+                        summary="ref2",
+                        family_subsidy=50,
+                    ),
+                ],
+            )
+
+            with patch("builtins.print") as mocked_print:
+                export = sources.read_coupon_export(source, remark_lookup={})
+
+            self.assertEqual(len(export.appliance_rows), 2)
+            self.assertEqual(export.appliance_rows[1][0], "001")
+            self.assertEqual(export.appliance_rows[1][6], 100)
+            self.assertEqual(len(export.digital_rows), 2)
+            self.assertEqual(export.digital_rows[1][0], "002")
+            self.assertEqual(export.digital_rows[1][6], 50)
+            self.assertEqual(str(export.source_total), "173.40")
+            warnings = [call.args[0] for call in mocked_print.call_args_list]
+            self.assertEqual(len(warnings), 2)
+            self.assertIn("第 3 行单据 001", warnings[0])
+            self.assertIn("调整到“2026家电国补（计入收入）”", warnings[0])
+            self.assertIn("第 4 行单据 002", warnings[1])
+            self.assertIn("调整到“2026数码国补（计入收入）”", warnings[1])
+
+    def test_return_remark_prevents_automatic_subsidy_adjustment(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "销售用券情况统计.xlsx"
+            _write_coupon_source(
+                source,
+                [
+                    _coupon_row(
+                        document="收款003",
+                        day="2026-01-26",
+                        product="海尔冰箱",
+                        brand="海尔",
+                        category="冰箱",
+                        summary="ref3",
+                        digital_subsidy=100,
+                    ),
+                ],
+            )
+            remark_lookup = {
+                ("003", date(2026, 1, 26)): "退换货/倒票（退单）"
+            }
+
+            with patch("builtins.print") as mocked_print:
+                export = sources.read_coupon_export(
+                    source,
+                    remark_lookup=remark_lookup,
+                )
+
+            self.assertEqual(len(export.appliance_rows), 1)
+            self.assertEqual(len(export.digital_rows), 2)
+            self.assertEqual(export.digital_rows[1][0], "003")
+            self.assertEqual(export.digital_rows[1][6], 100)
+            mocked_print.assert_not_called()
+
     def test_invalid_date_error_names_source_file_and_row(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             source = Path(directory) / "销售用券情况统计.xlsx"

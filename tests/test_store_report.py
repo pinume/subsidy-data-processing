@@ -240,7 +240,10 @@ class SourceHeaderValidationTests(unittest.TestCase):
         workbook = Workbook()
         sheet = workbook.active
         sheet.title = store_report.UPLOAD_SHEET_NAME
-        sheet.append(("财务大类", "品牌", "备注", "数量", "金额"))  # missing the year-specific label
+        # The pre-rename header (备注 / 2026家电国补（计入收入）合计) is rejected:
+        # a stale 审核明细.xlsx must fail loudly instead of being misread, and
+        # rerunning the 审核明细 mode regenerates it with the new header.
+        sheet.append(("财务大类", "品牌", "备注", "数量", "2026家电国补（计入收入）合计"))
 
         with TemporaryDirectory() as directory:
             upload_file = Path(directory) / "审核明细.xlsx"

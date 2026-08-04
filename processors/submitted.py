@@ -195,9 +195,15 @@ def build_report(profile_name: str) -> SubmittedReport:
     reference_locations: dict[str, tuple[str, int]] = {}
     data_row_count = 0
     data_rows: list[list[object]] = []
+    valid_file_count = 0
 
     for path in files:
         source_workbook = CalamineWorkbook.from_path(str(path))
+        if not source_workbook.sheet_names:
+            source_workbook.close()
+            path.unlink()
+            print(f"已删除无效导出文件（没有工作表）：{path}")
+            continue
         try:
             rows = (
                 _trim_trailing_none(row)
@@ -267,6 +273,7 @@ def build_report(profile_name: str) -> SubmittedReport:
 
                 data_rows.append(output_row)
                 data_row_count += 1
+            valid_file_count += 1
         finally:
             source_workbook.close()
 
@@ -306,7 +313,7 @@ def build_report(profile_name: str) -> SubmittedReport:
         header=tuple(output_header),
         summary_rows=data_rows,
         status_rows=rows_by_status,
-        file_count=len(files),
+        file_count=valid_file_count,
         data_row_count=data_row_count,
         unknown_status_counts=dict(unknown_status_counts),
     )

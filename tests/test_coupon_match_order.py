@@ -132,16 +132,14 @@ class LargeApplianceMatchOrderTest(unittest.TestCase):
         )
         rows = [list(appliance.COUPON_OUTPUT_HEADER), row]
 
-        counts = matching.fill_reference_statuses(
+        counts = matching.fill_upload_statuses(
             rows,
             {},
-            self.universe,
-            set(),
             0,
         )
 
         remark_index = appliance.COUPON_OUTPUT_HEADER.index("备注")
-        self.assertEqual(counts, (0, 1, 0))
+        self.assertEqual(counts, (0, 1))
         self.assertEqual(row[remark_index], "未上传")
 
     def test_final_corrected_reference_drives_both_status_matches(self) -> None:
@@ -158,15 +156,15 @@ class LargeApplianceMatchOrderTest(unittest.TestCase):
             rows,
             {target},
         )
-        counts = matching.fill_reference_statuses(
+        upload_counts = matching.fill_upload_statuses(
             rows,
             {target: "审核通过：同意"},
-            {target},
-            {target},
         )
+        paid_count = matching.fill_payment_statuses(rows, {target})
 
         self.assertEqual(corrected, 1)
-        self.assertEqual(counts, (1, 0, 1))
+        self.assertEqual(upload_counts, (1, 0))
+        self.assertEqual(paid_count, 1)
         self.assertEqual(
             row[appliance.COUPON_OUTPUT_HEADER.index("回款情况")],
             "已回款",

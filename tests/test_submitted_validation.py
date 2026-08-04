@@ -3,6 +3,7 @@ import unittest
 from datetime import date
 from decimal import Decimal
 from pathlib import Path
+from unittest.mock import patch
 
 from openpyxl import Workbook, load_workbook
 from openpyxl.utils import column_index_from_string, get_column_letter
@@ -330,6 +331,47 @@ class SubmittedHeaderValidationTest(unittest.TestCase):
                 )
                 self.assertEqual(report.file_count, 1)
                 self.assertEqual(report.data_row_count, 1)
+
+    def test_workbook_without_sheets_is_deleted_reported_and_skipped(self) -> None:
+        profile_name = "数码"
+        with tempfile.TemporaryDirectory() as directory:
+            data_dir = Path(directory)
+            marker = submitted_file_marker(profile_name)
+            valid_path = data_dir / f"{marker}_valid.xlsx"
+            invalid_path = data_dir / f"{marker}_invalid.xlsx"
+            write_submitted_source(valid_path, SUBMITTED_HEADER)
+            invalid_path.touch()
+            submitted.configure_data_dir(data_dir)
+
+            real_from_path = submitted.CalamineWorkbook.from_path
+
+            class EmptyWorkbook:
+                sheet_names: list[str] = []
+
+                def close(self) -> None:
+                    pass
+
+            def open_source(path: str):
+                if Path(path) == invalid_path:
+                    return EmptyWorkbook()
+                return real_from_path(path)
+
+            with (
+                patch.object(
+                    submitted.CalamineWorkbook,
+                    "from_path",
+                    side_effect=open_source,
+                ),
+                patch("builtins.print") as mocked_print,
+            ):
+                report = submitted.build_report(profile_name)
+
+            self.assertFalse(invalid_path.exists())
+            self.assertTrue(valid_path.exists())
+            self.assertEqual(report.file_count, 1)
+            mocked_print.assert_called_once_with(
+                f"已删除无效导出文件（没有工作表）：{invalid_path}"
+            )
 
     def test_output_carries_only_the_kept_columns(self) -> None:
         """详细地址/tel/发票金额/图片1/S/N码 were dropped from both projects.

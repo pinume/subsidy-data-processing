@@ -114,7 +114,7 @@ def report_source_total_gap(
 def digital_extra_summary_rows(
     digital_computation: digital.CouponComputation,
 ) -> list[tuple[object, ...]]:
-    """Recast digital's 3-column summary rows (备注, 数量, 合计) as rows in
+    """Recast digital's 3-column summary rows (上传状态, 数量, 合计) as rows in
     家电's 5-column 数据汇总 table, labeling every row (including digital's
     own "合计" row) with 财务大类="数码" and no 品牌, so the block mirrors the
     家电 one that precedes it (see appliance.COUPON_SUMMARY_PROJECT_LABEL)."""
@@ -233,13 +233,17 @@ def process_coupon_sales() -> None:
     payment_reference_locations = sources.load_payment_reference_locations(
         PAYMENT_FILE
     )
+    remark_lookup = load_coupon_remark_lookup(appliance.COUPON_REMARK_SOURCE_FILE)
     source_workbook = CalamineWorkbook.from_path(str(coupon_source))
     try:
-        export = sources.read_coupon_export(coupon_source, source_workbook)
+        export = sources.read_coupon_export(
+            coupon_source,
+            source_workbook,
+            remark_lookup,
+        )
     finally:
         source_workbook.close()
 
-    remark_lookup = load_coupon_remark_lookup(appliance.COUPON_REMARK_SOURCE_FILE)
     appliance_computation = appliance.compute_coupon_data(
         rows=export.appliance_rows,
         remark_lookup=remark_lookup,
@@ -285,7 +289,6 @@ def process_coupon_sales() -> None:
         "[家电] Subsidy coupon statistics complete: "
         f"{la.data_row_count} rows"
     )
-    print(f"[家电] Receipt remark matches: {la.receipt_remark_count}")
     print(f"[家电] Pink return or exchange rows: {la.matched_count}")
     print(
         "[家电] Supplemental reference matches: "

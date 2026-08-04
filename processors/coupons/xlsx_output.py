@@ -107,8 +107,8 @@ def column_number_formats(
 
     Indices, not header names: the openpyxl writers addressed these columns by
     letter (sheet["A"], sheet["E"]), and the names would not identify them
-    anyway — the currency column is 2026家电国补（计入收入）合计 on one sheet
-    and 2026数码国补（计入收入） on another.
+    anyway — the currency column is 2026国补金额 on the summary sheet and
+    2026家电国补（计入收入）/2026数码国补（计入收入） on the detail sheets.
     """
     return {
         **{index: TEXT_FORMAT for index in text_columns},

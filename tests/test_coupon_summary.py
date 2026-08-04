@@ -296,7 +296,6 @@ class SummarySheetLayoutTest(unittest.TestCase):
             data_row_count=1,
             matched_count=0,
             matched_subsidy_total=Decimal("0"),
-            receipt_remark_count=0,
             remark_lookup={},
             detail_lookup={},
             reference_universe=set(),
@@ -362,7 +361,7 @@ class SummarySheetLayoutTest(unittest.TestCase):
         return load_workbook(path), computation
 
     def test_summary_sheet_drops_the_side_panels(self) -> None:
-        """数据汇总 is the 财务大类/品牌/备注 表 and nothing else.
+        """数据汇总 is the 财务大类/品牌/上传状态 表 and nothing else.
 
         The 备注汇总 and 审核通过明细 panels that once sat beside it were
         removed; both left dangling row-number references behind when they
@@ -387,18 +386,22 @@ class SummarySheetLayoutTest(unittest.TestCase):
             workbook.close()
 
     def test_summary_sheet_ends_with_the_three_tail_rows(self) -> None:
-        """已上传/未上传/合计 sit in 备注, under a single merged 家电 cell.
+        """已上传/未上传/合计 sit in 上传状态, under a single merged 家电 cell.
 
         The status used to live in 财务大类, which read as three more
         categories alongside 冰箱/空调 and did not line up with the 数码
         block appended below it in 审核明细.
         """
+        self.assertEqual(
+            appliance.COUPON_SUMMARY_HEADER,
+            ("财务大类", "品牌", "上传状态", "数量", "2026国补金额"),
+        )
         workbook, computation = self.build_sheet()
         try:
             sheet = workbook[appliance.SUMMARY_SHEET_NAME]
             tail_start = 1 + len(computation.summary_rows) - 3
             remark_column = appliance.COUPON_SUMMARY_HEADER.index(
-                "备注"
+                "上传状态"
             ) + 1
             labels = [
                 sheet.cell(tail_start + offset + 1, remark_column).value
