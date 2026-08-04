@@ -263,6 +263,54 @@ class SourceHeaderValidationTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "表头"):
                 store_report.load_payment_data(payment_file)
 
+    def test_upload_header_literal_is_pinned(self) -> None:
+        """The 审核明细 数据汇总 header is a cross-module contract: a rename
+        must break this test rather than silently re-parse store data."""
+        self.assertEqual(
+            store_report.UPLOAD_HEADER,
+            ("财务大类", "品牌", "上传状态", "数量", "2026国补金额"),
+        )
+
+    def test_load_upload_data_parses_statuses_with_the_literal_header(self) -> None:
+        workbook = Workbook()
+        sheet = workbook.active
+        sheet.title = store_report.UPLOAD_SHEET_NAME
+        sheet.append(("财务大类", "品牌", "上传状态", "数量", "2026国补金额"))
+        sheet.append(("家电", None, "已上传", 2, 100))
+        sheet.append((None, None, "未上传", 1, 50))
+        sheet.append((None, None, "合计", 3, 150))
+        sheet.append(("数码", None, "已上传", 4, 200))
+        sheet.append((None, None, "未上传", 1, 40))
+        sheet.append((None, None, "合计", 5, 240))
+
+        with TemporaryDirectory() as directory:
+            upload_file = Path(directory) / "审核明细.xlsx"
+            workbook.save(upload_file)
+            _, digital_totals, project_metrics = store_report.load_upload_data(
+                upload_file
+            )
+
+        self.assertEqual(
+            digital_totals,
+            {"发生额": Decimal("240"), "上传额": Decimal("200")},
+        )
+        self.assertEqual(
+            project_metrics["家电"]["已上传"],
+            store_report.CountAmount(2, Decimal("100")),
+        )
+        self.assertEqual(
+            project_metrics["家电"]["未上传"],
+            store_report.CountAmount(1, Decimal("50")),
+        )
+        self.assertEqual(
+            project_metrics["家电"]["合计"],
+            store_report.CountAmount(3, Decimal("150")),
+        )
+        self.assertEqual(
+            project_metrics["数码"]["合计"],
+            store_report.CountAmount(5, Decimal("240")),
+        )
+
 
 class RuleCoverageTests(unittest.TestCase):
     def test_accepts_when_every_group_is_claimed_by_a_rule(self) -> None:

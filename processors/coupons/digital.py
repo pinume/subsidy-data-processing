@@ -121,11 +121,11 @@ def compute_coupon_data(
     if remark_lookup is None:
         remark_lookup = load_coupon_remark_lookup(COUPON_REMARK_SOURCE_FILE)
     if rows is None:
-        rows = sources.read_coupon_rows(
+        export = sources.read_coupon_export(
             sources.COUPON_SOURCE_FILE,
-            sources.DIGITAL_PROFILE,
             remark_lookup=remark_lookup,
         )
+        rows = export.digital_rows
     matched_count, matched_subsidy_total = matching.fill_coupon_remarks(
         rows, remark_lookup, "2026数码国补"
     )

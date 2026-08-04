@@ -586,12 +586,16 @@ def compute_coupon_data(
 
     if remark_lookup is None:
         remark_lookup = load_coupon_remark_lookup(COUPON_REMARK_SOURCE_FILE)
+    export: sources.CouponExport | None = None
     if rows is None:
-        rows = sources.read_coupon_rows(
+        # One read serves both the rows and the 合计: the two travel
+        # together because the corrections that adjust the total are
+        # discovered during the same pass.
+        export = sources.read_coupon_export(
             sources.COUPON_SOURCE_FILE,
-            sources.APPLIANCE_PROFILE,
             remark_lookup=remark_lookup,
         )
+        rows = export.appliance_rows
     matched_count, matched_subsidy_total = matching.fill_coupon_remarks(
         rows,
         remark_lookup,
@@ -670,10 +674,15 @@ def compute_coupon_data(
     )
     group_sheets = build_coupon_group_sheets(rows, matched_count)
     if source_total is _SOURCE_TOTAL_UNSET:
-        source_total = sources.read_coupon_source_total(
-            sources.COUPON_SOURCE_FILE,
-            remark_lookup=remark_lookup,
-        )
+        # rows and source_total are read together above; a caller that
+        # supplies rows must supply source_total too, or the 合计 would need
+        # a second full-sheet read (or worse, a silently stale value).
+        if export is None:
+            raise RuntimeError(
+                "compute_coupon_data() 收到 rows 但未收到 source_total："
+                "两者必须同时来自同一次 read_coupon_export()"
+            )
+        source_total = export.source_total
     computed_total = Decimal(str(summary_rows[-1][4]))
 
     return CouponComputation(
@@ -854,10 +863,10 @@ def validate_computation(
     # The 家电 portion ends in 已上传 / 未上传 / 合计 (in 上传状态, with
     # 财务大类 merged into a single 家电 cell); anything appended after it
     # (digital's rows) is covered by the row-for-row equality check above.
-    remark_column = COUPON_SUMMARY_HEADER.index("上传状态")
+    status_column = COUPON_SUMMARY_HEADER.index("上传状态")
     tail_start = len(expected_summary_rows) - 3
     if tail_start < 0 or [
-        row[remark_column]
+        row[status_column]
         for row in actual_summary_rows[tail_start:tail_start + 3]
     ] != ["已上传", "未上传", "合计"]:
         raise RuntimeError("销售用券汇总缺少已上传/未上传/合计三行")

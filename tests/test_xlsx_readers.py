@@ -2,7 +2,7 @@
 receipts and coupon sources moved off xlrd.
 
 Both processors/receipts.py:read_receipt_rows and
-processors/coupons/sources.py:read_coupon_rows/read_coupon_export used to
+processors/coupons/sources.py:read_coupon_export used to
 call sheet.cell(row, column) once per row on a read_only worksheet, which
 silently degrades to O(n^2) on a real 10000+ row export (each random access
 re-parses the sheet XML from the start). Nothing caught that until a real
@@ -14,15 +14,17 @@ random-access pattern without a test failing.
 
 import tempfile
 import unittest
+from contextlib import ExitStack
 from datetime import date, datetime
+from decimal import Decimal
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from openpyxl import Workbook, load_workbook
 from python_calamine import CalamineWorkbook
 
 from processors import receipts
-from processors.coupons import sources
+from processors.coupons import appliance, digital, sources
 from processors.receipts import read_receipt_rows
 
 
@@ -287,7 +289,7 @@ def _coupon_row(
     return row
 
 
-class ReadCouponRowsTest(unittest.TestCase):
+class ReadCouponExportTest(unittest.TestCase):
     def test_classifies_by_which_subsidy_column_is_populated(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             source = Path(directory) / "销售用券情况统计.xlsx"
@@ -315,17 +317,14 @@ class ReadCouponRowsTest(unittest.TestCase):
                 ],
             )
 
-            appliance_rows = sources.read_coupon_rows(
-                source, sources.APPLIANCE_PROFILE
-            )
-            digital_rows = sources.read_coupon_rows(source, sources.DIGITAL_PROFILE)
+            export = sources.read_coupon_export(source)
 
-            self.assertEqual(len(appliance_rows) - 1, 1)
-            self.assertEqual(appliance_rows[1][0], "001")
-            self.assertEqual(appliance_rows[1][1], date(2026, 1, 24))
+            self.assertEqual(len(export.appliance_rows) - 1, 1)
+            self.assertEqual(export.appliance_rows[1][0], "001")
+            self.assertEqual(export.appliance_rows[1][1], date(2026, 1, 24))
 
-            self.assertEqual(len(digital_rows) - 1, 1)
-            self.assertEqual(digital_rows[1][0], "002")
+            self.assertEqual(len(export.digital_rows) - 1, 1)
+            self.assertEqual(export.digital_rows[1][0], "002")
 
     def test_合计行不会被当作数据行(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -345,9 +344,9 @@ class ReadCouponRowsTest(unittest.TestCase):
                 ],
             )
 
-            rows = sources.read_coupon_rows(source, sources.APPLIANCE_PROFILE)
+            export = sources.read_coupon_export(source)
 
-            self.assertEqual(len(rows), 2)  # header + one data row, no 合计
+            self.assertEqual(len(export.appliance_rows), 2)  # header + one data row, no 合计
 
     def test_missing_合计_row_raises(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -360,7 +359,7 @@ class ReadCouponRowsTest(unittest.TestCase):
             workbook.close()
 
             with self.assertRaises(ValueError):
-                sources.read_coupon_rows(source, sources.APPLIANCE_PROFILE)
+                sources.read_coupon_export(source)
 
     def test_reads_via_exactly_one_iter_rows_pass(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -382,24 +381,20 @@ class ReadCouponRowsTest(unittest.TestCase):
             workbook = CalamineWorkbook.from_path(str(source))
             wrapped = _CountingCalamineWorkbookWrapper(workbook)
             try:
-                sources.read_coupon_rows(
-                    source, sources.APPLIANCE_PROFILE, wrapped
-                )
+                sources.read_coupon_export(source, wrapped)
             finally:
                 wrapped.close()
 
             self.assertEqual(wrapped.sheet_wrapper.iter_rows_calls, 1)
 
-
-class ReadCouponSourceTotalTest(unittest.TestCase):
     def test_parses_currency_formatted_total(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             source = Path(directory) / "销售用券情况统计.xlsx"
             _write_coupon_source(source, [])
 
-            total = sources.read_coupon_source_total(source)
+            export = sources.read_coupon_export(source)
 
-            self.assertEqual(str(total), "123.40")
+            self.assertEqual(str(export.source_total), "123.40")
 
     def test_zero_total_is_not_treated_as_missing(self) -> None:
         """A source total of exactly 0 must parse to Decimal("0"), not None
@@ -427,14 +422,12 @@ class ReadCouponSourceTotalTest(unittest.TestCase):
             workbook.save(source)
             workbook.close()
 
-            total = sources.read_coupon_source_total(source)
+            export = sources.read_coupon_export(source)
 
-            self.assertIsNotNone(total)
-            self.assertEqual(total, 0)
+            self.assertIsNotNone(export.source_total)
+            self.assertEqual(export.source_total, 0)
 
-
-class ReadCouponExportTest(unittest.TestCase):
-    def test_moves_wrong_subsidy_columns_by_financial_category_and_warns(
+    def test_moves_wrong_subsidy_columns_by_financial_category_and_records_corrections(
         self,
     ) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -463,8 +456,7 @@ class ReadCouponExportTest(unittest.TestCase):
                 ],
             )
 
-            with patch("builtins.print") as mocked_print:
-                export = sources.read_coupon_export(source, remark_lookup={})
+            export = sources.read_coupon_export(source, remark_lookup={})
 
             self.assertEqual(len(export.appliance_rows), 2)
             self.assertEqual(export.appliance_rows[1][0], "001")
@@ -473,12 +465,33 @@ class ReadCouponExportTest(unittest.TestCase):
             self.assertEqual(export.digital_rows[1][0], "002")
             self.assertEqual(export.digital_rows[1][6], 50)
             self.assertEqual(str(export.source_total), "173.40")
-            warnings = [call.args[0] for call in mocked_print.call_args_list]
-            self.assertEqual(len(warnings), 2)
-            self.assertIn("第 3 行单据 001", warnings[0])
-            self.assertIn("调整到“2026家电国补（计入收入）”", warnings[0])
-            self.assertIn("第 4 行单据 002", warnings[1])
-            self.assertIn("调整到“2026数码国补（计入收入）”", warnings[1])
+
+            self.assertEqual(len(export.subsidy_corrections), 2)
+            first, second = export.subsidy_corrections
+            self.assertEqual(first.row_number, 3)
+            self.assertEqual(first.document_number, "001")
+            self.assertEqual(first.financial_category, "冰箱")
+            self.assertEqual(first.amount, Decimal("100"))
+            self.assertEqual(
+                first.from_header,
+                sources.COUPON_DIGITAL_SUBSIDY_HEADER,
+            )
+            self.assertEqual(
+                first.to_header,
+                sources.COUPON_FAMILY_SUBSIDY_HEADER,
+            )
+            self.assertEqual(second.row_number, 4)
+            self.assertEqual(second.document_number, "002")
+            self.assertEqual(second.financial_category, "新业务类")
+            self.assertEqual(second.amount, Decimal("50"))
+            self.assertEqual(
+                second.from_header,
+                sources.COUPON_FAMILY_SUBSIDY_HEADER,
+            )
+            self.assertEqual(
+                second.to_header,
+                sources.COUPON_DIGITAL_SUBSIDY_HEADER,
+            )
 
     def test_return_remark_prevents_automatic_subsidy_adjustment(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -501,17 +514,16 @@ class ReadCouponExportTest(unittest.TestCase):
                 ("003", date(2026, 1, 26)): "退换货/倒票（退单）"
             }
 
-            with patch("builtins.print") as mocked_print:
-                export = sources.read_coupon_export(
-                    source,
-                    remark_lookup=remark_lookup,
-                )
+            export = sources.read_coupon_export(
+                source,
+                remark_lookup=remark_lookup,
+            )
 
             self.assertEqual(len(export.appliance_rows), 1)
             self.assertEqual(len(export.digital_rows), 2)
             self.assertEqual(export.digital_rows[1][0], "003")
             self.assertEqual(export.digital_rows[1][6], 100)
-            mocked_print.assert_not_called()
+            self.assertEqual(export.subsidy_corrections, ())
 
     def test_invalid_date_error_names_source_file_and_row(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -560,66 +572,74 @@ class ReadCouponExportTest(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "Excel 错误值.*#DIV/0!"):
                 sources.read_coupon_export(source)
 
-    def test_matches_per_profile_reads_in_one_combined_pass(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            source = Path(directory) / "销售用券情况统计.xlsx"
-            data_rows = [
-                _coupon_row(
-                    document="收款001",
-                    day="2026-01-24",
-                    product="海尔冰箱",
-                    brand="海尔",
-                    category="冰箱",
-                    summary="ref1",
-                    family_subsidy=100,
-                ),
-                _coupon_row(
-                    document="收款002",
-                    day="2026-01-25",
-                    product="小米手机",
-                    brand="小米",
-                    category="手机",
-                    summary="ref2",
-                    digital_subsidy=50,
-                ),
-            ]
-            _write_coupon_source(source, data_rows)
 
-            export = sources.read_coupon_export(source)
-            appliance_rows = sources.read_coupon_rows(
-                source, sources.APPLIANCE_PROFILE
+class CouponComputationSingleReadTests(unittest.TestCase):
+    """compute_coupon_data's no-rows fallback must read the export once.
+
+    The 合计 used to be fetched by a second full-sheet read; both now come
+    from the same CouponExport, so one call to read_coupon_export must be
+    the entire read cost of the fallback path.
+    """
+
+    def _patched_fallbacks(self):
+        export = sources.CouponExport(
+            appliance_rows=[list(sources.APPLIANCE_PROFILE.output_header)],
+            digital_rows=[list(sources.DIGITAL_PROFILE.output_header)],
+            source_total=Decimal("123.40"),
+            subsidy_corrections=(),
+        )
+        stack = ExitStack()
+        stack.enter_context(
+            patch.object(
+                sources,
+                "COUPON_SOURCE_FILE",
+                Path("销售用券情况统计.xlsx"),
+                create=True,
             )
-            digital_rows = sources.read_coupon_rows(source, sources.DIGITAL_PROFILE)
-
-            self.assertEqual(export.appliance_rows, appliance_rows)
-            self.assertEqual(export.digital_rows, digital_rows)
-            self.assertEqual(str(export.source_total), "123.40")
-
-    def test_reads_via_exactly_one_iter_rows_pass(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            source = Path(directory) / "销售用券情况统计.xlsx"
-            _write_coupon_source(
-                source,
-                [
-                    _coupon_row(
-                        document="收款001",
-                        day="2026-01-24",
-                        product="海尔冰箱",
-                        brand="海尔",
-                        category="冰箱",
-                        summary="ref1",
-                        family_subsidy=100,
-                    ),
-                ],
+        )
+        counting = Mock(wraps=sources.read_coupon_export, return_value=export)
+        stack.enter_context(
+            patch.object(sources, "read_coupon_export", counting)
+        )
+        stack.enter_context(
+            patch.object(
+                appliance,
+                "load_uploaded_summary",
+                return_value=({}, 0, Decimal("0")),
             )
-            workbook = CalamineWorkbook.from_path(str(source))
-            wrapped = _CountingCalamineWorkbookWrapper(workbook)
-            try:
-                sources.read_coupon_export(source, wrapped)
-            finally:
-                wrapped.close()
+        )
+        stack.enter_context(
+            patch.object(
+                appliance,
+                "load_coupon_reference_supplement",
+                return_value={},
+            )
+        )
+        stack.enter_context(
+            patch.object(
+                digital,
+                "load_uploaded_summary",
+                return_value=({}, 0, Decimal("0")),
+            )
+        )
+        return stack, counting, export
 
-            self.assertEqual(wrapped.sheet_wrapper.iter_rows_calls, 1)
+    def test_appliance_fallback_reads_the_export_exactly_once(self) -> None:
+        stack, counting, export = self._patched_fallbacks()
+        with stack:
+            computation = appliance.compute_coupon_data()
+
+        counting.assert_called_once()
+        self.assertEqual(computation.rows, export.appliance_rows)
+        self.assertEqual(computation.source_total, Decimal("123.40"))
+
+    def test_digital_fallback_reads_the_export_exactly_once(self) -> None:
+        stack, counting, export = self._patched_fallbacks()
+        with stack:
+            computation = digital.compute_coupon_data()
+
+        counting.assert_called_once()
+        self.assertEqual(computation.rows, export.digital_rows)
 
 
 if __name__ == "__main__":

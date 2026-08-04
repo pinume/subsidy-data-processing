@@ -133,6 +133,119 @@ def classify_coupon_row(
     return "数码" if digital_nonzero else "家电"
 
 
+@dataclass(frozen=True)
+class SubsidyCorrection:
+    """One row whose subsidy amount moved from one project's column to the
+    other's, because 财务大类 said so and no receipt remark overrode it.
+
+    Pure data: read_coupon_export only collects these. What happens to them
+    is the caller's choice — processors/coupon_report.py prints them as
+    warnings; a future Processing Report entry would consume the same
+    records.
+    """
+
+    row_number: int
+    document_number: str
+    financial_category: str
+    amount: Decimal
+    from_header: str
+    to_header: str
+
+
+@dataclass(frozen=True)
+class SubsidyAttribution:
+    """What classify_subsidy_attribution decided for one source row."""
+
+    classification: str
+    subsidy_value: object
+    source_total_adjustment: Decimal
+    correction: SubsidyCorrection | None
+
+
+def classify_subsidy_attribution(
+    *,
+    appliance_subsidy: object,
+    digital_subsidy: object,
+    row_number: int,
+    source_name: str,
+    document_number: str,
+    financial_category: object = None,
+    has_receipt_remark: bool = False,
+) -> SubsidyAttribution:
+    """Decide a row's project and how its subsidy amount must move.
+
+    Pure decision: reads no Excel, prints nothing, mutates nothing — so it
+    can be tested row by row without a workbook or a mocked print, and the
+    caller (read_coupon_export) applies the result exactly once.
+
+    The original project is whichever subsidy column is non-zero (the
+    export's own convention); the correct project comes from 财务大类 via
+    classify_coupon_row unless a receipt remark marks the row as a
+    return/exchange. A mismatch means the amount was recorded under the
+    wrong project's column: subsidy_value is the amount the target
+    project's column must carry, source_total_adjustment is what the
+    export's own 合计 (which counts 家电's column only) needs to stay
+    consistent, and correction records the move for reporting. A zero or
+    blank amount moves nothing and records nothing.
+    """
+    original_classification = (
+        "数码" if digital_subsidy not in (None, "", 0) else "家电"
+    )
+    classification = classify_coupon_row(
+        appliance_subsidy=appliance_subsidy,
+        digital_subsidy=digital_subsidy,
+        row_number=row_number,
+        source_name=source_name,
+        financial_category=financial_category,
+        has_receipt_remark=has_receipt_remark,
+    )
+    if classification == original_classification:
+        return SubsidyAttribution(
+            classification=classification,
+            subsidy_value=(
+                digital_subsidy if classification == "数码" else appliance_subsidy
+            ),
+            source_total_adjustment=Decimal("0"),
+            correction=None,
+        )
+
+    if classification == "家电":
+        moved_subsidy = digital_subsidy
+        from_header = COUPON_DIGITAL_SUBSIDY_HEADER
+        to_header = COUPON_FAMILY_SUBSIDY_HEADER
+    else:
+        moved_subsidy = appliance_subsidy
+        from_header = COUPON_FAMILY_SUBSIDY_HEADER
+        to_header = COUPON_DIGITAL_SUBSIDY_HEADER
+    if moved_subsidy in (None, "", 0):
+        return SubsidyAttribution(
+            classification=classification,
+            subsidy_value=moved_subsidy,
+            source_total_adjustment=Decimal("0"),
+            correction=None,
+        )
+    try:
+        amount = Decimal(str(moved_subsidy))
+    except InvalidOperation as error:
+        raise ValueError(
+            f"{source_name} 第 {row_number} 行补贴金额无效："
+            f"{moved_subsidy!r}"
+        ) from error
+    return SubsidyAttribution(
+        classification=classification,
+        subsidy_value=moved_subsidy,
+        source_total_adjustment=amount if classification == "家电" else -amount,
+        correction=SubsidyCorrection(
+            row_number=row_number,
+            document_number=document_number,
+            financial_category=str(financial_category or "").strip(),
+            amount=amount,
+            from_header=from_header,
+            to_header=to_header,
+        ),
+    )
+
+
 def load_coupon_remark_lookup(source: Path) -> dict[tuple[str, date], str]:
     if not source.exists():
         raise FileNotFoundError(f"未找到备注匹配文件：{source}")
@@ -365,6 +478,7 @@ class CouponExport:
     appliance_rows: list[list[object]]
     digital_rows: list[list[object]]
     source_total: Decimal | None
+    subsidy_corrections: tuple[SubsidyCorrection, ...]
 
 
 def read_coupon_export(
@@ -372,15 +486,15 @@ def read_coupon_export(
     source_workbook=None,
     remark_lookup: dict[tuple[str, date], str] | None = None,
 ) -> CouponExport:
-    """Read the merged export once: classify every row for both projects and
-    extract the source's own 合计 total in the same iter_rows() pass.
+    """Read the merged export once: classify every row for both projects,
+    extract the source's own 合计 total, and collect every subsidy
+    attribution correction in the same iter_rows() pass.
 
-    processors/coupon_report.py needs all three (家电 rows, 数码 rows, the
-    source total) every time it runs, so calling read_coupon_rows twice plus
-    read_coupon_source_total once — three independent full-sheet reads — is
-    real waste on a 10000+ row export even though each individual read is
-    already O(n). This does the same classification read_coupon_rows does,
-    once per row instead of once per row per profile.
+    processors/coupon_report.py needs all of these (家电 rows, 数码 rows,
+    the source total, the corrections to warn about) every time it runs, so
+    the whole read happens here exactly once instead of once per profile
+    plus a separate total pass — real waste on a 10000+ row export even
+    though each individual read is already O(n).
     """
     owns_workbook = source_workbook is None
     workbook = source_workbook or CalamineWorkbook.from_path(str(source))
@@ -478,6 +592,7 @@ def read_coupon_export(
                 source_type_book.close()
         appliance_rows: list[list[object]] = [list(APPLIANCE_PROFILE.output_header)]
         digital_rows: list[list[object]] = [list(DIGITAL_PROFILE.output_header)]
+        subsidy_corrections: list[SubsidyCorrection] = []
         for row_number, values in enumerate(all_rows[2:-1], start=3):
             appliance_values = [
                 values[column - 1] if column - 1 < len(values) else None
@@ -509,59 +624,28 @@ def read_coupon_export(
                 (normalize_document_number(document_number), document_date),
                 "",
             )
-            # The export's own column-based classification: whichever subsidy
-            # column is non-zero decides the project. Same rule
-            # classify_coupon_row applies when no 财务大类 or receipt remark
-            # is available, so this stays in sync without a second call.
-            original_classification = (
-                "数码" if digital_subsidy not in (None, "", 0) else "家电"
-            )
-            classification = classify_coupon_row(
+            attribution = classify_subsidy_attribution(
                 appliance_subsidy=appliance_subsidy,
                 digital_subsidy=digital_subsidy,
                 row_number=row_number,
                 source_name=source.name,
+                document_number=document_number,
                 financial_category=appliance_values[4],
                 has_receipt_remark=bool(remark),
             )
-            if classification != original_classification:
-                if classification == "家电":
-                    moved_subsidy = digital_subsidy
-                    appliance_values[-1] = moved_subsidy
-                    from_header = COUPON_DIGITAL_SUBSIDY_HEADER
-                    to_header = COUPON_FAMILY_SUBSIDY_HEADER
-                else:
-                    moved_subsidy = appliance_subsidy
-                    digital_values[-1] = moved_subsidy
-                    from_header = COUPON_FAMILY_SUBSIDY_HEADER
-                    to_header = COUPON_DIGITAL_SUBSIDY_HEADER
-                if moved_subsidy not in (None, "", 0):
-                    if source_total is not None:
-                        try:
-                            adjustment = Decimal(str(moved_subsidy))
-                        except InvalidOperation as error:
-                            raise ValueError(
-                                f"{source.name} 第 {row_number} 行补贴金额无效："
-                                f"{moved_subsidy!r}"
-                            ) from error
-                        if classification == "家电":
-                            source_total += adjustment
-                        else:
-                            source_total -= adjustment
-                    print(
-                        f"WARNING: {source.name} 第 {row_number} 行单据 "
-                        f"{document_number} 的财务大类为"
-                        f"{str(appliance_values[4] or '').strip()!r}，"
-                        f"已将 {moved_subsidy} 从“{from_header}”"
-                        f"调整到“{to_header}”"
-                    )
-            if classification == "家电":
+            if attribution.correction is not None:
+                subsidy_corrections.append(attribution.correction)
+            if source_total is not None:
+                source_total += attribution.source_total_adjustment
+            if attribution.classification == "家电":
+                appliance_values[-1] = attribution.subsidy_value
                 profile, row_values, target = (
                     APPLIANCE_PROFILE,
                     appliance_values,
                     appliance_rows,
                 )
             else:
+                digital_values[-1] = attribution.subsidy_value
                 profile, row_values, target = (
                     DIGITAL_PROFILE,
                     digital_values,
@@ -579,42 +663,12 @@ def read_coupon_export(
                 brand = str(result_row[3] or "").strip()
                 result_row[3] = COUPON_BRAND_REPLACEMENTS.get(brand, result_row[3])
             target.append(result_row)
-        return CouponExport(appliance_rows, digital_rows, source_total)
+        return CouponExport(
+            appliance_rows,
+            digital_rows,
+            source_total,
+            tuple(subsidy_corrections),
+        )
     finally:
         if owns_workbook:
             workbook.close()
-
-
-def read_coupon_rows(
-    source: Path,
-    profile: CouponSourceProfile,
-    source_workbook=None,
-    remark_lookup: dict[tuple[str, date], str] | None = None,
-) -> list[list[object]]:
-    """Read and classify just one project's rows.
-
-    A thin wrapper around read_coupon_export, which does the real work (and
-    is what the actual 13000+ row hot path in coupon_report.py calls
-    directly to classify both projects in a single pass). This standalone,
-    single-profile form exists for compute_coupon_data()'s no-rows-supplied
-    fallback and for tests that only care about one project — it still reads
-    the whole sheet once, just without reusing the other project's half of
-    the classification.
-    """
-    export = read_coupon_export(source, source_workbook, remark_lookup)
-    return export.appliance_rows if profile.name == "家电" else export.digital_rows
-
-
-def read_coupon_source_total(
-    source: Path,
-    source_workbook=None,
-    remark_lookup: dict[tuple[str, date], str] | None = None,
-) -> Decimal | None:
-    """Read the 国补 value the source file states in its own 合计 row.
-
-    There is one 合计 row shared by both projects' columns; it has only ever
-    been read from 家电's column (matching the original xlrd-era behavior),
-    so this takes no profile — a parameter that accepted DIGITAL_PROFILE
-    without honoring it would be misleading, not genuinely flexible.
-    """
-    return read_coupon_export(source, source_workbook, remark_lookup).source_total

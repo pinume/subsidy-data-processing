@@ -400,11 +400,11 @@ class SummarySheetLayoutTest(unittest.TestCase):
         try:
             sheet = workbook[appliance.SUMMARY_SHEET_NAME]
             tail_start = 1 + len(computation.summary_rows) - 3
-            remark_column = appliance.COUPON_SUMMARY_HEADER.index(
+            status_column = appliance.COUPON_SUMMARY_HEADER.index(
                 "上传状态"
             ) + 1
             labels = [
-                sheet.cell(tail_start + offset + 1, remark_column).value
+                sheet.cell(tail_start + offset + 1, status_column).value
                 for offset in range(3)
             ]
             self.assertEqual(labels, ["已上传", "未上传", "合计"])
@@ -466,6 +466,152 @@ class ProjectSummaryBlocksTest(unittest.TestCase):
         ]
 
         self.assertEqual(appliance.project_summary_blocks(rows), [])
+
+
+class SubsidyCorrectionWarningTests(unittest.TestCase):
+    """The attribution warnings are formatted by one pure function and
+    printed by the flow — the reader no longer prints while reading."""
+
+    def test_format_names_every_field(self) -> None:
+        from processors.coupon_report import format_subsidy_correction_warning
+
+        correction = sources.SubsidyCorrection(
+            row_number=5346,
+            document_number="ZG2J000016",
+            financial_category="数码",
+            amount=Decimal("314.85"),
+            from_header=sources.COUPON_FAMILY_SUBSIDY_HEADER,
+            to_header=sources.COUPON_DIGITAL_SUBSIDY_HEADER,
+        )
+        message = format_subsidy_correction_warning(
+            correction,
+            "销售用券情况统计.xlsx",
+        )
+        self.assertIn("销售用券情况统计.xlsx", message)
+        self.assertIn("第 5346 行", message)
+        self.assertIn("ZG2J000016", message)
+        self.assertIn("'数码'", message)
+        self.assertIn("314.85", message)
+        self.assertIn("从“2026家电国补（计入收入）”", message)
+        self.assertIn("调整到“2026数码国补（计入收入）”", message)
+
+    def test_process_coupon_sales_prints_one_warning_per_correction(self) -> None:
+        """Flow-level check: the warnings appear exactly once per recorded
+        correction, in source row order, no matter what the reader did."""
+        from contextlib import ExitStack
+        from unittest.mock import patch
+
+        from processors import coupon_report
+
+        export = sources.CouponExport(
+            appliance_rows=[list(sources.APPLIANCE_PROFILE.output_header)],
+            digital_rows=[list(sources.DIGITAL_PROFILE.output_header)],
+            source_total=None,
+            subsidy_corrections=(
+                sources.SubsidyCorrection(
+                    5346,
+                    "ZG2J000016",
+                    "数码",
+                    Decimal("314.85"),
+                    sources.COUPON_FAMILY_SUBSIDY_HEADER,
+                    sources.COUPON_DIGITAL_SUBSIDY_HEADER,
+                ),
+                sources.SubsidyCorrection(
+                    5347,
+                    "ZG2J000017",
+                    "冰箱",
+                    Decimal("100.00"),
+                    sources.COUPON_DIGITAL_SUBSIDY_HEADER,
+                    sources.COUPON_FAMILY_SUBSIDY_HEADER,
+                ),
+            ),
+        )
+        with ExitStack() as stack:
+            stack.enter_context(
+                patch.object(
+                    coupon_report.sources,
+                    "COUPON_SOURCE_FILE",
+                    Path("销售用券情况统计.xlsx"),
+                    create=True,
+                )
+            )
+            stack.enter_context(
+                patch.object(
+                    coupon_report.sources,
+                    "read_coupon_export",
+                    return_value=export,
+                )
+            )
+            stack.enter_context(
+                patch.object(
+                    coupon_report.sources,
+                    "load_payment_reference_locations",
+                    return_value={"家电": {}, "数码": {}},
+                )
+            )
+            stack.enter_context(
+                patch.object(
+                    coupon_report,
+                    "load_coupon_remark_lookup",
+                    return_value={},
+                )
+            )
+            stack.enter_context(
+                patch.object(
+                    appliance,
+                    "load_uploaded_summary",
+                    return_value=({}, 0, Decimal("0")),
+                )
+            )
+            stack.enter_context(
+                patch.object(
+                    appliance,
+                    "load_coupon_reference_supplement",
+                    return_value={},
+                )
+            )
+            stack.enter_context(
+                patch.object(
+                    coupons_digital,
+                    "load_uploaded_summary",
+                    return_value=({}, 0, Decimal("0")),
+                )
+            )
+            stack.enter_context(
+                patch.object(coupon_report, "CalamineWorkbook")
+            )
+            stack.enter_context(
+                patch.object(coupon_report, "write_xlsx_atomically")
+            )
+            output = io.StringIO()
+            with redirect_stdout(output):
+                coupon_report.process_coupon_sales()
+
+        warning_lines = [
+            line
+            for line in output.getvalue().splitlines()
+            if line.startswith("WARNING:")
+        ]
+        self.assertEqual(len(warning_lines), 2)
+        self.assertIn("第 5346 行单据 ZG2J000016", warning_lines[0])
+        self.assertIn("314.85", warning_lines[0])
+        self.assertIn("第 5347 行单据 ZG2J000017", warning_lines[1])
+
+
+class SheetHeaderContractTests(unittest.TestCase):
+    """数据汇总 speaks 上传状态; the detail sheets keep calling it 备注."""
+
+    def test_summary_uses_upload_status_but_details_keep_remark(self) -> None:
+        self.assertEqual(
+            appliance.COUPON_SUMMARY_HEADER[2],
+            "上传状态",
+        )
+        self.assertNotIn("上传状态", appliance.COUPON_OUTPUT_HEADER)
+        self.assertNotIn("上传状态", coupons_digital.COUPON_OUTPUT_HEADER)
+        self.assertIn("备注", appliance.COUPON_OUTPUT_HEADER)
+        self.assertIn("备注", coupons_digital.COUPON_OUTPUT_HEADER)
+        self.assertEqual(appliance.DETAILS_SHEET_NAME, "家电-明细总表")
+        self.assertEqual(coupons_digital.DETAILS_SHEET_NAME, "数码-明细总表")
 
 
 class SourceTotalGapTest(unittest.TestCase):

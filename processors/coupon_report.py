@@ -111,6 +111,27 @@ def report_source_total_gap(
     )
 
 
+def format_subsidy_correction_warning(
+    correction: sources.SubsidyCorrection,
+    source_name: str,
+) -> str:
+    """Render one subsidy attribution correction as the operator-facing warning.
+
+    Wording matches what read_coupon_export used to print while reading; the
+    reader no longer prints, so a correction is reported exactly once no
+    matter how many times the export is read, and tests can assert on the
+    formatting directly instead of mocking print. A future Processing Report
+    entry consumes the same records.
+    """
+    return (
+        f"WARNING: {source_name} 第 {correction.row_number} 行单据 "
+        f"{correction.document_number} 的财务大类为"
+        f"{correction.financial_category!r}，"
+        f"已将 {correction.amount} 从“{correction.from_header}”"
+        f"调整到“{correction.to_header}”"
+    )
+
+
 def digital_extra_summary_rows(
     digital_computation: digital.CouponComputation,
 ) -> list[tuple[object, ...]]:
@@ -243,6 +264,9 @@ def process_coupon_sales() -> None:
         )
     finally:
         source_workbook.close()
+
+    for correction in export.subsidy_corrections:
+        print(format_subsidy_correction_warning(correction, coupon_source.name))
 
     appliance_computation = appliance.compute_coupon_data(
         rows=export.appliance_rows,
