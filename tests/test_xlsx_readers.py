@@ -240,7 +240,7 @@ class ReceiptOutputPerformanceTest(unittest.TestCase):
 
 def _write_coupon_source(path: Path, data_rows: list[list[object]]) -> None:
     """Build a minimal 28-column export matching the real column layout at
-    the positions read_coupon_rows actually uses (title/header/合计 rows,
+    the positions read_coupon_export actually uses (title/header/合计 rows,
     columns 3/4/6/8/15/18/26/27); every other column is left blank."""
     header = [None] * 28
     header[2] = "单据号"
@@ -594,6 +594,18 @@ class CouponComputationSingleReadTests(unittest.TestCase):
                 sources,
                 "COUPON_SOURCE_FILE",
                 Path("销售用券情况统计.xlsx"),
+                create=True,
+            )
+        )
+        # COUPON_REFERENCE_SUPPLEMENT_FILE only exists after
+        # configure_data_dir; patch it explicitly so this test is
+        # order-independent (it passed in the full suite only while another
+        # test happened to have configured the module globals first).
+        stack.enter_context(
+            patch.object(
+                sources,
+                "COUPON_REFERENCE_SUPPLEMENT_FILE",
+                Path("参考号补充.xlsx"),
                 create=True,
             )
         )
