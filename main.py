@@ -2,9 +2,11 @@ import os
 import sys
 import traceback
 from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
 
 from processors import payment, receipts, store_report, submitted
+from processors.common.console import ConsoleReporter, format_count
 from processors.common.excel import (
     remove_stale_temporary_files,
     run_with_output_rollback,
@@ -25,66 +27,100 @@ def all_output_files() -> tuple[Path, ...]:
     )
 
 
-def build_processors() -> tuple[tuple[str, Path, Callable[[], None]], ...]:
+def build_processors() -> tuple[
+    tuple[str, str, Path, Callable[[ConsoleReporter], None]],
+    ...,
+]:
     """List every processing mode across both projects.
 
-    Receipt statistics and subsidy coupon statistics are shared, produced
-    once regardless of which entry triggers them. The coupon_report import
-    is deferred so it only runs after both projects have finished loading
-    (see processors/coupon_report.py for why).
+    Each entry is (menu label, step label, source path, processor). The step
+    label is the short name shown on the [i/N] stage lines; the menu label
+    keeps the full descriptive text. Receipt statistics and subsidy coupon
+    statistics are shared, produced once regardless of which entry triggers
+    them. The coupon_report import is deferred so it only runs after both
+    projects have finished loading (see processors/coupon_report.py for why).
     """
     from processors.coupon_report import process_coupon_sales as process_coupon_report
 
     return (
         (
             "已上传数据（家电+数码）",
+            "已上传数据",
             submitted.DATA_DIR,
             submitted.process_all,
         ),
         (
+            "收款单统计",
             "收款单统计",
             receipts.RECEIPTS_SOURCE_FILE or receipts.DATA_DIR,
             receipts.process_receipts,
         ),
         (
             "回款明细（家电+数码）",
+            "回款明细",
             payment.DATA_DIR,
             payment.process_payment_files,
         ),
         (
             "审核明细（销售用券情况统计）",
+            "审核明细",
             coupon_sources.COUPON_SOURCE_FILE or coupon_sources.DATA_DIR,
             process_coupon_report,
         ),
         (
             "门店国补上传及回款情况表",
+            "门店报表",
             store_report.DATA_DIR,
             store_report.process_store_report,
         ),
     )
 
 
-def process_all(processors: tuple[tuple[str, Path, Callable[[], None]], ...]) -> None:
+@dataclass(frozen=True)
+class ProcessorSelection:
+    """What the operator picked: the runner plus how to stage and report it."""
+
+    run: Callable[[ConsoleReporter], None]
+    step_label: str
+    is_all: bool
+    total_steps: int
+
+
+def process_all(
+    processors: tuple[tuple[str, str, Path, Callable[[ConsoleReporter], None]], ...],
+    reporter: ConsoleReporter,
+) -> None:
     def process_everything() -> None:
-        print(
-            "Batch mode: step success messages are provisional; "
-            "a later failure rolls every output back."
-        )
-        for _, source_path, processor in processors:
-            print(f"处理中：{source_path}")
-            processor()
-        print("全部处理模式已完成；输出已统一提交。")
+        reporter.run_start(len(processors))
+        for index, (_menu_label, step_label, _source_path, processor) in enumerate(
+            processors,
+            start=1,
+        ):
+            reporter.step_start(index, len(processors), step_label)
+            try:
+                processor(reporter)
+            except BaseException as error:
+                reporter.failure(
+                    step_label,
+                    error,
+                    "本次输出已回滚，原文件保持不变",
+                )
+                if os.environ.get("UPLOAD_DATA_DEBUG"):
+                    traceback.print_exc()
+                raise
+            reporter.step_success(step_label)
+        reporter.run_success(len(processors), transaction=True)
 
     run_with_output_rollback(all_output_files(), process_everything)
 
 
-def choose_data_processor() -> Callable[[], None] | None:
+def choose_data_processor() -> ProcessorSelection | None:
     processors = build_processors()
     all_choice = len(processors) + 1
 
     print("请选择处理模式：")
-    for index, (label, _, _) in enumerate(processors, start=1):
-        print(f"  {index}. {label}")
+    for index, (menu_label, _, _, _) in enumerate(processors, start=1):
+        print(f"  {index}. {menu_label}")
     print(f"  {all_choice}. all")
     print("  0. 退出")
 
@@ -100,34 +136,28 @@ def choose_data_processor() -> Callable[[], None] | None:
             return None
         if choice == str(all_choice) or choice.lower() == "all":
             print(f"按顺序处理全部数据：1-{len(processors)}")
-            return lambda: process_all(processors)
+            return ProcessorSelection(
+                run=lambda reporter: process_all(processors, reporter),
+                step_label="全部模式",
+                is_all=True,
+                total_steps=len(processors),
+            )
         if choice.isdigit():
             selected_index = int(choice) - 1
             if 0 <= selected_index < len(processors):
-                _, source_path, processor = processors[selected_index]
-                print(f"处理中：{source_path}")
-                return processor
+                _, step_label, _, processor = processors[selected_index]
+                return ProcessorSelection(
+                    run=processor,
+                    step_label=step_label,
+                    is_all=False,
+                    total_steps=1,
+                )
 
         print("输入无效，请输入菜单编号或 all。")
 
 
-def report_failure(error: BaseException) -> None:
-    """Show operators the cause, not a Python stack trace."""
-    print(f"\n处理失败：{error}", file=sys.stderr)
-    print(
-        "现有输出文件保持不变。请检查上方指出的源文件后重新运行。",
-        file=sys.stderr,
-    )
-    if os.environ.get("UPLOAD_DATA_DEBUG"):
-        traceback.print_exc()
-    else:
-        print(
-            "设置 UPLOAD_DATA_DEBUG=1 可查看完整堆栈。",
-            file=sys.stderr,
-        )
-
-
 def main() -> int:
+    reporter = ConsoleReporter()
     try:
         data_dir = resolve_data_dir()
         if data_dir is None:
@@ -145,19 +175,56 @@ def main() -> int:
         # Every pipeline writes into the same output directory and cleans up
         # after itself; anything dot-prefixed still sitting there is from a run
         # that was interrupted before it could.
-        removed = remove_stale_temporary_files(submitted.OUTPUT_DIR)
-        if removed:
-            print(f"已清理 {len(removed)} 个残留临时文件：{'、'.join(removed)}")
+        cleanup = remove_stale_temporary_files(submitted.OUTPUT_DIR)
+        if cleanup.removed:
+            reporter.metric(
+                "已清理残留临时文件",
+                f"{format_count(len(cleanup.removed))} 个",
+            )
+        for name, reason in cleanup.failed:
+            reporter.warning(
+                "无法删除残留临时文件",
+                (f"文件：{name}", f"原因：{reason}"),
+            )
 
-        processor = choose_data_processor()
-        if processor is None:
+        selection = choose_data_processor()
+        if selection is None:
             return 0
-        processor()
     except KeyboardInterrupt:
         print("\n处理已取消", file=sys.stderr)
         return 130
     except Exception as error:
-        report_failure(error)
+        reporter.failure(
+            None,
+            error,
+            "现有输出文件保持不变，请检查配置或源文件后重试",
+        )
+        if os.environ.get("UPLOAD_DATA_DEBUG"):
+            traceback.print_exc()
+        return 1
+
+    try:
+        if selection.is_all:
+            selection.run(reporter)
+        else:
+            reporter.step_start(1, 1, selection.step_label)
+            selection.run(reporter)
+            reporter.step_success(selection.step_label)
+            reporter.run_success(1)
+    except KeyboardInterrupt:
+        print("\n处理已取消", file=sys.stderr)
+        return 130
+    except Exception as error:
+        # The all mode already reported the failing step (with the rollback
+        # remedy) inside process_all; single mode reports it here.
+        if not selection.is_all:
+            reporter.failure(
+                selection.step_label,
+                error,
+                "现有输出文件保持不变，请检查源文件后重试",
+            )
+        if os.environ.get("UPLOAD_DATA_DEBUG"):
+            traceback.print_exc()
         return 1
     return 0
 

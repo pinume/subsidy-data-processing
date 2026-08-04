@@ -1,7 +1,6 @@
 import io
 import tempfile
 import unittest
-from contextlib import redirect_stdout
 from datetime import date
 from pathlib import Path
 from unittest.mock import patch
@@ -122,6 +121,7 @@ class PrepareReceiptDataIssuesTest(unittest.TestCase):
             ],
         ]
         output = io.StringIO()
+        reporter = receipts.ConsoleReporter(stream=output)
         with patch.object(
             receipts, "read_receipt_rows", return_value=kept_rows
         ), patch.object(
@@ -131,18 +131,21 @@ class PrepareReceiptDataIssuesTest(unittest.TestCase):
             create=True,
         ), patch.object(
             receipts, "write_xlsx_atomically"
-        ), redirect_stdout(output):
-            receipts.process_receipts()
+        ):
+            receipts.process_receipts(reporter)
 
+        self.assertEqual(reporter.warning_count, 1)
         text = output.getvalue()
         self.assertIn(
-            "[收款单] 警告：商品名称含“北国”的 12 行已按业务规则剔除",
+            "[警告] 商品名称含“北国”的 12 行已按业务规则剔除",
             text,
         )
         self.assertIn("源第 3 行，单据号 ZH0000，商品名称 北国0", text)
         self.assertIn("源第 12 行，单据号 ZH0009，商品名称 北国9", text)
         self.assertIn("其余 2 行未展开", text)
         self.assertNotIn("北国10", text)  # beyond the 10-example cap
+        self.assertIn("有效数据  0 行", text)
+        self.assertIn("北国商品剔除  12 行", text)
 
 
 class UnremarkedSaleCategoryTest(unittest.TestCase):

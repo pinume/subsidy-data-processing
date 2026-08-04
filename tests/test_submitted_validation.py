@@ -1,7 +1,6 @@
 import io
 import tempfile
 import unittest
-from contextlib import redirect_stdout
 from datetime import date
 from decimal import Decimal
 from pathlib import Path
@@ -358,21 +357,19 @@ class SubmittedHeaderValidationTest(unittest.TestCase):
                     return EmptyWorkbook()
                 return real_from_path(path)
 
-            with (
-                patch.object(
-                    submitted.CalamineWorkbook,
-                    "from_path",
-                    side_effect=open_source,
-                ),
-                patch("builtins.print") as mocked_print,
+            with patch.object(
+                submitted.CalamineWorkbook,
+                "from_path",
+                side_effect=open_source,
             ):
                 report = submitted.build_report(profile_name)
 
             self.assertFalse(invalid_path.exists())
             self.assertTrue(valid_path.exists())
             self.assertEqual(report.file_count, 1)
-            mocked_print.assert_called_once_with(
-                f"已删除无效导出文件（没有工作表）：{invalid_path}"
+            self.assertEqual(
+                report.deleted_invalid_files,
+                (invalid_path.name,),
             )
 
     def test_output_carries_only_the_kept_columns(self) -> None:
@@ -490,21 +487,19 @@ class SubmittedRowValidationTest(unittest.TestCase):
             )
             submitted.configure_data_dir(data_dir)
             output = io.StringIO()
-            with patch.object(
-                submitted, "write_xlsx_atomically"
-            ), redirect_stdout(output):
-                submitted.process_submitted_files("数码")
+            reporter = submitted.ConsoleReporter(stream=output)
+            with patch.object(submitted, "write_xlsx_atomically"):
+                submitted.process_submitted_files("数码", reporter)
 
+        self.assertEqual(reporter.warning_count, 1)
         text = output.getvalue()
-        self.assertIn("[数码] 警告：3 行", text)
-        self.assertIn("状态为 待同步×3", text)
-        self.assertIn("未配置独立工作表", text)
-        self.assertIn("数据已保留在 Summary，未被删除", text)
+        self.assertIn("[警告] 数码有 3 行状态为“待同步”", text)
+        self.assertIn("处理：数据保留在 Summary，未生成独立工作表", text)
+        self.assertIn("数码  文件 1 个｜数据 3 行", text)
         # Title and header occupy source rows 1-2, so the first data row is 3.
         self.assertIn("源文件 MER_89813014812B06R_export.xlsx", text)
         self.assertIn("源行 3", text)
         self.assertIn("检索参考号 12345678900A", text)
-        self.assertIn("状态 待同步", text)
 
     def test_invalid_reference_reports_source_location(self) -> None:
         row = submitted_row(SUBMITTED_HEADER, reference="not-valid")

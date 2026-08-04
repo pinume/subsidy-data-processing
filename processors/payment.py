@@ -19,6 +19,7 @@ from python_calamine import CalamineWorkbook
 from xlsxwriter import Workbook
 
 from processors.common.config import load_payment_brand_config, merchant_id
+from processors.common.console import ConsoleReporter, format_count
 from processors.common.excel import (
     FONT_SIZE,
     ROW_HEIGHT,
@@ -150,6 +151,9 @@ class DetailSection:
     name: str
     header: tuple[str, ...]
     rows: list[list[object]]
+    # Rows whose brand could not be identified from keywords or model
+    # aliases; reported as a warning only when non-zero.
+    unidentified_brands: int = 0
 
 
 @dataclass(frozen=True)
@@ -269,7 +273,6 @@ def detect_profile(path: Path, source_name: str | None = None) -> ProcessingProf
     if source_name:
         profile = _detect_profile_from_filename(source_name)
         if profile is not None:
-            print(f"已按文件名识别数据类型：{profile.name}")
             return profile
     book = CalamineWorkbook.from_path(str(path))
     try:
@@ -287,9 +290,7 @@ def detect_profile(path: Path, source_name: str | None = None) -> ProcessingProf
                     if not _missing_required_headers(headers, profile)
                 }
                 if len(matches) == 1:
-                    profile = next(iter(matches.values()))
-                    print(f"已按表头识别数据类型：{profile.name}")
-                    return profile
+                    return next(iter(matches.values()))
                 if matches:
                     raise ValueError(
                         "无法确定数据类型，表头同时符合："
@@ -727,21 +728,16 @@ def _process_sources(
     output_headers = profile.detail_headers + DERIVED_HEADERS
     inferred_brands = _infer_missing_brands(normalized_rows, output_headers)
     unidentified_brands -= inferred_brands
-    sorted_detail_rows = _sort_detail_rows(
+    _sort_detail_rows(
         normalized_rows,
         output_headers,
         profile.category_map,
-    )
-    print(
-        f"已处理{profile.name}明细：Sheet {profile.detail_sheet_name}，"
-        f"商户 {merchant_id} 共 {merged_rows} 条，"
-        f"品牌推断 {inferred_brands} 条、未识别 {unidentified_brands} 条，"
-        f"明细排序 {sorted_detail_rows} 条"
     )
     return DetailSection(
         name=profile.detail_sheet_name,
         header=output_headers,
         rows=normalized_rows,
+        unidentified_brands=unidentified_brands,
     )
 
 
@@ -800,8 +796,6 @@ def build_report() -> PaymentReport:
         for row_number in range(first_row + 1, last_row + 1):
             summary_rows[row_number - 1][0] = None
 
-    font_name, _ = resolve_font()
-    print(f"汇总分 {len(sections)} 类共 {summary_groups} 组，字体 {font_name}")
     return PaymentReport(
         summary_rows=summary_rows,
         summary_bold_rows=bold_rows,
@@ -996,7 +990,7 @@ def validate_output(
         workbook.close()
 
 
-def process_payment_files() -> None:
+def process_payment_files(reporter: ConsoleReporter) -> None:
     report = build_report()
     expectations = {
         detail.name: PaymentOutputExpectation(
@@ -1012,4 +1006,16 @@ def process_payment_files() -> None:
         lambda path: write_workbook(path, report),
         lambda path: validate_output(path, expectations, expected_summary),
     )
-    print(f"处理完成：{OUTPUT_FILE}")
+    for profile, detail in zip(report.section_profiles, report.details):
+        reporter.metric(
+            profile.name,
+            f"{format_count(len(detail.rows))} 条",
+        )
+        if detail.unidentified_brands:
+            reporter.warning(
+                f"{profile.name}有 {format_count(detail.unidentified_brands)} 行"
+                "品牌未识别",
+                ("处理：品牌列为空，请在 config/payment_brands.yaml 中补充关键词",),
+            )
+    reporter.metric("汇总", f"{format_count(report.summary_groups)} 组")
+    reporter.output(OUTPUT_FILE)

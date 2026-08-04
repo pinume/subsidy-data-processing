@@ -21,6 +21,7 @@ from pathlib import Path
 from python_calamine import CalamineWorkbook
 from xlsxwriter import Workbook as XlsxWorkbook
 
+from processors.common.console import ConsoleReporter, format_amount, format_count
 from processors.common.excel import (
     calamine_rows,
     load_measurement_font,
@@ -87,71 +88,80 @@ def merged_reference_decisions(
     return decisions
 
 
-def report_source_total_gap(
+def source_total_gap_warning(
     label: str,
     source_total: Decimal | None,
     computed_total: Decimal,
-) -> None:
+) -> tuple[str, tuple[str, ...]] | None:
     """Warn when a coupon export's own 合计 row disagrees with its detail rows.
 
     Both numbers are reported rather than reconciled: the export is a snapshot,
     and a return recorded after the detail rows were written shows up here as a
     gap that closes by itself once the next export includes it. Silently
-    trusting either number would hide that.
+    trusting either number would hide that. Returns None when there is no gap;
+    otherwise a (title, details) pair for ConsoleReporter.warning.
     """
     if source_total is None or source_total == computed_total:
-        return
-    print(
-        f"[{label}] 警告：源文件合计行为 {source_total:,.2f}，"
-        f"但其明细行合计为 {computed_total:,.2f}，"
-        f"相差 {computed_total - source_total:,.2f}。"
-        "报表采用明细行合计以与明细总表保持一致；"
-        "该差额通常是导出快照期间产生的退货尚未写入明细，"
-        "下次导出补齐后此提示会自动消失"
+        return None
+    return (
+        f"{label}源文件合计与明细行合计不一致",
+        (
+            f"源文件合计：{format_amount(source_total)}",
+            f"明细行合计：{format_amount(computed_total)}",
+            f"相差：{format_amount(computed_total - source_total)}",
+            "说明：报表采用明细行合计以与明细总表保持一致；"
+            "该差额通常是导出快照期间产生的退货尚未写入明细，"
+            "下次导出补齐后此提示会自动消失",
+        ),
     )
 
 
-def format_subsidy_correction_warning(
+def _short_subsidy_label(header: str) -> str:
+    return "家电国补" if "家电" in header else "数码国补"
+
+
+def subsidy_correction_warning(
     correction: sources.SubsidyCorrection,
     source_name: str,
-) -> str:
-    """Render one subsidy attribution correction as the operator-facing warning.
+) -> tuple[str, tuple[str, ...]]:
+    """One subsidy attribution correction as a warning block.
 
-    Wording matches what read_coupon_export used to print while reading; the
-    reader no longer prints, so a correction is reported exactly once no
-    matter how many times the export is read, and tests can assert on the
-    formatting directly instead of mocking print. A future Processing Report
-    entry consumes the same records.
+    The reader only records the correction; the audit flow reports it here,
+    exactly once per recorded correction.
     """
     return (
-        f"警告：{source_name} 第 {correction.row_number} 行单据 "
-        f"{correction.document_number} 的财务大类为"
-        f"{correction.financial_category!r}，"
-        f"已将 {correction.amount} 从“{correction.from_header}”"
-        f"调整到“{correction.to_header}”"
+        "补贴归属已自动调整",
+        (
+            f"单据：{correction.document_number}",
+            f"类别：{correction.financial_category}",
+            f"金额：{format_amount(correction.amount)}",
+            f"调整：{_short_subsidy_label(correction.from_header)} → "
+            f"{_short_subsidy_label(correction.to_header)}",
+            f"来源：{source_name} 第 {correction.row_number} 行",
+        ),
     )
 
 
-def format_supplement_conflict_warning(
+def supplement_conflict_warning(
     conflict: appliance.SupplementReferenceConflict,
-) -> str:
-    """Render one ambiguous supplement match as a single-line warning.
+) -> tuple[str, tuple[str, ...]]:
+    """One ambiguous supplement match as a warning block.
 
     The row keeps its current value — nothing was chosen — so the message
     says so and lists every candidate, sorted for stable output.
     """
     current = (
-        "为空"
-        if not conflict.current_reference
-        else f"为 {conflict.current_reference}"
+        "为空" if not conflict.current_reference else conflict.current_reference
     )
     return (
-        f"[家电] 警告：补充参考号候选不唯一："
-        f"单据号 {conflict.document_number}，"
-        f"日期 {conflict.document_date:%Y-%m-%d}，"
-        f"当前参考号{current}，"
-        f"候选 {'、'.join(conflict.candidates)}；"
-        "已保留原值，请人工核对"
+        "补充参考号候选不唯一",
+        (
+            f"单据：{conflict.document_number}",
+            f"日期：{conflict.document_date:%Y-%m-%d}",
+            f"当前参考号：{current}",
+            f"候选：{'、'.join(conflict.candidates)}",
+            "处理：已保留原值，请人工核对",
+        ),
     )
 
 
@@ -261,7 +271,7 @@ def write_coupon_workbook(
         )
 
 
-def process_coupon_sales() -> None:
+def process_coupon_sales(reporter: ConsoleReporter) -> None:
     coupon_source = sources.COUPON_SOURCE_FILE
     if coupon_source is None:
         # compute_coupon_data() raises the same FileNotFoundError once it
@@ -289,7 +299,9 @@ def process_coupon_sales() -> None:
         source_workbook.close()
 
     for correction in export.subsidy_corrections:
-        print(format_subsidy_correction_warning(correction, coupon_source.name))
+        reporter.warning(
+            *subsidy_correction_warning(correction, coupon_source.name)
+        )
 
     appliance_computation = appliance.compute_coupon_data(
         rows=export.appliance_rows,
@@ -332,63 +344,39 @@ def process_coupon_sales() -> None:
     )
 
     la = appliance_computation
-    print(f"[家电] 销售用券统计完成：{la.data_row_count} 行")
-    print(f"[家电] 退换货（粉色）行数：{la.matched_count}")
-    print(f"[家电] 补充参考号匹配：{la.reference_supplement_count}")
-    if la.supplement_conflicts:
-        for conflict in la.supplement_conflicts:
-            print(format_supplement_conflict_warning(conflict))
-    else:
-        print(
-            "[家电] 补充参考号候选不唯一："
-            f"{la.ambiguous_reference_supplement_count}"
+    reporter.metric(
+        "家电",
+        f"{format_count(la.data_row_count)} 行｜"
+        f"已上传 {format_count(la.uploaded_count)}｜"
+        f"已回款 {format_count(la.payment_match_count)}｜"
+        f"未上传 {format_count(la.unmatched_count)}",
+    )
+    for conflict in la.supplement_conflicts:
+        reporter.warning(*supplement_conflict_warning(conflict))
+    if la.reference_supplement_missing:
+        reporter.warning(
+            "参考号补充文件缺失",
+            ("处理：跳过补充匹配，仅使用算法纠正",),
         )
-    print(f"[家电] 已上传状态匹配：{la.uploaded_count}")
-    print(f"[家电] 已回款匹配：{la.payment_match_count}")
-    print(
-        "[家电] 未在已上传数据中找到（标记未上传）："
-        f"{la.unmatched_count}"
-    )
-    print(
-        f"[家电] 参考号自动纠正：{la.corrected_count}；"
-        f"无唯一候选：{la.unresolved_count}；"
-        f"目标冲突：{la.correction_collision_count}"
-    )
-    print(
-        "[家电] 匹配行计入收入的2026家电国补合计："
-        f"{la.matched_subsidy_total:.2f}"
-    )
     if la.zero_subsidy_count:
-        print(
-            f"[家电] 警告：{la.zero_subsidy_count} 行的 "
-            "2026家电国补（计入收入）为 0，不应出现；"
-            "按 0 计入，请检查这些源数据行"
+        reporter.warning(
+            f"家电有 {format_count(la.zero_subsidy_count)} 行 "
+            "2026家电国补（计入收入）为 0",
+            ("处理：按 0 计入，请检查这些源数据行",),
         )
-    report_source_total_gap("家电", la.source_total, la.computed_total)
+    gap = source_total_gap_warning("家电", la.source_total, la.computed_total)
+    if gap is not None:
+        reporter.warning(*gap)
 
     dg = digital_computation
-    print(f"[数码] 销售用券统计完成：{dg.data_row_count} 行")
-    print(f"[数码] 备注匹配：{dg.matched_count}")
-    print(f"[数码] 已上传状态匹配：{dg.uploaded_match_count}")
-    print(f"[数码] 已回款匹配：{dg.payment_match_count}")
-    print(
-        "[数码] 汇总采用的已上传补贴行："
-        f"{dg.uploaded_subsidy_count}；合计：{dg.uploaded_subsidy_total:.2f}"
+    reporter.metric(
+        "数码",
+        f"{format_count(dg.data_row_count)} 行｜"
+        f"已上传 {format_count(dg.uploaded_match_count)}｜"
+        f"已回款 {format_count(dg.payment_match_count)}｜"
+        f"未上传 {format_count(dg.unmatched_count)}",
     )
-    print(
-        "[数码] 未在已上传数据中找到（标记未上传）："
-        f"{dg.unmatched_count}"
-    )
-    print(
-        f"[数码] 参考号自动纠正：{dg.corrected_count}；"
-        f"无唯一候选：{dg.unresolved_count}；"
-        f"目标冲突：{dg.correction_collision_count}"
-    )
-    print(
-        "[数码] 匹配行计入收入的2026数码国补合计："
-        f"{dg.matched_subsidy_total:.2f}"
-    )
-    print(f"输出文件：{OUTPUT_FILE}")
+    reporter.output(OUTPUT_FILE)
 
 
 def _comparable_output_value(value: object) -> object:

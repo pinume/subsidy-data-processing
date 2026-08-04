@@ -624,7 +624,7 @@ class CouponComputationSingleReadTests(unittest.TestCase):
             patch.object(
                 appliance,
                 "load_coupon_reference_supplement",
-                return_value={},
+                return_value=({}, False),
             )
         )
         stack.enter_context(

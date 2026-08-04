@@ -109,10 +109,14 @@ def normalize_coupon_reference_supplement_header(value: object) -> str:
 
 def load_coupon_reference_supplement(
     source: Path,
-) -> dict[tuple[str, date], frozenset[str]]:
+) -> tuple[dict[tuple[str, date], frozenset[str]], bool]:
+    """Read the optional supplement; the bool says whether the file was missing.
+
+    Nothing is printed here: the caller (coupon_report) turns a missing file
+    into an operator warning via the reporter.
+    """
     if not source.exists():
-        print(f"未找到可选参考号补充文件，跳过：{source}")
-        return {}
+        return {}, True
 
     workbook = CalamineWorkbook.from_path(str(source))
     try:
@@ -144,10 +148,13 @@ def load_coupon_reference_supplement(
             )
             key = (document_number, document_date)
             references_by_key.setdefault(key, set()).add(reference)
-        return {
-            key: frozenset(references)
-            for key, references in references_by_key.items()
-        }
+        return (
+            {
+                key: frozenset(references)
+                for key, references in references_by_key.items()
+            },
+            False,
+        )
     finally:
         workbook.close()
 
@@ -583,6 +590,7 @@ class CouponComputation:
     ambiguous_reference_supplement_count: int
     reference_supplement_matches: Counter[tuple[str, date, str]]
     supplement_conflicts: tuple[SupplementReferenceConflict, ...]
+    reference_supplement_missing: bool
     corrected_count: int
     unresolved_count: int
     correction_collision_count: int
@@ -647,8 +655,10 @@ def compute_coupon_data(
         reference_universe,
     )
     payment_references = frozenset(payment_reference_locations)
-    reference_supplement_lookup = load_coupon_reference_supplement(
-        sources.COUPON_REFERENCE_SUPPLEMENT_FILE
+    reference_supplement_lookup, reference_supplement_missing = (
+        load_coupon_reference_supplement(
+            sources.COUPON_REFERENCE_SUPPLEMENT_FILE
+        )
     )
     (
         reference_supplement_count,
@@ -735,6 +745,7 @@ def compute_coupon_data(
         ),
         reference_supplement_matches=reference_supplement_matches,
         supplement_conflicts=reference_supplement_conflicts,
+        reference_supplement_missing=reference_supplement_missing,
         corrected_count=corrected_count,
         unresolved_count=unresolved_count,
         correction_collision_count=correction_collision_count,

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import io
 import unittest
 from datetime import timedelta
 from decimal import Decimal
@@ -587,7 +588,9 @@ class ProcessStoreReportIntegrationTests(unittest.TestCase):
                     return_value=("Maple Mono NF CN", Path("unused.ttf")),
                 ),
             ):
-                store_report.process_store_report()
+                store_report.process_store_report(
+                    store_report.ConsoleReporter(stream=io.StringIO())
+                )
 
             self.assertTrue(output_file.exists())
             result = load_workbook(output_file, data_only=True)

@@ -219,7 +219,7 @@ class PinkBlockIsLeftAloneTest(unittest.TestCase):
                     patch.object(
                         module,
                         "load_coupon_reference_supplement",
-                        return_value={},
+                        return_value=({}, False),
                     )
                 )
             kwargs = {"rows": rows, "remark_lookup": remark_lookup}

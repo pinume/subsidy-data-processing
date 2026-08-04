@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import io
 import unittest
 from decimal import Decimal
 from pathlib import Path
@@ -412,7 +413,9 @@ class PaymentPipelineTests(unittest.TestCase):
             patch.object(payment, "merchant_id", fake_merchant_id),
         ):
             payment.configure_data_dir(temporary_path / "data")
-            payment.process_payment_files()
+            payment.process_payment_files(
+                payment.ConsoleReporter(stream=io.StringIO())
+            )
         return output_file
 
     def _prepare_data_dir(self, temporary_path: Path) -> Path:

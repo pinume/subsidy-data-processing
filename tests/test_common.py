@@ -44,7 +44,8 @@ class RemoveStaleTemporaryFilesTest(unittest.TestCase):
 
             removed = remove_stale_temporary_files(output_dir, minimum_age_seconds=0)
 
-            self.assertEqual(sorted(removed), sorted(remove))
+            self.assertEqual(sorted(removed.removed), sorted(remove))
+            self.assertEqual(removed.failed, ())
             self.assertEqual(
                 sorted(path.name for path in output_dir.iterdir()),
                 sorted([*keep, ".子目录"]),
@@ -52,10 +53,9 @@ class RemoveStaleTemporaryFilesTest(unittest.TestCase):
 
     def test_missing_output_directory_is_not_an_error(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
-            self.assertEqual(
-                remove_stale_temporary_files(Path(directory) / "output"),
-                [],
-            )
+            cleanup = remove_stale_temporary_files(Path(directory) / "output")
+            self.assertEqual(cleanup.removed, ())
+            self.assertEqual(cleanup.failed, ())
 
     def test_leaves_a_freshly_written_file_alone(self) -> None:
         # A second instance's startup cleanup must not delete a first
@@ -71,7 +71,7 @@ class RemoveStaleTemporaryFilesTest(unittest.TestCase):
                 output_dir, minimum_age_seconds=180
             )
 
-            self.assertEqual(removed, [])
+            self.assertEqual(removed.removed, ())
             self.assertTrue(in_flight.exists())
 
 

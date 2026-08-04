@@ -3,6 +3,7 @@ import shutil
 import stat
 import time
 from collections.abc import Callable, Iterator
+from dataclasses import dataclass
 from datetime import date, datetime
 from pathlib import Path
 from tempfile import NamedTemporaryFile
@@ -414,10 +415,22 @@ def write_formatted_sheet(
 STALE_TEMPORARY_FILE_AGE_SECONDS = 180
 
 
+@dataclass(frozen=True)
+class StaleFileCleanup:
+    """What startup cleanup did, reported by the caller rather than printed.
+
+    removed lists the dot-prefixed leftovers deleted; failed lists
+    (file name, reason) pairs for files that could not be removed.
+    """
+
+    removed: tuple[str, ...]
+    failed: tuple[tuple[str, str], ...]
+
+
 def remove_stale_temporary_files(
     output_dir: Path,
     minimum_age_seconds: float = STALE_TEMPORARY_FILE_AGE_SECONDS,
-) -> list[str]:
+) -> StaleFileCleanup:
     """Delete leftover intermediate files from an interrupted earlier run.
 
     Everything this program writes into the output directory as an
@@ -440,10 +453,11 @@ def remove_stale_temporary_files(
     has been observed to take to save.
     """
     if not output_dir.is_dir():
-        return []
+        return StaleFileCleanup((), ())
 
     now = time.time()
     removed: list[str] = []
+    failed: list[tuple[str, str]] = []
     for path in sorted(output_dir.iterdir()):
         if not path.is_file() or not path.name.startswith("."):
             continue
@@ -457,10 +471,10 @@ def remove_stale_temporary_files(
             path.chmod(path.stat().st_mode | stat.S_IWRITE)
             path.unlink()
         except OSError as error:
-            print(f"无法删除残留文件 {path.name}：{error}")
+            failed.append((path.name, str(error)))
             continue
         removed.append(path.name)
-    return removed
+    return StaleFileCleanup(tuple(removed), tuple(failed))
 
 
 def save_workbook_atomically(

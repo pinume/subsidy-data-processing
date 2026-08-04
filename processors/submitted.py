@@ -16,6 +16,7 @@ from python_calamine import CalamineWorkbook
 from xlsxwriter import Workbook
 
 from processors.common.config import submitted_file_marker
+from processors.common.console import ConsoleReporter, format_count
 from processors.common.excel import (
     calamine_rows,
     load_measurement_font,
@@ -99,6 +100,9 @@ class SubmittedReport:
     # The same rows as records with their source location, for the console
     # warning only (see UnknownStatusRecord).
     unknown_status_records: tuple[UnknownStatusRecord, ...]
+    # Invalid exports (no worksheets) deleted from the data directory while
+    # building, for the console warning only.
+    deleted_invalid_files: tuple[str, ...]
 
 
 # Household appliances and digital both take 15% of the transaction; the two
@@ -216,6 +220,7 @@ def build_report(profile_name: str) -> SubmittedReport:
     data_row_count = 0
     data_rows: list[list[object]] = []
     unknown_status_records: list[UnknownStatusRecord] = []
+    deleted_invalid_files: list[str] = []
     valid_file_count = 0
 
     for path in files:
@@ -223,7 +228,7 @@ def build_report(profile_name: str) -> SubmittedReport:
         if not source_workbook.sheet_names:
             source_workbook.close()
             path.unlink()
-            print(f"已删除无效导出文件（没有工作表）：{path}")
+            deleted_invalid_files.append(path.name)
             continue
         try:
             rows = (
@@ -352,6 +357,7 @@ def build_report(profile_name: str) -> SubmittedReport:
         data_row_count=data_row_count,
         unknown_status_counts=dict(unknown_status_counts),
         unknown_status_records=tuple(unknown_status_records),
+        deleted_invalid_files=tuple(deleted_invalid_files),
     )
 
 
@@ -529,7 +535,10 @@ def validate_output(path: Path, expected_data_rows: int, profile_name: str) -> N
         workbook.close()
 
 
-def process_submitted_files(profile_name: str) -> None:
+def process_submitted_files(
+    profile_name: str,
+    reporter: ConsoleReporter,
+) -> None:
     report = build_report(profile_name)
     output_file = PROFILES[profile_name].output_file
     write_xlsx_atomically(
@@ -538,42 +547,45 @@ def process_submitted_files(profile_name: str) -> None:
         lambda path: validate_output(path, report.data_row_count, profile_name),
     )
 
-    print(
-        "已上传数据处理完成："
-        f"合并 {report.file_count} 个文件，共 {report.data_row_count} 行"
+    reporter.metric(
+        profile_name,
+        f"文件 {format_count(report.file_count)} 个｜"
+        f"数据 {format_count(report.data_row_count)} 行",
     )
+    for file_name in report.deleted_invalid_files:
+        reporter.warning(
+            "已删除无效导出文件（没有工作表）",
+            (f"文件：{file_name}",),
+        )
     # Reported, never fatal: an unrecognised status is still uploaded data and
     # belongs in Summary; it just has no status sheet of its own, so silence
     # would hide it from an operator reading the status tabs. A status new to
     # this program shows up here rather than as a row count that does not add
     # up.
     if report.unknown_status_records:
-        detail = "、".join(
-            f"{status or '(空)'}×{count}"
-            for status, count in sorted(
-                report.unknown_status_counts.items(),
-                key=lambda item: (-item[1], item[0]),
-            )
+        status_names = "、".join(
+            sorted({record.status or "(空)" for record in report.unknown_status_records})
         )
-        print(
-            f"[{profile_name}] 警告：{len(report.unknown_status_records)} 行"
-            f"（状态为 {detail}）未配置独立工作表，"
-            "数据已保留在 Summary，未被删除"
+        record_details = tuple(
+            f"源文件 {record.source_name}，源行 {record.source_row}，"
+            f"检索参考号 {record.reference or '(空)'}"
+            for record in report.unknown_status_records[:10]
         )
-        for record in report.unknown_status_records[:10]:
-            print(
-                f"[{profile_name}] 源文件 {record.source_name}，"
-                f"源行 {record.source_row}，"
-                f"检索参考号 {record.reference or '(空)'}，"
-                f"状态 {record.status or '(空)'}"
-            )
         remaining = len(report.unknown_status_records) - 10
         if remaining > 0:
-            print(f"[{profile_name}] 其余 {remaining} 行未展开")
-    print(f"输出文件：{output_file}")
+            record_details = (
+                *record_details,
+                f"其余 {remaining} 行未展开",
+            )
+        reporter.warning(
+            f"{profile_name}有 {format_count(len(report.unknown_status_records))} 行"
+            f"状态为“{status_names}”",
+            ("处理：数据保留在 Summary，未生成独立工作表", *record_details),
+        )
+    reporter.output(output_file)
 
 
-def process_all() -> None:
+def process_all(reporter: ConsoleReporter) -> None:
     """Process both projects' submitted data as one all-or-nothing unit.
 
     An operator has no reason to run one project without the other, so the
@@ -581,6 +593,6 @@ def process_all() -> None:
     """
     def process_both() -> None:
         for name in PROFILE_ORDER:
-            process_submitted_files(name)
+            process_submitted_files(name, reporter)
 
     run_with_output_rollback(OUTPUT_FILES, process_both)

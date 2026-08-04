@@ -1,7 +1,6 @@
 import io
 import tempfile
 import unittest
-from contextlib import redirect_stdout
 from datetime import date
 from pathlib import Path
 
@@ -35,15 +34,12 @@ class CouponReferenceSupplementTest(unittest.TestCase):
             source = Path(directory) / "reference_number_supplement.xlsx"
             output = io.StringIO()
 
-            with redirect_stdout(output):
-                lookup = load_coupon_reference_supplement(source)
+            lookup, missing = load_coupon_reference_supplement(source)
 
             self.assertEqual(lookup, {})
-            self.assertIn(
-                "未找到可选参考号补充文件，跳过",
-                output.getvalue(),
-            )
-            self.assertIn(str(source), output.getvalue())
+            self.assertTrue(missing)
+            # The loader never prints; the caller reports a missing file.
+            self.assertEqual(output.getvalue(), "")
 
     def test_finds_supplement_file_by_keyword_in_flat_directory(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -80,8 +76,9 @@ class CouponReferenceSupplementTest(unittest.TestCase):
             workbook.save(source)
             workbook.close()
 
-            lookup = load_coupon_reference_supplement(source)
+            lookup, missing = load_coupon_reference_supplement(source)
 
+            self.assertFalse(missing)
             self.assertEqual(
                 lookup,
                 {("1001", date(2026, 7, 6)): frozenset({"12345678901N"})},

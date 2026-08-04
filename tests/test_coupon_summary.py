@@ -2,7 +2,6 @@ import io
 import tempfile
 import unittest
 from collections import Counter
-from contextlib import redirect_stdout
 from datetime import date
 from decimal import Decimal
 from pathlib import Path
@@ -10,6 +9,7 @@ from pathlib import Path
 from openpyxl import Workbook, load_workbook
 from xlsxwriter import Workbook as XlsxWorkbook
 
+from processors.common.console import ConsoleReporter
 from processors.common.excel import load_measurement_font, resolve_font
 from processors.coupons import appliance, sources, xlsx_output
 from processors.coupons import digital as coupons_digital
@@ -306,6 +306,7 @@ class SummarySheetLayoutTest(unittest.TestCase):
             ambiguous_reference_supplement_count=0,
             reference_supplement_matches=Counter(),
             supplement_conflicts=(),
+            reference_supplement_missing=False,
             corrected_count=0,
             unresolved_count=0,
             correction_collision_count=0,
@@ -475,7 +476,7 @@ class SubsidyCorrectionWarningTests(unittest.TestCase):
     printed by the flow — the reader no longer prints while reading."""
 
     def test_format_names_every_field(self) -> None:
-        from processors.coupon_report import format_subsidy_correction_warning
+        from processors.coupon_report import subsidy_correction_warning
 
         correction = sources.SubsidyCorrection(
             row_number=5346,
@@ -485,17 +486,16 @@ class SubsidyCorrectionWarningTests(unittest.TestCase):
             from_header=sources.COUPON_FAMILY_SUBSIDY_HEADER,
             to_header=sources.COUPON_DIGITAL_SUBSIDY_HEADER,
         )
-        message = format_subsidy_correction_warning(
+        title, details = subsidy_correction_warning(
             correction,
             "销售用券情况统计.xlsx",
         )
-        self.assertIn("销售用券情况统计.xlsx", message)
-        self.assertIn("第 5346 行", message)
-        self.assertIn("ZG2J000016", message)
-        self.assertIn("'数码'", message)
-        self.assertIn("314.85", message)
-        self.assertIn("从“2026家电国补（计入收入）”", message)
-        self.assertIn("调整到“2026数码国补（计入收入）”", message)
+        self.assertEqual(title, "补贴归属已自动调整")
+        self.assertIn("单据：ZG2J000016", details)
+        self.assertIn("类别：数码", details)
+        self.assertIn("金额：314.85", details)
+        self.assertIn("调整：家电国补 → 数码国补", details)
+        self.assertIn("来源：销售用券情况统计.xlsx 第 5346 行", details)
 
     def test_process_coupon_sales_prints_one_warning_per_correction(self) -> None:
         """Flow-level check: the warnings appear exactly once per recorded
@@ -580,7 +580,7 @@ class SubsidyCorrectionWarningTests(unittest.TestCase):
                 patch.object(
                     appliance,
                     "load_coupon_reference_supplement",
-                    return_value={},
+                    return_value=({}, False),
                 )
             )
             stack.enter_context(
@@ -597,18 +597,15 @@ class SubsidyCorrectionWarningTests(unittest.TestCase):
                 patch.object(coupon_report, "write_xlsx_atomically")
             )
             output = io.StringIO()
-            with redirect_stdout(output):
-                coupon_report.process_coupon_sales()
+            reporter = ConsoleReporter(stream=output)
+            coupon_report.process_coupon_sales(reporter)
 
-        warning_lines = [
-            line
-            for line in output.getvalue().splitlines()
-            if line.startswith("警告：")
-        ]
-        self.assertEqual(len(warning_lines), 2)
-        self.assertIn("第 5346 行单据 ZG2J000016", warning_lines[0])
-        self.assertIn("314.85", warning_lines[0])
-        self.assertIn("第 5347 行单据 ZG2J000017", warning_lines[1])
+        self.assertEqual(reporter.warning_count, 2)
+        text = output.getvalue()
+        self.assertIn("补贴归属已自动调整", text)
+        self.assertIn("单据：ZG2J000016", text)
+        self.assertIn("314.85", text)
+        self.assertIn("单据：ZG2J000017", text)
 
 
 class SupplementConflictWarningTests(unittest.TestCase):
@@ -616,7 +613,7 @@ class SupplementConflictWarningTests(unittest.TestCase):
     never modified."""
 
     def test_format_names_every_field(self) -> None:
-        from processors.coupon_report import format_supplement_conflict_warning
+        from processors.coupon_report import supplement_conflict_warning
 
         conflict = appliance.SupplementReferenceConflict(
             document_number="ZFEG000042",
@@ -624,16 +621,16 @@ class SupplementConflictWarningTests(unittest.TestCase):
             current_reference="",
             candidates=("16658845684N", "16691539894N"),
         )
-        message = format_supplement_conflict_warning(conflict)
-        self.assertIn("补充参考号候选不唯一", message)
-        self.assertIn("单据号 ZFEG000042", message)
-        self.assertIn("日期 2026-03-19", message)
-        self.assertIn("当前参考号为空", message)
-        self.assertIn("候选 16658845684N、16691539894N", message)
-        self.assertIn("已保留原值，请人工核对", message)
+        title, details = supplement_conflict_warning(conflict)
+        self.assertEqual(title, "补充参考号候选不唯一")
+        self.assertIn("单据：ZFEG000042", details)
+        self.assertIn("日期：2026-03-19", details)
+        self.assertIn("当前参考号：为空", details)
+        self.assertIn("候选：16658845684N、16691539894N", details)
+        self.assertIn("处理：已保留原值，请人工核对", details)
 
     def test_format_shows_a_nonempty_current_reference(self) -> None:
-        from processors.coupon_report import format_supplement_conflict_warning
+        from processors.coupon_report import supplement_conflict_warning
 
         conflict = appliance.SupplementReferenceConflict(
             document_number="ZFEG000042",
@@ -641,7 +638,8 @@ class SupplementConflictWarningTests(unittest.TestCase):
             current_reference="16658845684N",
             candidates=("16658845684N", "16691539894N"),
         )
-        self.assertIn("当前参考号为 16658845684N", format_supplement_conflict_warning(conflict))
+        title, details = supplement_conflict_warning(conflict)
+        self.assertIn("当前参考号：16658845684N", details)
 
     def test_process_coupon_sales_prints_the_conflict_warning(self) -> None:
         """Flow-level check: an ambiguous supplement match surfaces as a
@@ -712,7 +710,7 @@ class SupplementConflictWarningTests(unittest.TestCase):
                 patch.object(
                     appliance,
                     "load_coupon_reference_supplement",
-                    return_value={},
+                    return_value=({}, False),
                 )
             )
             stack.enter_context(
@@ -736,14 +734,15 @@ class SupplementConflictWarningTests(unittest.TestCase):
                 patch.object(coupon_report, "write_xlsx_atomically")
             )
             output = io.StringIO()
-            with redirect_stdout(output):
-                coupon_report.process_coupon_sales()
+            reporter = ConsoleReporter(stream=output)
+            coupon_report.process_coupon_sales(reporter)
 
+        self.assertEqual(reporter.warning_count, 1)
         text = output.getvalue()
         self.assertIn("补充参考号候选不唯一", text)
-        self.assertIn("ZFEG000042", text)
-        self.assertIn("2026-03-19", text)
-        self.assertIn("16658845684N、16691539894N", text)
+        self.assertIn("单据：ZFEG000042", text)
+        self.assertIn("日期：2026-03-19", text)
+        self.assertIn("候选：16658845684N、16691539894N", text)
         self.assertIn("已保留原值，请人工核对", text)
 
 
@@ -772,12 +771,10 @@ class SourceTotalGapTest(unittest.TestCase):
     """
 
     def report(self, source_total, computed_total) -> str:
-        from processors.coupon_report import report_source_total_gap
+        from processors.coupon_report import source_total_gap_warning
 
-        output = io.StringIO()
-        with redirect_stdout(output):
-            report_source_total_gap("家电", source_total, computed_total)
-        return output.getvalue()
+        gap = source_total_gap_warning("家电", source_total, computed_total)
+        return "" if gap is None else "｜".join((gap[0], *gap[1]))
 
     def test_gap_is_reported_with_both_totals_and_the_difference(self) -> None:
         message = self.report(Decimal("2866331.40"), Decimal("2867621.40"))
@@ -785,6 +782,7 @@ class SourceTotalGapTest(unittest.TestCase):
         self.assertIn("2,866,331.40", message)
         self.assertIn("2,867,621.40", message)
         self.assertIn("1,290.00", message)
+        self.assertIn("家电源文件合计与明细行合计不一致", message)
 
     def test_matching_totals_report_nothing(self) -> None:
         self.assertEqual(

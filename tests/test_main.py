@@ -1,3 +1,4 @@
+import io
 import tempfile
 import unittest
 from pathlib import Path
@@ -5,6 +6,7 @@ from unittest.mock import patch
 
 import main as app_main
 from processors import coupon_report
+from processors.common.console import ConsoleReporter
 
 
 class CombinedOutputRollbackTest(unittest.TestCase):
@@ -16,7 +18,7 @@ class CombinedOutputRollbackTest(unittest.TestCase):
             appliance_output.write_bytes(b"old appliance")
             digital_output.write_bytes(b"old digital")
 
-            def fake_process(profile_name: str) -> None:
+            def fake_process(profile_name: str, reporter) -> None:
                 if profile_name == "家电":
                     appliance_output.write_bytes(b"new appliance")
                 else:
@@ -36,7 +38,9 @@ class CombinedOutputRollbackTest(unittest.TestCase):
                 ),
             ):
                 with self.assertRaisesRegex(ValueError, "digital failed"):
-                    app_main.submitted.process_all()
+                    app_main.submitted.process_all(
+                        ConsoleReporter(stream=io.StringIO())
+                    )
 
             self.assertEqual(appliance_output.read_bytes(), b"old appliance")
             self.assertEqual(digital_output.read_bytes(), b"old digital")
@@ -57,7 +61,7 @@ class ProcessorOrderTest(unittest.TestCase):
             app_main.payment.configure_data_dir(data_dir)
             app_main.store_report.configure_data_dir(data_dir)
 
-            labels = [label for label, _, _ in app_main.build_processors()]
+            labels = [label for label, _, _, _ in app_main.build_processors()]
             coupon_report_index = labels.index("审核明细（销售用券情况统计）")
             store_report_index = labels.index("门店国补上传及回款情况表")
 
@@ -82,18 +86,20 @@ class AllModeRollbackTest(unittest.TestCase):
             for key, path in paths.items():
                 path.write_bytes(f"old {key}".encode())
 
-            def write_ok(key: str) -> None:
-                paths[key].write_bytes(f"new {key}".encode())
+            def write_ok(key: str):
+                return lambda reporter: paths[key].write_bytes(
+                    f"new {key}".encode()
+                )
 
-            def fail_store_report() -> None:
+            def fail_store_report(reporter) -> None:
                 paths["store_report"].write_bytes(b"corrupted partial store report")
                 raise ValueError("store report failed")
 
             processors = (
-                ("已上传数据（家电+数码）", paths["large_appliances"], lambda: write_ok("large_appliances")),
-                ("审核明细（销售用券情况统计）", paths["coupon_report"], lambda: write_ok("coupon_report")),
-                ("回款明细（家电+数码）", paths["payment"], lambda: write_ok("payment")),
-                ("门店国补上传及回款情况表", paths["store_report"], fail_store_report),
+                ("已上传数据（家电+数码）", "已上传数据", paths["large_appliances"], write_ok("large_appliances")),
+                ("审核明细（销售用券情况统计）", "审核明细", paths["coupon_report"], write_ok("coupon_report")),
+                ("回款明细（家电+数码）", "回款明细", paths["payment"], write_ok("payment")),
+                ("门店国补上传及回款情况表", "门店报表", paths["store_report"], fail_store_report),
             )
 
             with (
@@ -108,7 +114,10 @@ class AllModeRollbackTest(unittest.TestCase):
                 patch.object(app_main.store_report, "OUTPUT_FILE", paths["store_report"]),
             ):
                 with self.assertRaisesRegex(ValueError, "store report failed"):
-                    app_main.process_all(processors)
+                    app_main.process_all(
+                        processors,
+                        ConsoleReporter(stream=io.StringIO()),
+                    )
 
             for key, path in paths.items():
                 self.assertEqual(path.read_bytes(), f"old {key}".encode())
@@ -125,12 +134,14 @@ class MainErrorHandlingTest(unittest.TestCase):
                     "configure_data_dir",
                     side_effect=ValueError("bad config"),
                 ),
-                patch.object(app_main, "report_failure") as report_failure,
+                patch.object(
+                    app_main.ConsoleReporter, "failure"
+                ) as failure,
             ):
                 self.assertEqual(app_main.main(), 1)
 
-            report_failure.assert_called_once()
-            self.assertEqual(str(report_failure.call_args.args[0]), "bad config")
+            failure.assert_called_once()
+            self.assertEqual(str(failure.call_args.args[1]), "bad config")
 
 
 if __name__ == "__main__":

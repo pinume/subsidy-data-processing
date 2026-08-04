@@ -27,6 +27,7 @@ from openpyxl.styles import Alignment, Font
 from openpyxl.workbook.workbook import Workbook
 from python_calamine import CalamineWorkbook
 
+from processors.common.console import ConsoleReporter
 from processors.common.excel import (
     calamine_rows,
     resolve_font,
@@ -964,7 +965,7 @@ def validate_output(
         workbook.close()
 
 
-def process_store_report() -> None:
+def process_store_report(reporter: ConsoleReporter) -> None:
     timestamp = current_timestamp()
     font_name, _ = resolve_font()
     upload_data, digital_upload, upload_metrics = load_upload_data(UPLOAD_FILE)
@@ -1014,4 +1015,4 @@ def process_store_report() -> None:
         OUTPUT_FILE,
         lambda path: validate_output(path, expected_cells, sheet.title),
     )
-    print(f"处理完成：{OUTPUT_FILE}")
+    reporter.output(OUTPUT_FILE)

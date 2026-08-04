@@ -14,6 +14,7 @@ from openpyxl import load_workbook
 from python_calamine import CalamineWorkbook
 from xlsxwriter import Workbook
 
+from processors.common.console import ConsoleReporter, format_count
 from processors.common.dates import (
     is_valid_original_invoice_number,
     normalize_document_number,
@@ -885,7 +886,7 @@ def _write_receipts_workbook(
             )
 
 
-def process_receipts() -> None:
+def process_receipts(reporter: ConsoleReporter) -> None:
     if RECEIPTS_SOURCE_FILE is None:
         raise FileNotFoundError(
             f"未在 {DATA_DIR} 中找到文件名包含"
@@ -906,34 +907,46 @@ def process_receipts() -> None:
         ),
         lambda path: validate_receipts_output(path, output_rows, issues),
     )
-    print(f"收款单统计完成：{row_count} 行")
-    print(
-        f"备注：{stats['备注总数']}；"
-        f"未匹配原票号：{stats['未匹配原票号数量']}；"
-        f"重复匹配键：{stats['重复匹配键数量']}"
+
+    reporter.metric("有效数据", f"{format_count(row_count)} 行")
+    reporter.metric(
+        "退换货备注",
+        f"{format_count(stats['备注总数'])} 行",
     )
-    if stats["跳过空白行数"] or stats["跳过合计行数"]:
-        print(
-            f"跳过空白行：{stats['跳过空白行数']}；"
-            f"跳过合计行：{stats['跳过合计行数']}"
-        )
     excluded_records = stats["北国剔除明细"]
-    if excluded_records:
-        print(
-            f"[收款单] 警告：商品名称含“{RECEIPTS_EXCLUDED_PRODUCT_KEYWORD}”的 "
-            f"{len(excluded_records)} 行已按业务规则剔除"
+    reporter.metric(
+        "北国商品剔除",
+        f"{format_count(len(excluded_records))} 行",
+    )
+    reporter.metric(
+        "重复匹配键",
+        f"{format_count(stats['重复匹配键数量'])} 个",
+    )
+    reporter.metric("问题明细", f"{format_count(len(issues))} 条")
+    if stats["跳过空白行数"] or stats["跳过合计行数"]:
+        reporter.metric(
+            "跳过行",
+            f"空白 {format_count(stats['跳过空白行数'])} 行｜"
+            f"合计 {format_count(stats['跳过合计行数'])} 行",
         )
-        for record in excluded_records[:10]:
-            print(
-                f"[收款单] 源第 {record.source_row} 行，单据号 "
-                f"{record.document_number or '(空)'}，"
-                f"商品名称 {record.product_name}"
-            )
+    if excluded_records:
+        examples = tuple(
+            f"源第 {record.source_row} 行，单据号 "
+            f"{record.document_number or '(空)'}，"
+            f"商品名称 {record.product_name}"
+            for record in excluded_records[:10]
+        )
         remaining = len(excluded_records) - 10
         if remaining > 0:
-            print(f"[收款单] 其余 {remaining} 行未展开")
+            examples = (*examples, f"其余 {remaining} 行未展开")
+        reporter.warning(
+            f"商品名称含“{RECEIPTS_EXCLUDED_PRODUCT_KEYWORD}”的 "
+            f"{format_count(len(excluded_records))} 行已按业务规则剔除",
+            examples,
+        )
     if issues:
-        print(f"问题已记录到“{ISSUES_SHEET_NAME}”：{len(issues)}")
-    else:
-        print(f"无问题；未创建“{ISSUES_SHEET_NAME}”工作表")
-    print(f"输出文件：{OUTPUT_FILE}")
+        reporter.warning(
+            f"存在 {format_count(len(issues))} 条数据问题",
+            (f"详见“{ISSUES_SHEET_NAME}”工作表",),
+        )
+    reporter.output(OUTPUT_FILE)
