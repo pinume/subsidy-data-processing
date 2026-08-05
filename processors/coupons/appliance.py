@@ -354,7 +354,7 @@ def build_coupon_summary(
                 amount = Decimal(str(subsidy))
             except InvalidOperation as error:
                 raise ValueError(
-                    f"{key!r} 的2026家电国补金额无效：{subsidy!r}"
+                    f"{key!r} 的{COUPON_SUBSIDY_HEADER}金额无效：{subsidy!r}"
                 ) from error
             grouped_totals[key] += amount
             coupon_total += amount
@@ -640,7 +640,7 @@ def compute_coupon_data(
     matched_count, matched_subsidy_total = matching.fill_coupon_remarks(
         rows,
         remark_lookup,
-        "2026家电国补",
+        COUPON_SUBSIDY_HEADER,
     )
     detail_lookup, uploaded_subsidy_count, uploaded_subsidy_total = (
         load_uploaded_summary(COUPON_UPLOADED_SOURCE_FILE)

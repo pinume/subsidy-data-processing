@@ -35,6 +35,7 @@ from processors.common.excel import (
 )
 from processors.common.paths import find_data_files, resolve_unique_file
 from processors.coupon_report import OUTPUT_FILE as UPLOAD_FILE
+from processors.coupon_report import SUBSIDY_YEAR
 from processors.coupon_report import SUMMARY_HEADER as UPLOAD_HEADER
 from processors.coupon_report import SUMMARY_SHEET_NAME as UPLOAD_SHEET_NAME
 from processors.payment import OUTPUT_FILE as PAYMENT_FILE
@@ -43,7 +44,9 @@ from processors.payment import SUMMARY_SHEET_NAME as PAYMENT_SHEET_NAME
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 OUTPUT_DIR = BASE_DIR / "output"
-OUTPUT_FILE = OUTPUT_DIR / "2026年门店国补上传及回款情况表（益庄店）.xlsx"
+OUTPUT_FILE = (
+    OUTPUT_DIR / f"{SUBSIDY_YEAR}年门店国补上传及回款情况表（益庄店）.xlsx"
+)
 TEMPLATE_FILE_KEYWORD = "门店国补上传及回款情况表"
 DATA_DIR: Path
 
@@ -862,7 +865,10 @@ def current_timestamp() -> datetime:
 
 def update_header(sheet, timestamp: datetime, expected_cells: dict[str, object]) -> None:
     formatted_timestamp = timestamp.strftime("%Y-%m-%d %H:%M:%S")
-    value = f"       2026年（益庄店 ）门店国补上传及回款情况表        更新时间：{formatted_timestamp}"
+    value = (
+        f"        {SUBSIDY_YEAR}年（益庄店 ）门店国补上传及回款情况表"
+        f"        更新时间：{formatted_timestamp}"
+    )
     sheet["A1"] = value
     expected_cells["A1"] = value
 

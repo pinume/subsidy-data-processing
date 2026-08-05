@@ -58,7 +58,7 @@ def build_coupon_summary(
                 coupon_count += 1
         except InvalidOperation as error:
             raise ValueError(
-                f"第 {row_number} 行的2026数码国补金额无效：{subsidy!r}"
+                f"第 {row_number} 行的{COUPON_SUBSIDY_HEADER}金额无效：{subsidy!r}"
             ) from error
 
     unuploaded_count = coupon_count - uploaded_count
@@ -127,7 +127,7 @@ def compute_coupon_data(
         )
         rows = export.digital_rows
     matched_count, matched_subsidy_total = matching.fill_coupon_remarks(
-        rows, remark_lookup, "2026数码国补"
+        rows, remark_lookup, COUPON_SUBSIDY_HEADER
     )
     detail_lookup, uploaded_subsidy_count, uploaded_subsidy_total = (
         load_uploaded_summary(COUPON_UPLOADED_SOURCE_FILE)

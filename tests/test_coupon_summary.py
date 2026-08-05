@@ -231,7 +231,7 @@ class CouponSummaryTest(unittest.TestCase):
                     ),
                 ]
 
-                with self.assertRaisesRegex(ValueError, "国补金额无效"):
+                with self.assertRaisesRegex(ValueError, "国补（计入收入）金额无效"):
                     if module is coupons_digital:
                         module.build_coupon_summary(
                             rows,

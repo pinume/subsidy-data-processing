@@ -29,7 +29,12 @@ from processors.common.excel import (
     write_xlsx_atomically,
 )
 from processors.coupons import appliance, digital, matching, sources, xlsx_output
-from processors.coupons.report_contract import SUMMARY_HEADER, SUMMARY_SHEET_NAME
+from processors.coupons.report_contract import (
+    SUBSIDY_YEAR,
+    SUMMARY_HEADER,
+    SUMMARY_SHEET_NAME,
+    SUMMARY_SUBSIDY_HEADER,
+)
 from processors.coupons.sources import load_coupon_remark_lookup
 from processors.payment import OUTPUT_FILE as PAYMENT_FILE
 
@@ -38,7 +43,12 @@ from processors.payment import OUTPUT_FILE as PAYMENT_FILE
 # module rather than reaching into processors.coupons.report_contract itself.
 # Listing them in __all__ (rather than an "as"-aliased import) tells pyflakes
 # the same thing without tripping pylint's redundant-alias rule.
-__all__ = ["SUMMARY_HEADER", "SUMMARY_SHEET_NAME"]
+__all__ = [
+    "SUMMARY_HEADER",
+    "SUMMARY_SHEET_NAME",
+    "SUMMARY_SUBSIDY_HEADER",
+    "SUBSIDY_YEAR",
+]
 
 
 BASE_DIR = Path(__file__).resolve().parent.parent
