@@ -122,6 +122,26 @@ class ExcludedProductRecord:
     product_name: str
 
 
+@dataclass
+class ReceiptRecord:
+    """One kept 收款单 row in its working state before it becomes output.
+
+    The remark is filled in only after every source row has been scanned,
+    because remarks depend on the complete reference set. Output
+    coordinates are deliberately not stored here: they are assigned by
+    enumeration when the issues are built, once the sort has fixed the
+    final row order.
+    """
+
+    document_number: str
+    receipt_date: date | None
+    original_invoice_number: str
+    product_name: str | None
+    match_key: str
+    sale_category: str
+    remark: str | None = None
+
+
 def configure_data_dir(data_dir: Path) -> None:
     global DATA_DIR
     global RECEIPTS_SOURCE_FILE
@@ -248,11 +268,11 @@ def receipt_remark(
 
 
 def _receipt_remark_flags(
-    record: dict[str, object],
+    record: ReceiptRecord,
     referenced_original_invoice_numbers: set[str],
 ) -> tuple[bool, bool]:
-    match_key = str(record["match_key"])
-    has_original = bool(record["original_invoice_number"])
+    match_key = record.match_key
+    has_original = bool(record.original_invoice_number)
     is_referenced = bool(
         match_key and match_key in referenced_original_invoice_numbers
     )
@@ -307,7 +327,7 @@ def receipt_output_sort_key(
 
 
 def prepare_receipt_data(kept_rows: list[list[object]], source_name: str):
-    records: list[dict[str, object]] = []
+    records: list[ReceiptRecord] = []
     key_rows: dict[str, list[int]] = {}
     referenced_original_invoice_numbers: set[str] = set()
     bridge_originals_by_match_key: dict[str, set[str]] = {}
@@ -367,14 +387,14 @@ def prepare_receipt_data(kept_rows: list[list[object]], source_name: str):
                 original_invoice_number
             )
         records.append(
-            {
-                "document_number": document_number,
-                "receipt_date": receipt_date,
-                "original_invoice_number": original_invoice_number,
-                "product_name": product_name or None,
-                "match_key": match_key,
-                "sale_category": sale_category,
-            }
+            ReceiptRecord(
+                document_number=document_number,
+                receipt_date=receipt_date,
+                original_invoice_number=original_invoice_number,
+                product_name=product_name or None,
+                match_key=match_key,
+                sale_category=sale_category,
+            )
         )
 
     # A later return can reference an exchange or price-adjustment document
@@ -390,8 +410,8 @@ def prepare_receipt_data(kept_rows: list[list[object]], source_name: str):
     # only after every source row has been scanned. Sorting then uses the final
     # remark as its primary key.
     for record in records:
-        if str(record["sale_category"]) in RECEIPTS_UNREMARKED_SALE_CATEGORIES:
-            record["remark"] = None
+        if record.sale_category in RECEIPTS_UNREMARKED_SALE_CATEGORIES:
+            record.remark = None
             continue
         (
             has_original,
@@ -400,25 +420,19 @@ def prepare_receipt_data(kept_rows: list[list[object]], source_name: str):
             record,
             referenced_original_invoice_numbers,
         )
-        record["remark"] = receipt_remark(
+        record.remark = receipt_remark(
             has_original,
             is_referenced,
         )
 
     records.sort(
         key=lambda record: receipt_output_sort_key(
-            record["remark"],
-            record["receipt_date"],
-            record["document_number"],
-            record["product_name"],
+            record.remark,
+            record.receipt_date,
+            record.document_number,
+            record.product_name,
         )
     )
-
-    # Every record ends up in output_rows in this sorted order, one row per
-    # record. Assign output coordinates only now so 问题明细 points at the row
-    # an operator will find in the generated Sheet1, not the raw import.
-    for position, record in enumerate(records, start=2):
-        record["output_row"] = position
 
     # Same-document 烟机+灶具 (and similar kitchen-suite) sales are entered as
     # multiple line items sharing one 单据号/日期, which is expected here, not
@@ -429,9 +443,9 @@ def prepare_receipt_data(kept_rows: list[list[object]], source_name: str):
     # file can never resolve to a match_key here by construction (the file
     # only carries one year's receipts), so it is not a data problem either.
     receipt_years = {
-        record["receipt_date"].year
+        record.receipt_date.year
         for record in records
-        if record["receipt_date"] is not None
+        if record.receipt_date is not None
     }
     min_receipt_year = min(receipt_years) if receipt_years else None
 
@@ -443,17 +457,19 @@ def prepare_receipt_data(kept_rows: list[list[object]], source_name: str):
     missing_match_key_count = 0
     remark_count = 0
     output_rows: list[list[object]] = []
-    for record in records:
-        output_row = int(record["output_row"])
-        original_invoice_number = str(record["original_invoice_number"])
-        match_key = str(record["match_key"])
+    # Output coordinates come from this enumeration over the sorted order,
+    # one row per record, so 问题明细 points at the row an operator will
+    # find in the generated Sheet1, not the raw import.
+    for output_row, record in enumerate(records, start=2):
+        original_invoice_number = record.original_invoice_number
+        match_key = record.match_key
         # The same exclusion the remark went through: 原票号 is not acted on
         # for these rows, so neither the 退单/原单 tallies nor the issues
         # derived from it may claim them, or the counts stop describing the
         # sheet — every one of them carries an 原票号 and would land in
         # 仅退单数量 while its 备注 stays blank.
         is_unremarked = (
-            str(record["sale_category"]) in RECEIPTS_UNREMARKED_SALE_CATEGORIES
+            record.sale_category in RECEIPTS_UNREMARKED_SALE_CATEGORIES
         )
         has_original, is_referenced = (
             (False, False)
@@ -513,14 +529,14 @@ def prepare_receipt_data(kept_rows: list[list[object]], source_name: str):
         elif is_referenced:
             only_original_count += 1
 
-        remark = record["remark"]
+        remark = record.remark
         if remark:
             remark_count += 1
 
         output_rows.append(
             [
-                record["document_number"],
-                record["receipt_date"],
+                record.document_number,
+                record.receipt_date,
                 remark,
             ]
         )
