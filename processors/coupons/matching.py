@@ -1,12 +1,14 @@
 """Matching logic shared identically in shape by 家电 and 数码 coupon rows.
 
-Both projects' COUPON_OUTPUT_HEADER starts with the same ten columns
-(单据号, 单据日期, 商品名称, 品牌, 财务大类, 明细摘要, <subsidy header>, 备注,
+Both projects' output headers start with the same ten columns (单据号,
+单据日期, 商品名称, 品牌, 财务大类, 明细摘要, <subsidy header>, 备注,
 详细情况, 回款情况) — only the subsidy header's text differs, never its
-position — so every function here indexes rows positionally rather than
-taking a header tuple. Both projects exclude the trailing receipt-remark
-block already pinned to the bottom by an earlier pass, instead of maintaining
-separate matching implementations.
+position. The row-layout indexes below are therefore derived from the two
+profiles' output headers rather than written as positional literals: if a
+profile ever gains, loses or reorders a column, the derivation fails loudly
+at import time instead of silently misreading every row. Both projects
+exclude the trailing receipt-remark block already pinned to the bottom by an
+earlier pass, instead of maintaining separate matching implementations.
 """
 
 import re
@@ -20,14 +22,63 @@ from processors.common.dates import (
     normalize_receipt_identifier,
 )
 from processors.common.references import REFERENCE_RE
+from processors.coupons import sources
 
-DOCUMENT_INDEX = 0
-DATE_INDEX = 1
-SUMMARY_INDEX = 5
-SUBSIDY_INDEX = 6
-REMARK_INDEX = 7
-DETAIL_INDEX = 8
-PAYMENT_STATUS_INDEX = 9
+
+def shared_index(label: str) -> int:
+    """Resolve one row index that both profiles' output headers agree on.
+
+    Every column except the subsidy one shares a header text across the two
+    profiles, so a label that either profile lacks — or that the two place
+    differently — is a layout drift that would otherwise silently misread
+    every row of one project.
+    """
+    indexes: set[int] = set()
+    for profile in (sources.APPLIANCE_PROFILE, sources.DIGITAL_PROFILE):
+        if label not in profile.output_header:
+            raise RuntimeError(
+                f"{label}在{profile.name}的行布局中缺失"
+            )
+        indexes.add(profile.output_header.index(label))
+    if len(indexes) != 1:
+        raise RuntimeError(f"{label}在家电和数码行布局中的位置不一致")
+    return next(iter(indexes))
+
+
+def shared_profile_field_index(appliance_label: str, digital_label: str) -> int:
+    """Resolve one index whose header text differs between the two profiles.
+
+    The subsidy header texts are pinned to the external export's column
+    names, so the two profiles look the column up under different labels;
+    the position itself must still agree, or one project's rows would be
+    read under the other's columns.
+    """
+    positions: list[int] = []
+    for profile, label in (
+        (sources.APPLIANCE_PROFILE, appliance_label),
+        (sources.DIGITAL_PROFILE, digital_label),
+    ):
+        if label not in profile.output_header:
+            raise RuntimeError(f"{label}在{profile.name}的行布局中缺失")
+        positions.append(profile.output_header.index(label))
+    if positions[0] != positions[1]:
+        raise RuntimeError(
+            f"{appliance_label}（家电）与{digital_label}（数码）"
+            "在行布局中的位置不一致"
+        )
+    return positions[0]
+
+
+DOCUMENT_INDEX = shared_index("单据号")
+DATE_INDEX = shared_index("单据日期")
+SUMMARY_INDEX = shared_index("明细摘要")
+SUBSIDY_INDEX = shared_profile_field_index(
+    sources.COUPON_FAMILY_SUBSIDY_HEADER,
+    sources.COUPON_DIGITAL_SUBSIDY_HEADER,
+)
+REMARK_INDEX = shared_index("备注")
+DETAIL_INDEX = shared_index("详细情况")
+PAYMENT_STATUS_INDEX = shared_index("回款情况")
 UPLOADED_REMARK = "已上传"
 PAID_STATUS = "已回款"
 
