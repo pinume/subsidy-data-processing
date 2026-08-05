@@ -1,3 +1,4 @@
+import os
 import tempfile
 import unittest
 from datetime import date, datetime
@@ -7,6 +8,7 @@ from unittest.mock import patch
 from openpyxl import Workbook, load_workbook
 from xlsxwriter import Workbook as XlsxWorkbook
 
+from processors.common import excel
 from processors.common.dates import (
     normalize_coupon_date,
     normalize_document_number,
@@ -262,6 +264,36 @@ class OutputRollbackTest(unittest.TestCase):
                 [path.name for path in output_dir.iterdir()],
                 ["existing.xlsx"],
             )
+
+    def test_post_commit_cleanup_failure_raises_cleanup_error(self) -> None:
+        """The operation committed; only removing the temporary backup failed.
+        The error must be OutputCleanupError so callers never report a
+        rollback that did not happen."""
+        with tempfile.TemporaryDirectory() as directory:
+            output_dir = Path(directory)
+            existing = output_dir / "existing.xlsx"
+            existing.write_bytes(b"old")
+
+            def commit_then_block_cleanup() -> None:
+                existing.write_bytes(b"new")
+                # A read-only directory makes the finally-block backup
+                # cleanup fail after the operation has returned.
+                os.chmod(directory, 0o500)
+
+            try:
+                with self.assertRaisesRegex(
+                    excel.OutputCleanupError,
+                    "输出已提交，备份清理失败",
+                ):
+                    run_with_output_rollback(
+                        (existing,),
+                        commit_then_block_cleanup,
+                    )
+            finally:
+                os.chmod(directory, 0o700)
+
+            # The committed output stays; nothing was rolled back.
+            self.assertEqual(existing.read_bytes(), b"new")
 
 
 class WriteFormattedSheetTest(unittest.TestCase):

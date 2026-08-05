@@ -600,12 +600,17 @@ class SubsidyCorrectionWarningTests(unittest.TestCase):
             reporter = ConsoleReporter(stream=output)
             coupon_report.process_coupon_sales(reporter)
 
-        self.assertEqual(reporter.warning_count, 2)
+        self.assertEqual(reporter.corrected_count, 2)
+        self.assertEqual(reporter.review_count, 0)
+        # Deferred: nothing prints until finish() flushes the collected items.
+        self.assertNotIn("补贴归属已自动调整", output.getvalue())
+        reporter.finish(success=True, succeeded=1, total=1)
         text = output.getvalue()
-        self.assertIn("补贴归属已自动调整", text)
-        self.assertIn("│ 单据 │ ZG2J000016", text)
+        # Two corrections merge into one block rendered as a table.
+        self.assertIn("[已修正 1] 补贴归属已自动调整", text)
+        self.assertIn("ZG2J000016", text)
         self.assertIn("314.85", text)
-        self.assertIn("│ 单据 │ ZG2J000017", text)
+        self.assertIn("ZG2J000017", text)
 
 
 class SupplementConflictWarningTests(unittest.TestCase):
@@ -737,9 +742,11 @@ class SupplementConflictWarningTests(unittest.TestCase):
             reporter = ConsoleReporter(stream=output)
             coupon_report.process_coupon_sales(reporter)
 
-        self.assertEqual(reporter.warning_count, 1)
+        self.assertEqual(reporter.review_count, 1)
+        self.assertEqual(reporter.corrected_count, 0)
+        reporter.finish(success=True, succeeded=1, total=1)
         text = output.getvalue()
-        self.assertIn("补充参考号候选不唯一", text)
+        self.assertIn("[待核对 1] 补充参考号候选不唯一", text)
         self.assertIn("ZFEG000042", text)
         self.assertIn("2026-03-19", text)
         self.assertIn("16658845684N、16691539894N", text)

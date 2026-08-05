@@ -364,13 +364,230 @@ class SubmittedHeaderValidationTest(unittest.TestCase):
             ):
                 report = submitted.build_report(profile_name)
 
-            self.assertFalse(invalid_path.exists())
+            # Deletion is deferred to process_submitted_files so the
+            # corrected() record survives a later failure; build_report only
+            # records the file.
+            self.assertTrue(invalid_path.exists())
             self.assertTrue(valid_path.exists())
             self.assertEqual(report.file_count, 1)
             self.assertEqual(
                 report.deleted_invalid_files,
                 (invalid_path.name,),
             )
+
+            output = io.StringIO()
+            reporter = submitted.ConsoleReporter(stream=output)
+            with patch.object(
+                submitted.CalamineWorkbook,
+                "from_path",
+                side_effect=open_source,
+            ), patch.object(submitted, "write_xlsx_atomically"):
+                submitted.process_submitted_files(profile_name, reporter)
+
+            # The invalid file is removed and recorded before the output is
+            # written, so the record exists even if the write fails.
+            self.assertFalse(invalid_path.exists())
+            self.assertEqual(reporter.corrected_count, 1)
+
+    def test_all_inputs_without_sheets_are_deleted_and_recorded(self) -> None:
+        """Every export is a no-worksheet file: the step fails, but the
+        garbage files are still removed and the removal recorded."""
+        profile_name = "数码"
+        with tempfile.TemporaryDirectory() as directory:
+            data_dir = Path(directory)
+            marker = submitted_file_marker(profile_name)
+            invalid_paths = (
+                data_dir / f"{marker}_a.xlsx",
+                data_dir / f"{marker}_b.xlsx",
+            )
+            for path in invalid_paths:
+                path.touch()
+            submitted.configure_data_dir(data_dir)
+
+            class EmptyWorkbook:
+                sheet_names: list[str] = []
+
+                def close(self) -> None:
+                    pass
+
+            def open_source(path: str):
+                return EmptyWorkbook()
+
+            output = io.StringIO()
+            reporter = submitted.ConsoleReporter(stream=output)
+            with patch.object(
+                submitted.CalamineWorkbook,
+                "from_path",
+                side_effect=open_source,
+            ):
+                with self.assertRaisesRegex(RuntimeError, "未能生成输出表头"):
+                    submitted.process_submitted_files(profile_name, reporter)
+
+            self.assertTrue(all(not path.exists() for path in invalid_paths))
+            self.assertEqual(reporter.corrected_count, 1)
+
+    def test_mid_loop_deletion_failure_keeps_the_record(self) -> None:
+        """Deletion fails on the second file: the record, registered in a
+        finally for the files actually removed, still surfaces the first
+        file's removal."""
+        profile_name = "数码"
+        with tempfile.TemporaryDirectory() as directory:
+            data_dir = Path(directory)
+            marker = submitted_file_marker(profile_name)
+            valid_path = data_dir / f"{marker}_valid.xlsx"
+            invalid_paths = (
+                data_dir / f"{marker}_bad1.xlsx",
+                data_dir / f"{marker}_bad2.xlsx",
+            )
+            write_submitted_source(valid_path, SUBMITTED_HEADER)
+            for path in invalid_paths:
+                path.touch()
+            submitted.configure_data_dir(data_dir)
+
+            real_from_path = submitted.CalamineWorkbook.from_path
+
+            class EmptyWorkbook:
+                sheet_names: list[str] = []
+
+                def close(self) -> None:
+                    pass
+
+            def open_source(path: str):
+                if Path(path) in invalid_paths:
+                    return EmptyWorkbook()
+                return real_from_path(path)
+
+            real_unlink = Path.unlink
+            unlink_calls = 0
+
+            def flaky_unlink(self, *args, **kwargs):
+                nonlocal unlink_calls
+                unlink_calls += 1
+                if unlink_calls == 2:
+                    raise PermissionError("cannot remove")
+                return real_unlink(self, *args, **kwargs)
+
+            output = io.StringIO()
+            reporter = submitted.ConsoleReporter(
+                stream=output,
+                error_stream=io.StringIO(),
+            )
+            with (
+                patch.object(
+                    submitted.CalamineWorkbook,
+                    "from_path",
+                    side_effect=open_source,
+                ),
+                patch.object(submitted, "write_xlsx_atomically"),
+                patch.object(Path, "unlink", flaky_unlink),
+            ):
+                with self.assertRaises(PermissionError):
+                    submitted.process_submitted_files(profile_name, reporter)
+
+            self.assertFalse(invalid_paths[0].exists())
+            self.assertTrue(invalid_paths[1].exists())
+            # Only the file actually deleted is recorded: the failed one must
+            # not appear in the 已删除 list.
+            reporter.finish(success=False, succeeded=0, total=1)
+            text = output.getvalue()
+            self.assertIn("已删除无效导出文件（没有工作表）", text)
+            self.assertIn(invalid_paths[0].name, text)
+            self.assertNotIn(invalid_paths[1].name, text)
+            self.assertEqual(reporter.corrected_count, 1)
+
+    def test_parse_failure_after_invalid_file_still_removes_and_records(self) -> None:
+        """A no-worksheet file is found first, then a later workbook fails to
+        parse: the garbage file is still removed and recorded."""
+        profile_name = "数码"
+        with tempfile.TemporaryDirectory() as directory:
+            data_dir = Path(directory)
+            marker = submitted_file_marker(profile_name)
+            invalid_path = data_dir / f"{marker}_bad.xlsx"
+            broken_path = data_dir / f"{marker}_broken.xlsx"
+            invalid_path.touch()
+            # A workbook whose sheet has neither a title nor a header row.
+            workbook = Workbook()
+            workbook.active.title = "Sheet1"
+            workbook.save(broken_path)
+            submitted.configure_data_dir(data_dir)
+
+            real_from_path = submitted.CalamineWorkbook.from_path
+
+            class EmptyWorkbook:
+                sheet_names: list[str] = []
+
+                def close(self) -> None:
+                    pass
+
+            def open_source(path: str):
+                if Path(path) == invalid_path:
+                    return EmptyWorkbook()
+                return real_from_path(path)
+
+            output = io.StringIO()
+            reporter = submitted.ConsoleReporter(
+                stream=output,
+                error_stream=io.StringIO(),
+            )
+            with patch.object(
+                submitted.CalamineWorkbook,
+                "from_path",
+                side_effect=open_source,
+            ):
+                with self.assertRaisesRegex(ValueError, "缺少标题行或表头行"):
+                    submitted.process_submitted_files(profile_name, reporter)
+
+            self.assertFalse(invalid_path.exists())
+            self.assertEqual(reporter.corrected_count, 1)
+
+    def test_write_failure_after_deletion_still_flushes_the_record(self) -> None:
+        """Deletion succeeded, then the output write failed: the failure
+        flush must still show the [已修正] removal record."""
+        profile_name = "数码"
+        with tempfile.TemporaryDirectory() as directory:
+            data_dir = Path(directory)
+            marker = submitted_file_marker(profile_name)
+            valid_path = data_dir / f"{marker}_valid.xlsx"
+            invalid_path = data_dir / f"{marker}_bad.xlsx"
+            write_submitted_source(valid_path, SUBMITTED_HEADER)
+            invalid_path.touch()
+            submitted.configure_data_dir(data_dir)
+
+            real_from_path = submitted.CalamineWorkbook.from_path
+
+            class EmptyWorkbook:
+                sheet_names: list[str] = []
+
+                def close(self) -> None:
+                    pass
+
+            def open_source(path: str):
+                if Path(path) == invalid_path:
+                    return EmptyWorkbook()
+                return real_from_path(path)
+
+            output = io.StringIO()
+            reporter = submitted.ConsoleReporter(stream=output)
+            with (
+                patch.object(
+                    submitted.CalamineWorkbook,
+                    "from_path",
+                    side_effect=open_source,
+                ),
+                patch.object(
+                    submitted,
+                    "write_xlsx_atomically",
+                    side_effect=ValueError("写入失败"),
+                ),
+            ):
+                with self.assertRaisesRegex(ValueError, "写入失败"):
+                    submitted.process_submitted_files(profile_name, reporter)
+
+            self.assertFalse(invalid_path.exists())
+            reporter.finish(success=False, succeeded=0, total=1)
+            text = output.getvalue()
+            self.assertIn("已删除无效导出文件（没有工作表）", text)
+            self.assertIn(f"文件：{invalid_path.name}", text)
 
     def test_output_carries_only_the_kept_columns(self) -> None:
         """详细地址/tel/发票金额/图片1/S/N码 were dropped from both projects.
@@ -491,8 +708,10 @@ class SubmittedRowValidationTest(unittest.TestCase):
             with patch.object(submitted, "write_xlsx_atomically"):
                 submitted.process_submitted_files("数码", reporter)
 
-        # A normal statistic, not a warning: the summary counts it nowhere.
-        self.assertEqual(reporter.warning_count, 0)
+        # A normal statistic, not an attention item: the summary counts it
+        # nowhere.
+        self.assertEqual(reporter.corrected_count, 0)
+        self.assertEqual(reporter.review_count, 0)
         text = output.getvalue()
         self.assertIn("数码：1 个文件｜3 行｜待同步 3 行（保留在 Summary）", text)
         self.assertNotIn("[警告]", text)

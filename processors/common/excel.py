@@ -1,6 +1,7 @@
 import os
 import shutil
 import stat
+import sys
 import time
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
@@ -503,6 +504,14 @@ def save_workbook_atomically(
             temporary_path.unlink(missing_ok=True)
 
 
+class OutputCleanupError(RuntimeError):
+    """The transaction committed but removing its temporary backups failed.
+
+    Raised only after the operation succeeded — outputs were written and
+    nothing was rolled back — so callers must not report a rollback for it.
+    """
+
+
 def write_xlsx_atomically(
     output_path: Path,
     writer: Callable[[Path], None],
@@ -585,5 +594,15 @@ def run_with_output_rollback(
             ) from operation_error
         raise
     finally:
+        cleanup_errors: list[str] = []
         for backup_path in temporary_backups:
-            backup_path.unlink(missing_ok=True)
+            try:
+                backup_path.unlink(missing_ok=True)
+            except OSError as cleanup_error:
+                cleanup_errors.append(f"{backup_path.name}: {cleanup_error}")
+        # Only a committed run raises here: when an operation or rollback
+        # error is already propagating, cleanup errors must not mask it.
+        if cleanup_errors and sys.exc_info()[0] is None:
+            raise OutputCleanupError(
+                "输出已提交，备份清理失败：" + "；".join(cleanup_errors)
+            )

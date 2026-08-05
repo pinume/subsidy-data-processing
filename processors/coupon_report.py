@@ -299,7 +299,7 @@ def process_coupon_sales(reporter: ConsoleReporter) -> None:
         source_workbook.close()
 
     for correction in export.subsidy_corrections:
-        reporter.warning(
+        reporter.corrected(
             *subsidy_correction_warning(correction, coupon_source.name)
         )
 
@@ -352,21 +352,21 @@ def process_coupon_sales(reporter: ConsoleReporter) -> None:
         f"未上传 {format_count(la.unmatched_count)}",
     )
     for conflict in la.supplement_conflicts:
-        reporter.warning(*supplement_conflict_warning(conflict))
+        reporter.review_required(*supplement_conflict_warning(conflict))
     if la.reference_supplement_missing:
-        reporter.warning(
+        reporter.review_required(
             "参考号补充文件缺失",
             ("处理：跳过补充匹配，仅使用算法纠正",),
         )
     if la.zero_subsidy_count:
-        reporter.warning(
+        reporter.review_required(
             f"家电有 {format_count(la.zero_subsidy_count)} 行 "
             "2026家电国补（计入收入）为 0",
             ("处理：按 0 计入，请检查这些源数据行",),
         )
     gap = source_total_gap_warning("家电", la.source_total, la.computed_total)
     if gap is not None:
-        reporter.warning(*gap)
+        reporter.review_required(*gap)
 
     dg = digital_computation
     reporter.metric(

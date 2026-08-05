@@ -100,8 +100,9 @@ class SubmittedReport:
     # The same rows as records with their source location, for the console
     # warning only (see UnknownStatusRecord).
     unknown_status_records: tuple[UnknownStatusRecord, ...]
-    # Invalid exports (no worksheets) deleted from the data directory while
-    # building, for the console warning only.
+    # Invalid exports (no worksheets). Deletion is deferred to
+    # process_submitted_files, after every input has been validated, so the
+    # corrected() record exists even when a later step fails.
     deleted_invalid_files: tuple[str, ...]
 
 
@@ -200,7 +201,19 @@ def add_subsidy_column(
     return result
 
 
-def build_report(profile_name: str) -> SubmittedReport:
+def build_report(
+    profile_name: str,
+    deleted_invalid_files: list[str] | None = None,
+) -> SubmittedReport:
+    """Build one project's submitted report.
+
+    deleted_invalid_files, when given, receives every no-worksheet export
+    found during the scan. The caller passes its own list so the names
+    survive an exception: whatever fails mid-scan, the garbage files found
+    so far can still be removed and recorded.
+    """
+    if deleted_invalid_files is None:
+        deleted_invalid_files = []
     files = list(INPUT_FILES[profile_name])
     if not files:
         raise FileNotFoundError(
@@ -220,14 +233,14 @@ def build_report(profile_name: str) -> SubmittedReport:
     data_row_count = 0
     data_rows: list[list[object]] = []
     unknown_status_records: list[UnknownStatusRecord] = []
-    deleted_invalid_files: list[str] = []
     valid_file_count = 0
 
     for path in files:
         source_workbook = CalamineWorkbook.from_path(str(path))
         if not source_workbook.sheet_names:
             source_workbook.close()
-            path.unlink()
+            # Not deleted here: process_submitted_files removes the files
+            # after input validation and records the removal first.
             deleted_invalid_files.append(path.name)
             continue
         try:
@@ -535,11 +548,42 @@ def validate_output(path: Path, expected_data_rows: int, profile_name: str) -> N
         workbook.close()
 
 
+def _remove_invalid_exports(
+    file_names: tuple[str, ...],
+    reporter: ConsoleReporter,
+) -> None:
+    """Remove garbage exports (no worksheets) and record the removal.
+
+    Only files actually removed are recorded, and the record is registered
+    in a finally so it survives a mid-loop failure — a file whose deletion
+    failed must never appear in the 已删除 list.
+    """
+    removed: list[str] = []
+    try:
+        for file_name in file_names:
+            (DATA_DIR / file_name).unlink(missing_ok=True)
+            removed.append(file_name)
+    finally:
+        if removed:
+            reporter.corrected(
+                "已删除无效导出文件（没有工作表）",
+                tuple(f"文件：{file_name}" for file_name in removed),
+            )
+
+
 def process_submitted_files(
     profile_name: str,
     reporter: ConsoleReporter,
 ) -> None:
-    report = build_report(profile_name)
+    invalid_files: list[str] = []
+    try:
+        report = build_report(profile_name, invalid_files)
+    except Exception:
+        # Whatever failed, any no-worksheet files found before it are still
+        # garbage: remove and record them before the step fails.
+        _remove_invalid_exports(tuple(invalid_files), reporter)
+        raise
+    _remove_invalid_exports(report.deleted_invalid_files, reporter)
     output_file = PROFILES[profile_name].output_file
     write_xlsx_atomically(
         output_file,
@@ -562,22 +606,14 @@ def process_submitted_files(
         record_lines = tuple(
             f"源文件 {record.source_name}，源行 {record.source_row}，"
             f"检索参考号 {record.reference or '(空)'}"
-            for record in report.unknown_status_records[:10]
+            for record in report.unknown_status_records
         )
-        remaining = len(report.unknown_status_records) - 10
-        if remaining > 0:
-            record_lines = (*record_lines, f"其余 {remaining} 行未展开")
         reporter.detail(
             f"{profile_name}待同步数据："
             f"{format_count(len(report.unknown_status_records))} 行",
             record_lines,
         )
     reporter.metric(profile_name, metric_value)
-    for file_name in report.deleted_invalid_files:
-        reporter.warning(
-            "已删除无效导出文件（没有工作表）",
-            (f"文件：{file_name}",),
-        )
     reporter.output(output_file)
 
 

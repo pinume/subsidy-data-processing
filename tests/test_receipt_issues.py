@@ -111,9 +111,9 @@ class PrepareReceiptDataIssuesTest(unittest.TestCase):
             ),
         )
 
-    def test_beiguo_warning_names_rows_and_caps_examples(self) -> None:
-        """The exclusion is a normal statistic by default; source locations
-        are traceable in verbose mode with up to 10 examples."""
+    def test_beiguo_details_list_every_row_in_verbose_mode(self) -> None:
+        """The exclusion is a normal statistic; verbose mode traces every
+        source row, with no cap."""
         kept_rows = [
             HEADER,
             *[
@@ -135,14 +135,15 @@ class PrepareReceiptDataIssuesTest(unittest.TestCase):
         ):
             receipts.process_receipts(reporter)
 
-        # Normal statistics: no [警告], nothing counted.
-        self.assertEqual(reporter.warning_count, 0)
+        # Normal statistics: no attention items, nothing counted.
+        self.assertEqual(reporter.corrected_count, 0)
+        self.assertEqual(reporter.review_count, 0)
         text = output.getvalue()
         self.assertIn("[明细] 按业务规则剔除“北国”商品：12 行", text)
         self.assertIn("源第 3 行，单据号 ZH0000，商品名称 北国0", text)
         self.assertIn("源第 12 行，单据号 ZH0009，商品名称 北国9", text)
-        self.assertIn("其余 2 行未展开", text)
-        self.assertNotIn("北国10", text)  # beyond the 10-example cap
+        self.assertIn("源第 14 行，单据号 ZH0011，商品名称 北国11", text)
+        self.assertNotIn("未展开", text)
         self.assertNotIn("[警告]", text)
         self.assertIn("原始数据：12 行", text)
         self.assertIn("北国商品：按业务规则剔除 12 行", text)

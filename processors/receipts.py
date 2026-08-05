@@ -923,18 +923,15 @@ def process_receipts(reporter: ConsoleReporter) -> None:
             f"源第 {record.source_row} 行，单据号 "
             f"{record.document_number or '(空)'}，"
             f"商品名称 {record.product_name}"
-            for record in excluded_records[:10]
+            for record in excluded_records
         )
-        remaining = len(excluded_records) - 10
-        if remaining > 0:
-            examples = (*examples, f"其余 {remaining} 行未展开")
         reporter.detail(
             f"按业务规则剔除“{RECEIPTS_EXCLUDED_PRODUCT_KEYWORD}”商品："
             f"{format_count(len(excluded_records))} 行",
             examples,
         )
     if issues:
-        reporter.warning(
+        reporter.review_required(
             f"存在 {format_count(len(issues))} 条数据问题",
             (f"详见“{ISSUES_SHEET_NAME}”工作表",),
         )

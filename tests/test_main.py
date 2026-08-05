@@ -7,6 +7,7 @@ from unittest.mock import patch
 import main as app_main
 from processors import coupon_report
 from processors.common.console import ConsoleReporter
+from processors.common.excel import OutputCleanupError, StaleFileCleanup
 
 
 class CombinedOutputRollbackTest(unittest.TestCase):
@@ -142,6 +143,175 @@ class MainErrorHandlingTest(unittest.TestCase):
 
             error.assert_called_once()
             self.assertEqual(str(error.call_args.args[1]), "bad config")
+
+
+class TransactionLifecycleTest(unittest.TestCase):
+    """process_all's console lifecycle: success only after commit, failures
+    and cancellations flush concerns, and a post-commit cleanup failure is
+    never reported as a rollback."""
+
+    def _processors(self, *behaviors):
+        return tuple(
+            (f"模式{index}", f"步骤{index}", None, behavior)
+            for index, behavior in enumerate(behaviors, start=1)
+        )
+
+    def test_batch_success_finishes_after_commit(self) -> None:
+        reporter = ConsoleReporter(
+            stream=io.StringIO(),
+            error_stream=io.StringIO(),
+        )
+        processors = self._processors(
+            lambda r: None,
+            lambda r: None,
+        )
+        with patch.object(
+            app_main,
+            "run_with_output_rollback",
+            side_effect=lambda paths, operation: operation(),
+        ):
+            app_main.process_all(processors, reporter)
+        text = reporter.stream.getvalue()
+        self.assertIn("处理完成：2/2 步骤成功", text)
+        self.assertIn("已提交输出", text)
+        self.assertEqual(reporter.error_stream.getvalue(), "")
+
+    def test_batch_failure_reports_rollback_and_no_output_list(self) -> None:
+        reporter = ConsoleReporter(
+            stream=io.StringIO(),
+            error_stream=io.StringIO(),
+        )
+        processors = self._processors(
+            lambda r: None,
+            lambda r: (_ for _ in ()).throw(ValueError("坏了")),
+        )
+        with patch.object(
+            app_main,
+            "run_with_output_rollback",
+            side_effect=lambda paths, operation: operation(),
+        ):
+            with self.assertRaisesRegex(ValueError, "坏了"):
+                app_main.process_all(processors, reporter)
+        self.assertIn("处理失败：1/2 步骤成功", reporter.error_stream.getvalue())
+        self.assertIn(
+            "本次输出已回滚，原有输出文件保持不变",
+            reporter.error_stream.getvalue(),
+        )
+        self.assertNotIn("已提交输出", reporter.stream.getvalue())
+        self.assertNotIn("处理完成", reporter.stream.getvalue())
+
+    def test_batch_cancel_reports_cancelled_summary(self) -> None:
+        reporter = ConsoleReporter(
+            stream=io.StringIO(),
+            error_stream=io.StringIO(),
+        )
+        processors = self._processors(lambda r: (_ for _ in ()).throw(KeyboardInterrupt()))
+        with patch.object(
+            app_main,
+            "run_with_output_rollback",
+            side_effect=lambda paths, operation: operation(),
+        ):
+            with self.assertRaises(KeyboardInterrupt):
+                app_main.process_all(processors, reporter)
+        self.assertIn("处理已取消：0/1 步骤已完成", reporter.error_stream.getvalue())
+        self.assertIn(
+            "本次输出已回滚，原有输出文件保持不变",
+            reporter.error_stream.getvalue(),
+        )
+
+    def test_commit_cleanup_failure_is_not_reported_as_rollback(self) -> None:
+        """Every step committed, then backup cleanup raised: the summary must
+        say the outputs were committed, not rolled back."""
+        reporter = ConsoleReporter(
+            stream=io.StringIO(),
+            error_stream=io.StringIO(),
+        )
+        processors = self._processors(lambda r: None)
+
+        def cleanup_fails(paths, operation):
+            operation()  # steps all succeed
+            raise OutputCleanupError("输出已提交，备份清理失败")
+
+        with patch.object(
+            app_main,
+            "run_with_output_rollback",
+            side_effect=cleanup_fails,
+        ):
+            with self.assertRaisesRegex(OutputCleanupError, "备份清理失败"):
+                app_main.process_all(processors, reporter)
+        text = reporter.error_stream.getvalue()
+        self.assertIn("输出已提交，未回滚", text)
+        self.assertIn("备份清理失败", text)
+        self.assertNotIn("本次输出已回滚", text)
+        # No success summary on the main stream either.
+        self.assertNotIn("已提交输出", reporter.stream.getvalue())
+        self.assertNotIn("处理完成：", reporter.stream.getvalue())
+
+    def test_nested_cleanup_failure_in_all_mode_reports_rollback(self) -> None:
+        """Mode 1 has its own inner rollback transaction. Its post-commit
+        cleanup failure reaches process_all as OutputCleanupError, but the
+        outer transaction rolled every output back — the summary must say
+        rolled back, with no second [失败] and no committed claim."""
+        reporter = ConsoleReporter(
+            stream=io.StringIO(),
+            error_stream=io.StringIO(),
+        )
+
+        def inner_cleanup_fails(reporter) -> None:
+            raise OutputCleanupError("内层清理失败")
+
+        processors = self._processors(inner_cleanup_fails)
+        with patch.object(
+            app_main,
+            "run_with_output_rollback",
+            side_effect=lambda paths, operation: operation(),
+        ):
+            with self.assertRaisesRegex(OutputCleanupError, "内层清理失败"):
+                app_main.process_all(processors, reporter)
+        text = reporter.error_stream.getvalue()
+        # Only the step-level [失败] (with the rollback remedy) prints.
+        self.assertEqual(text.count("[失败]"), 1)
+        self.assertIn("处理失败：0/1 步骤成功", text)
+        self.assertIn("本次输出已回滚，原有输出文件保持不变", text)
+        self.assertNotIn("输出已提交，未回滚", text)
+        self.assertNotIn("已提交输出", reporter.stream.getvalue())
+
+    def test_single_mode_cleanup_failure_does_not_claim_rollback(self) -> None:
+        """Mode 1's own rollback transaction can hit a post-commit cleanup
+        failure; the single-mode handler must not claim the files were
+        preserved or rolled back."""
+
+        class CleanupFailRun:
+            is_all = False
+            step_label = "已上传数据"
+
+            def run(self, reporter) -> None:
+                raise OutputCleanupError("输出已提交，备份清理失败")
+
+        reporter = ConsoleReporter(
+            stream=io.StringIO(),
+            error_stream=io.StringIO(),
+        )
+        with (
+            patch.object(app_main, "ConsoleReporter", return_value=reporter),
+            patch.object(app_main, "resolve_data_dir", return_value=Path("data")),
+            patch.object(
+                app_main,
+                "choose_data_processor",
+                return_value=CleanupFailRun(),
+            ),
+            patch.object(
+                app_main,
+                "remove_stale_temporary_files",
+                return_value=StaleFileCleanup((), ()),
+            ),
+        ):
+            self.assertEqual(app_main.main(), 1)
+        text = reporter.error_stream.getvalue()
+        self.assertIn("输出已提交，未回滚", text)
+        self.assertIn("备份清理失败", text)
+        self.assertNotIn("本次输出已回滚", text)
+        self.assertNotIn("现有输出文件保持不变", text)
 
 
 if __name__ == "__main__":

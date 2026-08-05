@@ -1012,7 +1012,7 @@ def process_payment_files(reporter: ConsoleReporter) -> None:
             f"{format_count(len(detail.rows))} 条",
         )
         if detail.unidentified_brands:
-            reporter.warning(
+            reporter.review_required(
                 f"{profile.name}有 {format_count(detail.unidentified_brands)} 行"
                 "品牌未识别",
                 ("处理：品牌列为空，请在 config/payment_brands.yaml 中补充关键词",),
