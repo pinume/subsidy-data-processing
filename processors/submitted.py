@@ -56,6 +56,7 @@ STATUS_ORDER = (
     "核销失败",
     "审核失败",
     "暂存",
+    "待同步",
     "同步(已上送)",
     "待审核",
     "审核通过",
@@ -497,8 +498,8 @@ def validate_output(path: Path, expected_data_rows: int, profile_name: str) -> N
                 f"实际共 {status_total} 条"
             )
 
-        # The six status sheets are written by six calls separate from the
-        # Summary one, so matching counts do not prove matching content.
+        # The status sheets are written by separate calls from the Summary
+        # one, so matching counts do not prove matching content.
         # Comparing them as multisets checks every column of every row —
         # 补贴金额 included — against the Summary rows already recomputed
         # above, which is cheaper than recomputing the subsidy per sheet.
@@ -591,16 +592,22 @@ def process_submitted_files(
         lambda path: validate_output(path, report.data_row_count, profile_name),
     )
 
-    metric_value = (
-        f"{format_count(report.file_count)} 个文件｜"
-        f"{format_count(report.data_row_count)} 行"
-    )
+    metric_parts = [
+        f"{format_count(report.file_count)} 个文件",
+        f"{format_count(report.data_row_count)} 行",
+    ]
+    # Non-zero fixed statuses only, in STATUS_ORDER, so the line stays short
+    # and the operator can see backlog composition without opening the file.
+    for status in STATUS_ORDER:
+        count = len(report.status_rows[status])
+        if count:
+            metric_parts.append(f"{status} {format_count(count)}")
     if report.unknown_status_records:
         status_names = "、".join(
             sorted({record.status or "(空)" for record in report.unknown_status_records})
         )
-        metric_value += (
-            f"｜{status_names} {format_count(len(report.unknown_status_records))} 行"
+        metric_parts.append(
+            f"{status_names} {format_count(len(report.unknown_status_records))} 行"
             "（保留在 Summary）"
         )
         record_lines = tuple(
@@ -609,11 +616,11 @@ def process_submitted_files(
             for record in report.unknown_status_records
         )
         reporter.detail(
-            f"{profile_name}待同步数据："
+            f"{profile_name}未知状态数据："
             f"{format_count(len(report.unknown_status_records))} 行",
             record_lines,
         )
-    reporter.metric(profile_name, metric_value)
+    reporter.metric(profile_name, "｜".join(metric_parts))
     reporter.output(output_file)
 
 

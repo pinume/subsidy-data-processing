@@ -625,10 +625,12 @@ class SubmittedRowValidationTest(unittest.TestCase):
             return submitted.build_report(profile_name)
 
     def test_unknown_statuses_are_counted_not_dropped(self) -> None:
-        """核销成功 and 待同步 appear in real exports but have no status sheet.
+        """Statuses outside STATUS_ORDER still belong in Summary.
 
-        Such rows still belong in Summary, so they must be reported rather
-        than silently missing from every status tab.
+        核销成功 and a blank status appear in (or can appear in) real
+        exports but have no status sheet; 待同步 is a fixed status and must
+        reach its own sheet. Unknown rows must be reported rather than
+        silently missing from every status tab.
         """
         rows = []
         for status, count in (("核销成功", 2), ("待同步", 1), ("", 1)):
@@ -646,7 +648,7 @@ class SubmittedRowValidationTest(unittest.TestCase):
         self.assertEqual(report.data_row_count, 5)
         self.assertEqual(
             report.unknown_status_counts,
-            {"核销成功": 2, "待同步": 1, "": 1},
+            {"核销成功": 2, "": 1},
         )
         self.assertEqual(
             report.unknown_status_records,
@@ -665,23 +667,18 @@ class SubmittedRowValidationTest(unittest.TestCase):
                 ),
                 submitted.UnknownStatusRecord(
                     "MER_89813015722APT1_export.xlsx",
-                    5,
-                    "12345678902A",
-                    "待同步",
-                ),
-                submitted.UnknownStatusRecord(
-                    "MER_89813015722APT1_export.xlsx",
                     6,
                     "12345678903A",
                     "",
                 ),
             ),
         )
-        # The known-status row is the only one reaching a status sheet, but
-        # every row is still carried in Summary.
+        # 待同步 + 审核通过 reach status sheets; unknown statuses stay
+        # Summary-only. Every row is still carried in Summary.
         self.assertEqual(len(report.summary_rows), 5)
+        self.assertEqual(len(report.status_rows["待同步"]), 1)
         self.assertEqual(
-            sum(len(rows) for rows in report.status_rows.values()), 1
+            sum(len(rows) for rows in report.status_rows.values()), 2
         )
 
     def test_no_unknown_statuses_reports_nothing(self) -> None:
@@ -693,7 +690,7 @@ class SubmittedRowValidationTest(unittest.TestCase):
         rows = []
         for reference in ("12345678900A", "12345678901A", "12345678902A"):
             row = submitted_row(SUBMITTED_HEADER, reference=reference)
-            row[column_index_from_string(STATUS_COLUMN) - 1] = "待同步"
+            row[column_index_from_string(STATUS_COLUMN) - 1] = "核销成功"
             rows.append(row)
         with tempfile.TemporaryDirectory() as directory:
             data_dir = Path(directory)
@@ -713,10 +710,10 @@ class SubmittedRowValidationTest(unittest.TestCase):
         self.assertEqual(reporter.corrected_count, 0)
         self.assertEqual(reporter.review_count, 0)
         text = output.getvalue()
-        self.assertIn("数码：1 个文件｜3 行｜待同步 3 行（保留在 Summary）", text)
+        self.assertIn("数码：1 个文件｜3 行｜核销成功 3 行（保留在 Summary）", text)
         self.assertNotIn("[警告]", text)
         # Traceability lives in the verbose-only [明细] block.
-        self.assertIn("[明细] 数码待同步数据：3 行", text)
+        self.assertIn("[明细] 数码未知状态数据：3 行", text)
         self.assertIn("源文件 MER_89813014812B06R_export.xlsx", text)
         self.assertIn("源行 3", text)
         self.assertIn("检索参考号 12345678900A", text)
@@ -725,7 +722,7 @@ class SubmittedRowValidationTest(unittest.TestCase):
         rows = [
             submitted_row(SUBMITTED_HEADER, reference="12345678900A"),
         ]
-        rows[0][column_index_from_string(STATUS_COLUMN) - 1] = "待同步"
+        rows[0][column_index_from_string(STATUS_COLUMN) - 1] = "核销成功"
         with tempfile.TemporaryDirectory() as directory:
             data_dir = Path(directory)
             write_submitted_source(
@@ -740,9 +737,70 @@ class SubmittedRowValidationTest(unittest.TestCase):
                 submitted.process_submitted_files("数码", reporter)
 
         text = output.getvalue()
-        self.assertIn("待同步 1 行（保留在 Summary）", text)
+        self.assertIn("核销成功 1 行（保留在 Summary）", text)
         self.assertNotIn("源行", text)
         self.assertNotIn("[明细]", text)
+
+    def test_pending_sync_is_a_fixed_status_sheet(self) -> None:
+        """待同步 has its own sheet; it is no longer Summary-only."""
+        row = submitted_row(SUBMITTED_HEADER, reference="12345678900A")
+        row[column_index_from_string(STATUS_COLUMN) - 1] = "待同步"
+        report = self.build_from_rows([row])
+
+        self.assertEqual(report.unknown_status_counts, {})
+        self.assertEqual(len(report.status_rows["待同步"]), 1)
+        self.assertEqual(
+            report.status_rows["待同步"][0][
+                report.header.index("检索参考号")
+            ],
+            "12345678900A",
+        )
+        self.assertIn("待同步", STATUS_ORDER)
+        self.assertLess(
+            STATUS_ORDER.index("待同步"),
+            STATUS_ORDER.index("同步(已上送)"),
+        )
+
+    def test_metric_lists_non_zero_status_counts_in_order(self) -> None:
+        """Console metric shows backlog composition without opening Excel."""
+        rows = []
+        for status, count in (
+            ("审核通过", 2),
+            ("待同步", 1),
+            ("核销失败", 1),
+            ("核销成功", 1),
+        ):
+            for _ in range(count):
+                row = submitted_row(
+                    SUBMITTED_HEADER,
+                    reference=f"1234567890{len(rows)}A",
+                )
+                row[column_index_from_string(STATUS_COLUMN) - 1] = status
+                rows.append(row)
+
+        with tempfile.TemporaryDirectory() as directory:
+            data_dir = Path(directory)
+            write_submitted_source(
+                data_dir / f"{submitted_file_marker('家电')}_export.xlsx",
+                SUBMITTED_HEADER,
+                rows,
+            )
+            submitted.configure_data_dir(data_dir)
+            output = io.StringIO()
+            reporter = submitted.ConsoleReporter(stream=output)
+            with patch.object(submitted, "write_xlsx_atomically"):
+                submitted.process_submitted_files("家电", reporter)
+
+        text = output.getvalue()
+        # Fixed statuses appear only when non-zero, and in STATUS_ORDER rather
+        # than discovery order: 核销失败 before 待同步 before 审核通过.
+        self.assertIn(
+            "家电：1 个文件｜5 行｜核销失败 1｜待同步 1｜审核通过 2｜"
+            "核销成功 1 行（保留在 Summary）",
+            text,
+        )
+        self.assertNotIn("暂存", text)
+        self.assertNotIn("待审核", text)
 
     def test_invalid_reference_reports_source_location(self) -> None:
         row = submitted_row(SUBMITTED_HEADER, reference="not-valid")

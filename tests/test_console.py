@@ -71,10 +71,10 @@ class ConsoleReporterTests(unittest.TestCase):
 
     def test_detail_shows_only_in_verbose_mode(self) -> None:
         reporter = ConsoleReporter(stream=io.StringIO(), verbose=True)
-        reporter.detail("数码待同步数据：2 行", ("源文件 a.xlsx，源行 3", "其余 0 行"))
+        reporter.detail("数码未知状态数据：2 行", ("源文件 a.xlsx，源行 3", "其余 0 行"))
         self.assertEqual(
             reporter.stream.getvalue(),
-            "[明细] 数码待同步数据：2 行\n"
+            "[明细] 数码未知状态数据：2 行\n"
             "       源文件 a.xlsx，源行 3\n"
             "       其余 0 行\n"
             "\n",

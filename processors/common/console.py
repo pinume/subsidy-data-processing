@@ -143,7 +143,7 @@ class ConsoleReporter:
     can state them; two instances never share state.
 
     The output channels are deliberately distinct:
-    - metric(): normal statistics, always shown (待同步 count, 北国 count)
+    - metric(): normal statistics, always shown (未知状态 count, 北国 count)
     - detail(): traceability lines shown only when verbose is on; never
       counted
     - corrected(): an anomaly the program already fixed; collected, shown
