@@ -17,13 +17,12 @@ FONT_NAME = "Maple Mono NF CN"
 FALLBACK_FONT_NAME = "微软雅黑"
 FONT_SIZE = 11
 ROW_HEIGHT = 18
-FONT_PATH = Path(r"C:\Windows\Fonts\MapleMono-NF-CN-Regular.ttf")
-FALLBACK_FONT_PATH = Path(r"C:\Windows\Fonts\msyh.ttc")
+# Linux-only font candidates. Measurement fonts other than Maple still map to
+# 微软雅黑 as the workbook font name (see resolve_font).
 FONT_CANDIDATES = (
     (
         FONT_NAME,
         (
-            FONT_PATH,
             Path.home()
             / ".local/share/fonts/MapleMono-NF-CN/MapleMono-NF-CN-Regular.ttf",
         ),
@@ -35,7 +34,6 @@ FONT_CANDIDATES = (
     (
         FALLBACK_FONT_NAME,
         (
-            FALLBACK_FONT_PATH,
             Path("/usr/local/share/fonts/github-fonts/MSYH.TTC"),
             Path("/usr/local/share/fonts/github-fonts/MSYHL.TTC"),
         ),
@@ -67,11 +65,6 @@ FONT_CANDIDATES = (
         ),
     ),
     (
-        "PingFang SC",
-        (Path("/System/Library/Fonts/PingFang.ttc"),),
-        ("PingFang.ttc",),
-    ),
-    (
         "WenQuanYi Micro Hei",
         (),
         (
@@ -83,12 +76,8 @@ FONT_CANDIDATES = (
 FONT_SEARCH_ROOTS = (
     Path.home() / ".local/share/fonts",
     Path.home() / ".fonts",
-    Path.home() / "Library/Fonts",
     Path("/usr/share/fonts"),
     Path("/usr/local/share/fonts"),
-    Path("/Library/Fonts"),
-    Path("/System/Library/Fonts"),
-    Path(r"C:\Windows\Fonts"),
 )
 
 
@@ -193,7 +182,9 @@ def resolve_font() -> tuple[str, Path]:
 
     raise FileNotFoundError(
         "No supported font file was found. Install Maple Mono NF CN, Microsoft "
-        "YaHei, Noto Sans CJK SC, or PingFang SC, or set UPLOAD_DATA_FONT_PATH."
+        "YaHei (e.g. under /usr/local/share/fonts/github-fonts/), Noto Sans "
+        "CJK SC, Source Han Sans SC, or WenQuanYi Micro Hei, or set "
+        "UPLOAD_DATA_FONT_PATH."
     )
 
 

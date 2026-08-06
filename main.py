@@ -1,9 +1,13 @@
+import argparse
+import fcntl
 import os
+import signal
 import sys
 import traceback
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
+from typing import IO
 
 from processors import payment, receipts, store_report, submitted
 from processors.common.console import ConsoleReporter, format_count
@@ -14,6 +18,11 @@ from processors.common.excel import (
 )
 from processors.common.paths import resolve_data_dir
 from processors.coupons import sources as coupon_sources
+
+# Held for the process lifetime so the fcntl lock is not released early.
+_instance_lock_file: IO[str] | None = None
+
+LOCK_PATH = Path("/tmp/subsidy-data-processing.lock")
 
 
 def all_output_files() -> tuple[Path, ...]:
@@ -158,6 +167,35 @@ def process_all(
     reporter.finish(success=True, succeeded=total, total=total)
 
 
+def selection_for_all(
+    processors: tuple[tuple[str, str, Path, Callable[[ConsoleReporter], None]], ...],
+) -> ProcessorSelection:
+    return ProcessorSelection(
+        run=lambda reporter: process_all(processors, reporter),
+        step_label="全部模式",
+        is_all=True,
+    )
+
+
+def selection_for_mode(
+    processors: tuple[tuple[str, str, Path, Callable[[ConsoleReporter], None]], ...],
+    mode: int,
+) -> ProcessorSelection:
+    if mode < 1 or mode > len(processors):
+        print(
+            f"无效的 --mode {mode}：请指定 1–{len(processors)}，"
+            "全部处理请使用 --all",
+            file=sys.stderr,
+        )
+        raise SystemExit(2)
+    _, step_label, _, processor = processors[mode - 1]
+    return ProcessorSelection(
+        run=processor,
+        step_label=step_label,
+        is_all=False,
+    )
+
+
 def choose_data_processor() -> ProcessorSelection | None:
     processors = build_processors()
     all_choice = len(processors) + 1
@@ -180,28 +218,114 @@ def choose_data_processor() -> ProcessorSelection | None:
             return None
         if choice == str(all_choice) or choice.lower() == "all":
             print(f"按顺序处理全部数据：1-{len(processors)}")
-            return ProcessorSelection(
-                run=lambda reporter: process_all(processors, reporter),
-                step_label="全部模式",
-                is_all=True,
-            )
+            return selection_for_all(processors)
         if choice.isdigit():
             selected_index = int(choice) - 1
             if 0 <= selected_index < len(processors):
-                _, step_label, _, processor = processors[selected_index]
-                return ProcessorSelection(
-                    run=processor,
-                    step_label=step_label,
-                    is_all=False,
-                )
+                return selection_for_mode(processors, selected_index + 1)
 
         print("输入无效，请输入菜单编号或 all。")
 
 
-def main() -> int:
+def parse_cli_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
+    """Parse CLI flags. Empty argv keeps the interactive menu path.
+
+    --all and --mode are mutually exclusive. Mode range is checked later
+    against build_processors() so the help text need not hard-code the count.
+    """
+    parser = argparse.ArgumentParser(
+        prog="main.py",
+        description="国补 Excel 数据处理（仅 Linux；源码运行）",
+    )
+    parser.add_argument(
+        "--all",
+        action="store_true",
+        help="按顺序处理全部模式（等同菜单「全部处理」）",
+    )
+    parser.add_argument(
+        "--mode",
+        type=int,
+        metavar="N",
+        help="只处理指定模式编号（1 起，与菜单一致；与 --all 互斥）",
+    )
+    args = parser.parse_args(list(argv) if argv is not None else None)
+    if args.all and args.mode is not None:
+        parser.error("--all 与 --mode 不能同时使用")
+    return args
+
+
+def resolve_selection(
+    args: argparse.Namespace,
+) -> ProcessorSelection | None:
+    """Map CLI flags or the interactive menu to a ProcessorSelection."""
+    processors = build_processors()
+    if args.all:
+        print(f"按顺序处理全部数据：1-{len(processors)}")
+        return selection_for_all(processors)
+    if args.mode is not None:
+        return selection_for_mode(processors, args.mode)
+    return choose_data_processor()
+
+
+def require_linux() -> None:
+    """Refuse to start on non-Linux platforms.
+
+    Called at the top of main() only — not at import time — so tests that
+    import this module (and tools that load it for inspection) still work.
+    """
+    if sys.platform != "linux":
+        print(
+            f"本工具仅支持 Linux，当前平台：{sys.platform}",
+            file=sys.stderr,
+        )
+        raise SystemExit(2)
+
+
+def _sigterm_handler(signum: int, frame: object) -> None:
+    # Reuse the KeyboardInterrupt paths already wired for Ctrl+C / cancel.
+    raise KeyboardInterrupt
+
+
+def install_sigterm_handler() -> None:
+    signal.signal(signal.SIGTERM, _sigterm_handler)
+
+
+def acquire_instance_lock(
+    lock_path: Path | None = None,
+) -> IO[str]:
+    """Exclusive non-blocking flock; raise SystemExit(3) if another instance holds it.
+
+    The returned file object must stay open for the lock lifetime (fcntl
+    releases on close). Lock path must not be a dot-prefixed file under
+    output/, or startup cleanup could remove it.
+    """
+    path = lock_path if lock_path is not None else LOCK_PATH
+    lock_file = open(path, "a+", encoding="utf-8")
+    try:
+        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        lock_file.close()
+        print(
+            f"已有实例在运行（锁：{path}），请等待其结束后再试",
+            file=sys.stderr,
+        )
+        raise SystemExit(3) from None
+    lock_file.seek(0)
+    lock_file.truncate()
+    lock_file.write(f"{os.getpid()}\n")
+    lock_file.flush()
+    return lock_file
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    require_linux()
+    install_sigterm_handler()
+    args = parse_cli_args(argv)
+
     reporter = ConsoleReporter(
         verbose=os.environ.get("UPLOAD_DATA_VERBOSE") == "1"
     )
+    selection: ProcessorSelection | None
     try:
         data_dir = resolve_data_dir()
         if data_dir is None:
@@ -231,9 +355,14 @@ def main() -> int:
                 (f"文件：{name}", f"原因：{reason}"),
             )
 
-        selection = choose_data_processor()
+        selection = resolve_selection(args)
         if selection is None:
             return 0
+
+        # Lock only after the operator (or CLI) has committed to a run, so
+        # opening the menu or choosing 0 never blocks other instances.
+        global _instance_lock_file
+        _instance_lock_file = acquire_instance_lock()
     except KeyboardInterrupt:
         print("\n处理已取消", file=sys.stderr)
         return 130

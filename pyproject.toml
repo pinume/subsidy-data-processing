@@ -1,9 +1,14 @@
 [project]
 name = "subsidy-data-processing"
 version = "0.1.0"
-description = "统一处理大家电与数码 Excel 数据"
+description = "统一处理大家电与数码 Excel 数据（仅 Linux）"
 readme = "README.md"
 requires-python = ">=3.12"
+classifiers = [
+    "Operating System :: POSIX :: Linux",
+    "Environment :: Console",
+    "Programming Language :: Python :: 3",
+]
 dependencies = [
     "openpyxl>=3.1.5",
     "pillow>=12.2.0",
@@ -17,6 +22,12 @@ dev = [
     "pytest>=9.1.1",
     "pytest-randomly>=4.1.0",
     "ruff==0.16.1",
+]
+
+# Limit lockfile resolution to Linux; runtime still enforces via require_linux().
+[tool.uv]
+environments = [
+    "sys_platform == 'linux'",
 ]
 
 [tool.pytest.ini_options]

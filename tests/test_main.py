@@ -1,13 +1,116 @@
 import io
+import signal
+import sys
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import main as app_main
 from processors import coupon_report
 from processors.common.console import ConsoleReporter
 from processors.common.excel import OutputCleanupError, StaleFileCleanup
+
+
+class RequireLinuxTest(unittest.TestCase):
+    def test_accepts_linux(self) -> None:
+        with patch.object(sys, "platform", "linux"):
+            app_main.require_linux()
+
+    def test_rejects_windows(self) -> None:
+        with patch.object(sys, "platform", "win32"):
+            with self.assertRaises(SystemExit) as raised:
+                app_main.require_linux()
+        self.assertEqual(raised.exception.code, 2)
+
+    def test_rejects_macos(self) -> None:
+        with patch.object(sys, "platform", "darwin"):
+            with self.assertRaises(SystemExit) as raised:
+                app_main.require_linux()
+        self.assertEqual(raised.exception.code, 2)
+
+
+class ParseCliArgsTest(unittest.TestCase):
+    def test_empty_argv_is_interactive(self) -> None:
+        args = app_main.parse_cli_args([])
+        self.assertFalse(args.all)
+        self.assertIsNone(args.mode)
+
+    def test_all_flag(self) -> None:
+        args = app_main.parse_cli_args(["--all"])
+        self.assertTrue(args.all)
+        self.assertIsNone(args.mode)
+
+    def test_mode_flag(self) -> None:
+        args = app_main.parse_cli_args(["--mode", "3"])
+        self.assertFalse(args.all)
+        self.assertEqual(args.mode, 3)
+
+    def test_all_and_mode_are_mutually_exclusive(self) -> None:
+        with self.assertRaises(SystemExit) as raised:
+            app_main.parse_cli_args(["--all", "--mode", "1"])
+        self.assertEqual(raised.exception.code, 2)
+
+
+class SelectionHelpersTest(unittest.TestCase):
+    def _processors(self):
+        return (
+            ("已上传数据（家电+数码）", "已上传数据", Path("a"), lambda r: None),
+            ("收款单统计", "收款单统计", Path("b"), lambda r: None),
+        )
+
+    def test_selection_for_mode_in_range(self) -> None:
+        selection = app_main.selection_for_mode(self._processors(), 2)
+        self.assertFalse(selection.is_all)
+        self.assertEqual(selection.step_label, "收款单统计")
+
+    def test_selection_for_mode_out_of_range(self) -> None:
+        with self.assertRaises(SystemExit) as raised:
+            app_main.selection_for_mode(self._processors(), 6)
+        self.assertEqual(raised.exception.code, 2)
+
+    def test_selection_for_all(self) -> None:
+        selection = app_main.selection_for_all(self._processors())
+        self.assertTrue(selection.is_all)
+        self.assertEqual(selection.step_label, "全部模式")
+
+
+class InstanceLockTest(unittest.TestCase):
+    def test_second_acquire_fails_with_exit_3(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            lock_path = Path(directory) / "test.lock"
+            first = app_main.acquire_instance_lock(lock_path)
+            try:
+                with self.assertRaises(SystemExit) as raised:
+                    app_main.acquire_instance_lock(lock_path)
+                self.assertEqual(raised.exception.code, 3)
+            finally:
+                first.close()
+
+    def test_lock_released_after_close_allows_reacquire(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            lock_path = Path(directory) / "test.lock"
+            first = app_main.acquire_instance_lock(lock_path)
+            first.close()
+            second = app_main.acquire_instance_lock(lock_path)
+            try:
+                self.assertIsNotNone(second)
+            finally:
+                second.close()
+
+
+class SigtermHandlerTest(unittest.TestCase):
+    def test_sigterm_handler_raises_keyboard_interrupt(self) -> None:
+        with self.assertRaises(KeyboardInterrupt):
+            app_main._sigterm_handler(signal.SIGTERM, None)
+
+    def test_install_registers_handler(self) -> None:
+        previous = signal.getsignal(signal.SIGTERM)
+        try:
+            app_main.install_sigterm_handler()
+            self.assertIs(signal.getsignal(signal.SIGTERM), app_main._sigterm_handler)
+        finally:
+            signal.signal(signal.SIGTERM, previous)
 
 
 class CombinedOutputRollbackTest(unittest.TestCase):
@@ -139,10 +242,36 @@ class MainErrorHandlingTest(unittest.TestCase):
                     app_main.ConsoleReporter, "error"
                 ) as error,
             ):
-                self.assertEqual(app_main.main(), 1)
+                # argv=[] avoids picking up pytest's own flags.
+                self.assertEqual(app_main.main([]), 1)
 
             error.assert_called_once()
             self.assertEqual(str(error.call_args.args[1]), "bad config")
+
+    def test_cli_all_skips_interactive_menu(self) -> None:
+        ran = {"all": False}
+
+        class AllRun:
+            is_all = True
+            step_label = "全部模式"
+
+            def run(self, reporter) -> None:
+                ran["all"] = True
+
+        with (
+            patch.object(app_main, "resolve_data_dir", return_value=Path("data")),
+            patch.object(
+                app_main,
+                "remove_stale_temporary_files",
+                return_value=StaleFileCleanup((), ()),
+            ),
+            patch.object(app_main, "resolve_selection", return_value=AllRun()),
+            patch.object(app_main, "acquire_instance_lock", return_value=MagicMock()),
+            patch.object(app_main, "choose_data_processor") as choose,
+        ):
+            self.assertEqual(app_main.main(["--all"]), 0)
+        choose.assert_not_called()
+        self.assertTrue(ran["all"])
 
 
 class TransactionLifecycleTest(unittest.TestCase):
@@ -305,8 +434,9 @@ class TransactionLifecycleTest(unittest.TestCase):
                 "remove_stale_temporary_files",
                 return_value=StaleFileCleanup((), ()),
             ),
+            patch.object(app_main, "acquire_instance_lock", return_value=MagicMock()),
         ):
-            self.assertEqual(app_main.main(), 1)
+            self.assertEqual(app_main.main([]), 1)
         text = reporter.error_stream.getvalue()
         self.assertIn("输出已提交，未回滚", text)
         self.assertIn("备份清理失败", text)

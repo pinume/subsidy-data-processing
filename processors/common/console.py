@@ -34,7 +34,6 @@ ExcludedProductRecord, SubsidyCorrection, SupplementReferenceConflict).
 
 from __future__ import annotations
 
-import os
 import sys
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
@@ -123,16 +122,12 @@ def _group_by_title(
 def _color_enabled(stream, override: bool | None) -> bool:
     """Whether ANSI color should be emitted for this stream.
 
-    Defaults to on only for terminals; an explicit override wins. On
-    Windows the console is switched into VT processing mode so the ANSI
-    codes render (a no-op elsewhere and harmless when redirected).
+    Defaults to on only for terminals; an explicit override wins.
     """
     if override is not None:
         return override
     if not (hasattr(stream, "isatty") and stream.isatty()):
         return False
-    if os.name == "nt":
-        os.system("")
     return True
 
 

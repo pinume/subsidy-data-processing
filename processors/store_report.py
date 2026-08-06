@@ -1012,7 +1012,7 @@ def process_store_report(reporter: ConsoleReporter) -> None:
         # save_workbook_atomically (below) takes ownership of closing the
         # workbook once writing succeeds; anything raised before that point —
         # a bad template, a write bug — must close it here instead, or the
-        # template file stays locked open (fatal on Windows) until GC.
+        # template file stays open until GC.
         workbook.close()
         raise
 
