@@ -60,7 +60,7 @@ SUBMITTED_HEADER = build_header()
 def submitted_row(
     header: tuple[str, ...],
     *,
-    reference: object = "12345678901A",
+    reference: object = "12345678901N",
 ) -> list[object]:
     row: list[object] = ["v"] * len(header)
     row[column_index_from_string(AMOUNT_COLUMN) - 1] = 1000
@@ -637,11 +637,11 @@ class SubmittedRowValidationTest(unittest.TestCase):
             for index in range(count):
                 row = submitted_row(
                     SUBMITTED_HEADER,
-                    reference=f"1234567890{len(rows)}A",
+                    reference=f"1234567890{len(rows)}N",
                 )
                 row[column_index_from_string(STATUS_COLUMN) - 1] = status
                 rows.append(row)
-        rows.append(submitted_row(SUBMITTED_HEADER, reference="12345678999A"))
+        rows.append(submitted_row(SUBMITTED_HEADER, reference="12345678999N"))
 
         report = self.build_from_rows(rows)
 
@@ -656,19 +656,19 @@ class SubmittedRowValidationTest(unittest.TestCase):
                 submitted.UnknownStatusRecord(
                     "MER_89813015722APT1_export.xlsx",
                     3,
-                    "12345678900A",
+                    "12345678900N",
                     "核销成功",
                 ),
                 submitted.UnknownStatusRecord(
                     "MER_89813015722APT1_export.xlsx",
                     4,
-                    "12345678901A",
+                    "12345678901N",
                     "核销成功",
                 ),
                 submitted.UnknownStatusRecord(
                     "MER_89813015722APT1_export.xlsx",
                     6,
-                    "12345678903A",
+                    "12345678903N",
                     "",
                 ),
             ),
@@ -688,7 +688,7 @@ class SubmittedRowValidationTest(unittest.TestCase):
 
     def test_unknown_status_warning_names_count_and_sources(self) -> None:
         rows = []
-        for reference in ("12345678900A", "12345678901A", "12345678902A"):
+        for reference in ("12345678900N", "12345678901N", "12345678902N"):
             row = submitted_row(SUBMITTED_HEADER, reference=reference)
             row[column_index_from_string(STATUS_COLUMN) - 1] = "核销成功"
             rows.append(row)
@@ -716,11 +716,11 @@ class SubmittedRowValidationTest(unittest.TestCase):
         self.assertIn("[明细] 数码未知状态数据：3 行", text)
         self.assertIn("源文件 MER_89813014812B06R_export.xlsx", text)
         self.assertIn("源行 3", text)
-        self.assertIn("检索参考号 12345678900A", text)
+        self.assertIn("检索参考号 12345678900N", text)
 
     def test_unknown_status_details_are_hidden_without_verbose(self) -> None:
         rows = [
-            submitted_row(SUBMITTED_HEADER, reference="12345678900A"),
+            submitted_row(SUBMITTED_HEADER, reference="12345678900N"),
         ]
         rows[0][column_index_from_string(STATUS_COLUMN) - 1] = "核销成功"
         with tempfile.TemporaryDirectory() as directory:
@@ -743,7 +743,7 @@ class SubmittedRowValidationTest(unittest.TestCase):
 
     def test_pending_sync_is_a_fixed_status_sheet(self) -> None:
         """待同步 has its own sheet; it is no longer Summary-only."""
-        row = submitted_row(SUBMITTED_HEADER, reference="12345678900A")
+        row = submitted_row(SUBMITTED_HEADER, reference="12345678900N")
         row[column_index_from_string(STATUS_COLUMN) - 1] = "待同步"
         report = self.build_from_rows([row])
 
@@ -753,7 +753,7 @@ class SubmittedRowValidationTest(unittest.TestCase):
             report.status_rows["待同步"][0][
                 report.header.index("检索参考号")
             ],
-            "12345678900A",
+            "12345678900N",
         )
         self.assertIn("待同步", STATUS_ORDER)
         self.assertLess(
@@ -773,7 +773,7 @@ class SubmittedRowValidationTest(unittest.TestCase):
             for _ in range(count):
                 row = submitted_row(
                     SUBMITTED_HEADER,
-                    reference=f"1234567890{len(rows)}A",
+                    reference=f"1234567890{len(rows)}N",
                 )
                 row[column_index_from_string(STATUS_COLUMN) - 1] = status
                 rows.append(row)
@@ -842,7 +842,7 @@ class SubmittedRowValidationTest(unittest.TestCase):
 
                 with self.assertRaisesRegex(
                     ValueError,
-                    r"检索参考号重复：12345678901A.*第 3 行.*第 4 行",
+                    r"检索参考号重复：12345678901N.*第 3 行.*第 4 行",
                 ):
                     self.build_from_rows([first, second])
 

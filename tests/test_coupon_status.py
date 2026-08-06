@@ -39,13 +39,13 @@ class CouponStatusLookupTest(unittest.TestCase):
             sheet = workbook.active
             sheet.title = "Summary"
             sheet.append(["检索参考号", "状态", "描述", "补贴金额"])
-            sheet.append([" 12345678901a ", " 已完成 ", "匹配成功 ", 1])
+            sheet.append([" 12345678901n ", " 已完成 ", "匹配成功 ", 1])
             workbook.save(source)
             workbook.close()
 
             self.assertEqual(
                 load_uploaded_summary(source)[0],
-                {"12345678901A": "已完成：匹配成功"},
+                {"12345678901N": "已完成：匹配成功"},
             )
 
     def test_uploaded_lookup_rejects_malformed_reference(self) -> None:
@@ -55,13 +55,13 @@ class CouponStatusLookupTest(unittest.TestCase):
             sheet = workbook.active
             sheet.title = "Summary"
             sheet.append(["检索参考号", "状态", "描述", "补贴金额"])
-            sheet.append(["1234567890A", "已完成", "匹配成功", 1])
+            sheet.append(["12345678901A", "已完成", "匹配成功", 1])
             workbook.save(source)
             workbook.close()
 
             with self.assertRaisesRegex(
                 ValueError,
-                "11位数字后跟一个大写字母",
+                "11位数字后跟大写字母 N",
             ):
                 load_uploaded_summary(source)
 
@@ -112,7 +112,7 @@ class CouponStatusFillTest(unittest.TestCase):
         """Without unsubmitted data, anything not submitted is 未上传."""
         for header in HEADERS:
             with self.subTest(header=header):
-                row = coupon_row(header, "99999999999Z")
+                row = coupon_row(header, "99999999999X")
                 rows = [list(header), row]
 
                 upload_counts = matching.fill_upload_statuses(
@@ -169,7 +169,7 @@ class CouponStatusFillTest(unittest.TestCase):
             remark="已上传",
             detail="已完成：匹配成功",
         )
-        bottom_row = coupon_row(header, "99999999999Z")
+        bottom_row = coupon_row(header, "99999999999X")
         rows = [list(header), uploaded_row, bottom_row]
 
         upload_counts = matching.fill_upload_statuses(

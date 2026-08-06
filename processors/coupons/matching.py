@@ -92,6 +92,22 @@ REFERENCE_REPORT_ORDER = {
 }
 ReferenceDecision = tuple[str, str, object, str, str]
 
+# ---------------------------------------------------------------------------
+# 参考号纠正（明细摘要 → 已上传宇宙中的 \d{11}N）
+#
+# 流水线（家电在此之前还有补充文件一步，见 appliance.fill_coupon_reference_supplement）：
+#   1. 已在宇宙 → 跳过
+#   2. 分段求候选（见 reference_correction_candidates）
+#   3. 唯一候选且无冲突 → 写回；否则保留原值并记决策
+#
+# 合法格式：11 位数字 + 大写 N（processors.common.references.REFERENCE_RE）。
+# ---------------------------------------------------------------------------
+
+# 连续非字母数字（空格、标点、中文等）视为「两种数据粘在一格」的分隔。
+_SUMMARY_FIELD_SPLIT_RE = re.compile(r"[^0-9A-Za-z]+")
+# 从大写 N 往前取 11 位数字；N 后可继续粘型号等，故不加结尾边界。
+_EMBEDDED_REFERENCE_RE = re.compile(r"(?<!\d)(\d{11}N)")
+
 
 def as_currency(amount: Decimal) -> Decimal:
     """Round monetary comparisons to cents."""
@@ -100,6 +116,8 @@ def as_currency(amount: Decimal) -> Decimal:
 
 @dataclass(frozen=True)
 class ReferenceCorrectionIndex:
+    """Precomputed lookup tables over the uploaded-reference universe."""
+
     references: frozenset[str]
     digit_prefixes: dict[str, frozenset[str]]
     deletion_variants: dict[str, frozenset[str]]
@@ -109,6 +127,13 @@ class ReferenceCorrectionIndex:
 def build_reference_correction_index(
     reference_universe: set[str],
 ) -> ReferenceCorrectionIndex:
+    """Index every legal uploaded reference for O(1)-ish dirty matching.
+
+    digit_prefixes: 11 digits → {that digits + N}
+    deletion_variants: reference with one char removed → originals (len 11 path)
+    substitution_variants: (pos, reference-without-char-at-pos) → originals
+        (used for len-12 dirty strings: wrong letter, extra char, etc.)
+    """
     references = frozenset(reference.upper() for reference in reference_universe)
     invalid_references = sorted(
         reference
@@ -117,7 +142,7 @@ def build_reference_correction_index(
     )
     if invalid_references:
         raise ValueError(
-            "参考号格式应为11位数字后跟一个大写字母，"
+            "参考号格式应为11位数字后跟大写字母 N，"
             f"实际存在无效参考号：{invalid_references[:5]}"
         )
     digit_prefixes: dict[str, set[str]] = {}
@@ -151,39 +176,62 @@ def build_reference_correction_index(
     )
 
 
-def reference_correction_candidates(
-    raw_reference: str,
+def _resolve_correction_index(
     reference_universe: set[str] | ReferenceCorrectionIndex,
-) -> set[str]:
-    index = (
-        reference_universe
-        if isinstance(reference_universe, ReferenceCorrectionIndex)
-        else build_reference_correction_index(reference_universe)
-    )
-    references = index.references
-    candidates: set[str] = set()
-    upper_reference = raw_reference.upper()
-    compact = re.sub(r"\s+", "", upper_reference)
-    cleaned = re.sub(r"[^0-9A-Z]", "", upper_reference)
+) -> ReferenceCorrectionIndex:
+    if isinstance(reference_universe, ReferenceCorrectionIndex):
+        return reference_universe
+    return build_reference_correction_index(reference_universe)
 
-    for token in re.findall(
-        r"(?<!\d)(\d{11}[A-Z])(?![A-Z0-9])",
-        upper_reference,
-    ):
-        if token in references:
-            candidates.add(token)
+
+def _split_summary_fields(raw_reference: str) -> list[str]:
+    """Split a 明细摘要 cell on non-alphanumeric runs; drop empty parts."""
+    return [part for part in _SUMMARY_FIELD_SPLIT_RE.split(raw_reference) if part]
+
+
+def _candidates_embedded_legal_reference(
+    upper_text: str,
+    references: frozenset[str],
+) -> set[str]:
+    """Embedded \\d{11}N inside longer text (model glued after N, Chinese prefix…)."""
+    return {
+        token
+        for token in _EMBEDDED_REFERENCE_RE.findall(upper_text)
+        if token in references
+    }
+
+
+def _candidates_exact_cleaned(
+    upper_text: str,
+    references: frozenset[str],
+) -> set[str]:
+    """Whole field after stripping non [0-9A-Z] equals a universe member."""
+    cleaned = re.sub(r"[^0-9A-Z]", "", upper_text)
     if cleaned in references:
-        candidates.add(cleaned)
+        return {cleaned}
+    return set()
+
+
+def _candidates_from_compact_edits(
+    compact: str,
+    index: ReferenceCorrectionIndex,
+) -> set[str]:
+    """Match compact (whitespace-stripped) text via length-11/12/13 edit paths.
+
+    - exactly 11 digits → digit_prefixes (missing trailing N)
+    - length 11 → one deletion away from a universe member
+    - length 12 → one substitution/deletion (wrong suffix letter, etc.)
+    - length 13 → drop one character
+    """
+    candidates: set[str] = set()
     if re.fullmatch(r"\d{11}", compact):
         candidates.update(index.digit_prefixes.get(compact, ()))
     if len(compact) == 11:
         candidates.update(index.deletion_variants.get(compact, ()))
     elif len(compact) == 13:
         for character_index in range(13):
-            candidate = (
-                compact[:character_index] + compact[character_index + 1:]
-            )
-            if candidate in references:
+            candidate = compact[:character_index] + compact[character_index + 1:]
+            if candidate in index.references:
                 candidates.add(candidate)
     elif len(compact) == 12:
         for character_index in range(12):
@@ -196,6 +244,46 @@ def reference_correction_candidates(
                     (),
                 )
             )
+    return candidates
+
+
+def _candidates_for_single_field(
+    field: str,
+    index: ReferenceCorrectionIndex,
+) -> set[str]:
+    """All candidate uploaded references for one fragment (no further split)."""
+    upper_text = field.upper()
+    compact = re.sub(r"\s+", "", upper_text)
+    return (
+        _candidates_embedded_legal_reference(upper_text, index.references)
+        | _candidates_exact_cleaned(upper_text, index.references)
+        | _candidates_from_compact_edits(compact, index)
+    )
+
+
+def reference_correction_candidates(
+    raw_reference: str,
+    reference_universe: set[str] | ReferenceCorrectionIndex,
+) -> set[str]:
+    """Uploaded references that a dirty 明细摘要 cell could mean.
+
+    1. Split the cell on non-alphanumeric runs (comma, space, Chinese, …).
+    2. Score each fragment with _candidates_for_single_field.
+    3. If there were multiple fragments, also score the unsplit cell so a
+       single reference written with internal spaces ("12345 678901 N") still
+       matches after compacting.
+    """
+    index = _resolve_correction_index(reference_universe)
+    fields = _split_summary_fields(raw_reference)
+    if not fields:
+        return set()
+    if len(fields) == 1:
+        return _candidates_for_single_field(fields[0], index)
+
+    candidates: set[str] = set()
+    for field in fields:
+        candidates.update(_candidates_for_single_field(field, index))
+    candidates.update(_candidates_for_single_field(raw_reference, index))
     return candidates
 
 
@@ -266,41 +354,47 @@ def correct_coupon_references(
     excluded_bottom_rows: int = 0,
     protected_row_ids: set[int] | None = None,
 ) -> tuple[int, int, int, list[ReferenceDecision]]:
-    """Correct references and record every decision for the processing report.
+    """Rewrite dirty 明细摘要 values to uploaded references; return audit trail.
 
-    The universe is built from submitted data only, so an operator has to be
-    able to review each applied correction, not just the counts.
+    Two phases:
+      propose — unique candidate per row (skip protected / already in universe)
+      apply   — write only if the target is not already used by another row
 
-    A well-formed reference with no candidate at all is simply absent from the
-    submitted data — the detail row already carries a 未上传 remark, so it is
-    counted but kept out of the report. Only malformed references and genuine
-    ambiguities are reported, which is what an operator can actually act on.
+    Report policy for non-unique candidates:
+      - multiple candidates, or zero with a non-legal raw string → 无唯一候选
+      - zero candidates but raw is already legal \\d{11}N → unsubmitted only
+        (counted in unresolved, omitted from the report sheet)
     """
     included_end = len(rows) - excluded_bottom_rows
     included_rows = rows[1:included_end]
+    # Occupancy before this pass (a target already present must not be stolen).
     existing_counts = Counter(
         normalize_receipt_identifier(row[SUMMARY_INDEX]).upper()
         for row in included_rows
         if normalize_receipt_identifier(row[SUMMARY_INDEX])
     )
+    correction_index = build_reference_correction_index(reference_universe)
+    protected = protected_row_ids or set()
+
+    # --- phase 1: propose ---
     proposed: dict[int, str] = {}
     target_counts: Counter[str] = Counter()
     unresolved_count = 0
     decisions: list[ReferenceDecision] = []
-    correction_index = build_reference_correction_index(reference_universe)
 
     for row_index, row in enumerate(included_rows, start=1):
-        if protected_row_ids is not None and id(row) in protected_row_ids:
+        if id(row) in protected:
             continue
         raw_reference = normalize_receipt_identifier(row[SUMMARY_INDEX]).upper()
         if not raw_reference or raw_reference in reference_universe:
             continue
+
         candidates = reference_correction_candidates(
-            raw_reference,
-            correction_index,
+            raw_reference, correction_index
         )
         if len(candidates) != 1:
             unresolved_count += 1
+            # Legal-but-missing refs are left off the report (see docstring).
             if candidates or not REFERENCE_RE.fullmatch(raw_reference):
                 decisions.append(
                     reference_decision(
@@ -312,10 +406,12 @@ def correct_coupon_references(
                     )
                 )
             continue
+
         target = next(iter(candidates))
         proposed[row_index] = target
         target_counts[target] += 1
 
+    # --- phase 2: apply (or record collision) ---
     corrected_count = 0
     collision_count = 0
     for row_index, target in proposed.items():

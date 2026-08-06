@@ -11,8 +11,9 @@ import re
 
 from processors.common.dates import normalize_receipt_identifier
 
-REFERENCE_RE = re.compile(r"\d{11}[A-Z]")
-REFERENCE_FORMAT_HINT = "正确格式应为11位数字后跟一个大写字母"
+# Business rule: 检索参考号 is always eleven digits followed by a capital N.
+REFERENCE_RE = re.compile(r"\d{11}N")
+REFERENCE_FORMAT_HINT = "正确格式应为11位数字后跟大写字母 N"
 
 
 def normalize_reference(value: object) -> str:

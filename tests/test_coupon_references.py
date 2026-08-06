@@ -50,16 +50,189 @@ class CouponReferenceCorrectionTest(unittest.TestCase):
             universe,
         )
 
-    def test_suffix_letter_comes_from_uploaded_reference_universe(self) -> None:
-        universe = {"12345678901A", "12345678902Z"}
+    def test_missing_suffix_n_is_filled_from_uploaded_universe(self) -> None:
+        """Eleven bare digits resolve to the only legal form: digits + N."""
+        universe = {"12345678901N", "12345678902N"}
         self.assertEqual(
             reference_correction_candidates("12345678901", universe),
-            {"12345678901A"},
+            {"12345678901N"},
         )
         self.assertEqual(
             reference_correction_candidates("12345678902", universe),
-            {"12345678902Z"},
+            {"12345678902N"},
         )
+
+    def test_wrong_suffix_letter_can_correct_to_n(self) -> None:
+        self.assertEqual(
+            reference_correction_candidates(
+                "12345678901M", {"12345678901N"}
+            ),
+            {"12345678901N"},
+        )
+
+    def test_reference_glued_to_model_string_takes_digits_before_n(self) -> None:
+        """No separator between …N and the product description."""
+        target = "16294039444N"
+        for raw in (
+            "16294039444Np80pro12+512黑",
+            "16294039444NP80PRO12+512黑",
+            f"备注{target}p80pro",
+        ):
+            with self.subTest(raw=raw):
+                self.assertEqual(
+                    reference_correction_candidates(raw, {target}),
+                    {target},
+                )
+
+    def test_chinese_prefix_before_legal_reference(self) -> None:
+        """Chinese remark glued or adjacent to a legal reference."""
+        target = "18005652528N"
+        for raw in (
+            f"回迁新居{target}",
+            f"回迁新居 {target}",
+        ):
+            with self.subTest(raw=raw):
+                self.assertEqual(
+                    reference_correction_candidates(raw, {target}),
+                    {target},
+                )
+
+    def test_document_dot_and_wrong_suffix_letter(self) -> None:
+        """册号 + 流水号 + 点 + 错后缀 W → universe …N."""
+        target = "55978228155N"
+        dirty = "册号0002953.55978228155W"
+        self.assertEqual(
+            reference_correction_candidates(dirty, {target}),
+            {target},
+        )
+
+    def test_glued_model_unique_candidate_is_written_back(self) -> None:
+        target = "16294039444N"
+        dirty = "16294039444Np80pro12+512黑"
+        for header in HEADERS:
+            with self.subTest(header=header):
+                rows = coupon_rows(header, dirty)
+                corrected, unresolved, collisions, decisions = (
+                    matching.correct_coupon_references(rows, {target})
+                )
+                summary_index = header.index("明细摘要")
+                self.assertEqual((corrected, unresolved, collisions), (1, 0, 0))
+                self.assertEqual(rows[1][summary_index], target)
+                # Decisions store the upper-cased original summary text.
+                self.assertEqual(decisions[0][3], dirty.upper())
+
+    def test_chinese_prefix_unique_candidate_is_written_back(self) -> None:
+        target = "18005652528N"
+        dirty = f"回迁新居{target}"
+        for header in HEADERS:
+            with self.subTest(header=header):
+                rows = coupon_rows(header, dirty)
+                corrected, unresolved, collisions, decisions = (
+                    matching.correct_coupon_references(rows, {target})
+                )
+                summary_index = header.index("明细摘要")
+                self.assertEqual((corrected, unresolved, collisions), (1, 0, 0))
+                self.assertEqual(rows[1][summary_index], target)
+                self.assertEqual(
+                    decisions[0][0], matching.REFERENCE_REPORT_CORRECTED
+                )
+                self.assertEqual(decisions[0][3], dirty.upper())
+
+    def test_document_dot_wrong_suffix_is_written_back(self) -> None:
+        target = "55978228155N"
+        dirty = "册号0002953.55978228155W"
+        for header in HEADERS:
+            with self.subTest(header=header):
+                rows = coupon_rows(header, dirty)
+                corrected, unresolved, collisions, decisions = (
+                    matching.correct_coupon_references(rows, {target})
+                )
+                summary_index = header.index("明细摘要")
+                self.assertEqual((corrected, unresolved, collisions), (1, 0, 0))
+                self.assertEqual(rows[1][summary_index], target)
+                self.assertEqual(
+                    decisions[0][0], matching.REFERENCE_REPORT_CORRECTED
+                )
+                self.assertEqual(decisions[0][3], dirty.upper())
+
+    def test_symbol_joined_document_and_valid_reference(self) -> None:
+        """Two values in 明细摘要 joined by punctuation or spaces."""
+        target = "55992508351N"
+        for raw in (
+            f"0003099,{target}",
+            f"0003099，{target}",
+            f"0003099, {target}",
+            f"0003099;{target}",
+            f"0003099；{target}",
+            f"0003099/{target}",
+            f"0003099|{target}",
+            f"0003099：{target}",
+            f"0003099-{target}",
+            f"0003099 {target}",
+            f"0003099  {target}",
+            f"参考号：{target}",
+        ):
+            with self.subTest(raw=raw):
+                self.assertEqual(
+                    reference_correction_candidates(raw, {target}),
+                    {target},
+                )
+
+    def test_symbol_joined_document_and_wrong_suffix_letter(self) -> None:
+        """Prefix + 12-char dirty ref: only the reference side is edited."""
+        target = "55986838725N"
+        for raw in (
+            "0002917,55986838725M",
+            "0002917;55986838725M",
+            "0002917/55986838725M",
+            "0002917 55986838725M",
+        ):
+            with self.subTest(raw=raw):
+                self.assertEqual(
+                    reference_correction_candidates(raw, {target}),
+                    {target},
+                )
+
+    def test_symbol_joined_two_universe_references_is_ambiguous(self) -> None:
+        left = "12345678901N"
+        right = "12345678902N"
+        for sep in (",", ";", "/", "|", "、", " "):
+            with self.subTest(sep=sep):
+                self.assertEqual(
+                    reference_correction_candidates(
+                        f"{left}{sep}{right}", {left, right}
+                    ),
+                    {left, right},
+                )
+
+    def test_symbol_joined_unique_candidate_is_written_back(self) -> None:
+        target = "55986838725N"
+        dirty = "0002917 55986838725M"
+        for header in HEADERS:
+            with self.subTest(header=header):
+                rows = coupon_rows(header, dirty)
+                corrected, unresolved, collisions, decisions = (
+                    matching.correct_coupon_references(rows, {target})
+                )
+                summary_index = header.index("明细摘要")
+                self.assertEqual((corrected, unresolved, collisions), (1, 0, 0))
+                self.assertEqual(rows[1][summary_index], target)
+                self.assertEqual(
+                    decisions[0][0], matching.REFERENCE_REPORT_CORRECTED
+                )
+                self.assertEqual(decisions[0][3], dirty)
+
+    def test_spaced_single_reference_still_resolves(self) -> None:
+        """Internal spaces in one reference still match via the full-cell path."""
+        target = "12345678901N"
+        self.assertEqual(
+            reference_correction_candidates("12345 678901 N", {target}),
+            {target},
+        )
+
+    def test_universe_rejects_non_n_suffix(self) -> None:
+        with self.assertRaisesRegex(ValueError, "大写字母 N"):
+            matching.build_reference_correction_index({"12345678901A"})
 
     def test_unique_candidate_is_corrected(self) -> None:
         target = "12345678901N"

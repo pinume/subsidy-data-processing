@@ -70,7 +70,7 @@ class LargeApplianceMatchOrderTest(unittest.TestCase):
     def test_supplement_wins_over_algorithmic_correction(self) -> None:
         """A row fixed by the supplement must not be rewritten by the algorithm."""
         row = coupon_row(
-            appliance.COUPON_OUTPUT_HEADER, "99999999999Z", "001", self.day
+            appliance.COUPON_OUTPUT_HEADER, "99999999999X", "001", self.day
         )
         rows = [list(appliance.COUPON_OUTPUT_HEADER), row]
         supplement = {("001", self.day): frozenset({SUPPLEMENT_REFERENCE})}
@@ -128,7 +128,7 @@ class LargeApplianceMatchOrderTest(unittest.TestCase):
 
     def test_reference_matching_nothing_is_marked_unsubmitted(self) -> None:
         row = coupon_row(
-            appliance.COUPON_OUTPUT_HEADER, "99999999999Z", "003", self.day
+            appliance.COUPON_OUTPUT_HEADER, "99999999999X", "003", self.day
         )
         rows = [list(appliance.COUPON_OUTPUT_HEADER), row]
 
