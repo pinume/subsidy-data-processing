@@ -1,6 +1,5 @@
 import os
 import shutil
-import stat
 import sys
 import time
 from collections.abc import Callable, Iterator
@@ -460,7 +459,6 @@ def remove_stale_temporary_files(
         if age_seconds < minimum_age_seconds:
             continue
         try:
-            path.chmod(path.stat().st_mode | stat.S_IWRITE)
             path.unlink()
         except OSError as error:
             failed.append((path.name, str(error)))

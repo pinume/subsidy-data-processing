@@ -281,7 +281,7 @@ def require_linux() -> None:
         raise SystemExit(2)
 
 
-def _sigterm_handler(signum: int, frame: object) -> None:
+def _sigterm_handler(_signum: int, _frame: object) -> None:
     # Reuse the KeyboardInterrupt paths already wired for Ctrl+C / cancel.
     raise KeyboardInterrupt
 
