@@ -472,25 +472,10 @@ def save_workbook_atomically(
     output_path: Path,
     validator: Callable[[Path], None],
 ) -> None:
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    temporary_path: Path | None = None
     try:
-        with NamedTemporaryFile(
-            prefix=f".{output_path.stem}-",
-            suffix=output_path.suffix,
-            dir=output_path.parent,
-            delete=False,
-        ) as temporary_file:
-            temporary_path = Path(temporary_file.name)
-
-        workbook.save(temporary_path)
-        validator(temporary_path)
-        os.replace(temporary_path, output_path)
-        temporary_path = None
+        write_xlsx_atomically(output_path, workbook.save, validator)
     finally:
         workbook.close()
-        if temporary_path is not None:
-            temporary_path.unlink(missing_ok=True)
 
 
 class OutputCleanupError(RuntimeError):
