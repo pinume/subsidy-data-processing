@@ -411,8 +411,8 @@ STALE_TEMPORARY_FILE_AGE_SECONDS = 180
 class StaleFileCleanup:
     """What startup cleanup did, reported by the caller rather than printed.
 
-    removed lists the dot-prefixed leftovers deleted; failed lists
-    (file name, reason) pairs for files that could not be removed.
+    removed lists the known output temporaries or rollback backups deleted;
+    failed lists (file name, reason) pairs for files that could not be removed.
     """
 
     removed: tuple[str, ...]
@@ -433,17 +433,18 @@ def remove_stale_temporary_files(
     those patterns, derived from the supplied output paths, are eligible. In
     particular, unrelated dot files such as ``.gitkeep`` are never touched.
 
-    Only files older than minimum_age_seconds are removed. This program was
-    never designed for two instances to run against the same output
-    directory at once, but without an age check this cleanup would make that
-    actively unsafe instead of merely unsupported: a second instance
-    starting up would delete the first instance's temporary file while it is
-    still being written, and the first instance's own save would then fail
-    trying to rename a file that no longer exists. The age check does not
-    make concurrent runs supported — it only keeps a second instance's
-    startup from corrupting a first instance's in-flight save. The default
-    (180s) is comfortably longer than any single sheet this program writes
-    has been observed to take to save.
+    Only files older than minimum_age_seconds are removed. The main entry
+    point acquires the instance lock before calling this, so a second
+    process that goes through main() cannot reach cleanup while another
+    instance still holds the lock. The age gate is a second layer for
+    direct callers and for any external process that writes into output/
+    without taking that lock: without it, such a caller could delete an
+    in-flight ``.<stem>-<random>.xlsx`` while it is still being written,
+    and the writer would then fail trying to rename a file that no longer
+    exists. The age check does not make concurrent runs supported — it
+    only limits the damage when the lock is not held. The default (180s)
+    is comfortably longer than any single sheet this program writes has
+    been observed to take to save.
     """
     if not output_dir.is_dir():
         return StaleFileCleanup((), ())
