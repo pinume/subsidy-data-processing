@@ -3,13 +3,19 @@ import signal
 import sys
 import tempfile
 import unittest
+from datetime import date
+from decimal import Decimal
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+from openpyxl import Workbook, load_workbook
+
 import main as app_main
-from processors import coupon_report
+from processors import coupon_report, store_report
 from processors.common.console import ConsoleReporter
 from processors.common.excel import OutputCleanupError, StaleFileCleanup
+from processors.coupons import appliance as coupon_appliance
+from processors.coupons import digital as coupons_digital
 
 
 class RequireLinuxTest(unittest.TestCase):
@@ -442,6 +448,368 @@ class TransactionLifecycleTest(unittest.TestCase):
         self.assertIn("备份清理失败", text)
         self.assertNotIn("本次输出已回滚", text)
         self.assertNotIn("现有输出文件保持不变", text)
+
+
+class EndToEndAllModeTest(unittest.TestCase):
+    """完整 --all 端到端：5 个模式用最小真实源文件跑通。
+
+    数据链覆盖方太品类纠正场景：审核侧 ZHLT000259 被标为厨卫/方太，回款
+    明细编码品类 A02-电冰箱 表明它是冰箱，门店报表应按参考号纠正后进入
+    方太冰箱行。
+    """
+
+    FOTILE_REFERENCE = "17914133741N"
+    HAIER_REFERENCE = "12345678901N"
+    DIGITAL_REFERENCE = "12345678902N"
+
+    def _write_mer_source(self, directory: Path, merchant: str, rows) -> Path:
+        """MER_<商户编号>_*.xlsx：标题行 + 24 列表头（D/E/F/G/I/J 语义）+ 数据。"""
+        path = directory / f"MER_{merchant}_20260801000000_yjhx.xlsx"
+        workbook = Workbook()
+        sheet = workbook.active
+        sheet.append(["报表标题"])
+        header = [f"列{i}" for i in range(24)]
+        header[3] = "订单号"
+        header[4] = "交易日期"
+        header[5] = "交易金额"
+        header[6] = "检索参考号"
+        header[8] = "状态"
+        header[9] = "描述"
+        sheet.append(header)
+        for order, reference, amount in rows:
+            row = ["v"] * 24
+            row[3] = order
+            row[4] = "2026-01-01"
+            row[5] = amount
+            row[6] = reference
+            row[8] = "审核通过"
+            row[9] = "说明"
+            sheet.append(row)
+        workbook.save(path)
+        return path
+
+    def _write_receipts_source(self, path: Path) -> None:
+        """60 列收款单统计导出：标题行 + 表头 + 数据 + 合计。"""
+        workbook = Workbook()
+        sheet = workbook.active
+        sheet.append(["收款单统计"])
+        header = [f"列{i}" for i in range(60)]
+        header[0] = "单据号"
+        header[1] = "日期"
+        header[2] = "原票号"
+        header[3] = "商品名称"
+        header[4] = "销售类别"
+        sheet.append(header)
+        row = [""] * 60
+        row[0] = "REC-1"
+        row[1] = date(2026, 1, 1)
+        row[2] = ""
+        row[3] = "海尔冰箱"
+        row[4] = "零售"
+        sheet.append(row)
+        total = [""] * 60
+        total[0] = "合计"
+        sheet.append(total)
+        workbook.save(path)
+
+    def _write_payment_source(
+        self, path: Path, profile, rows, merchant: str
+    ) -> None:
+        workbook = Workbook()
+        detail = workbook.active
+        detail.append(profile.detail_headers)
+        for reference, raw_category, product, subsidy in rows:
+            row = [None] * len(profile.detail_headers)
+            row[profile.detail_headers.index("拨付批次")] = "batch"
+            row[profile.detail_headers.index("交易时间")] = "2026-01-01 10:00:00"
+            row[profile.detail_headers.index("交易参考号")] = reference
+            row[profile.detail_headers.index("商户编号")] = merchant
+            row[profile.detail_headers.index("销售金额")] = 1000
+            row[profile.detail_headers.index("补贴金额")] = subsidy
+            row[profile.detail_headers.index("编码品类")] = raw_category
+            row[profile.detail_headers.index("商品名称")] = product
+            detail.append(row)
+        workbook.save(path)
+
+    def _write_coupon_source(self, path: Path) -> None:
+        """销售用券情况统计：标题 + 表头行（第 26/27 列为补贴列）+ 数据 + 合计。"""
+        workbook = Workbook()
+        sheet = workbook.active
+        sheet.append(["销售用券情况统计"])
+        header = [""] * 27
+        header[2] = "单据号"
+        header[3] = "单据日期"
+        header[5] = "商品名称"
+        header[7] = "品牌"
+        header[14] = "财务大类"
+        header[17] = "明细摘要"
+        header[25] = coupon_appliance.COUPON_SUBSIDY_HEADER
+        header[26] = coupons_digital.COUPON_SUBSIDY_HEADER
+        sheet.append(header)
+        sheet.append(
+            [
+                None,
+                None,
+                "0001",
+                date(2026, 1, 1),
+                None,
+                "海尔冰箱",
+                None,
+                "海尔",
+                *([None] * 6),
+                "冰箱",
+                *([None] * 2),
+                self.HAIER_REFERENCE,
+                *([None] * 7),
+                150,
+                None,
+            ]
+        )
+        sheet.append(
+            [
+                None,
+                None,
+                "ZHLT000259",
+                date(2026, 1, 1),
+                None,
+                "方太冰箱",
+                None,
+                "方太",
+                *([None] * 6),
+                "厨卫",
+                *([None] * 2),
+                self.FOTILE_REFERENCE,
+                *([None] * 7),
+                1500,
+                None,
+            ]
+        )
+        sheet.append(
+            [
+                None,
+                None,
+                "0003",
+                date(2026, 1, 2),
+                None,
+                "华为手机",
+                None,
+                "华为",
+                *([None] * 6),
+                "数码",
+                *([None] * 2),
+                self.DIGITAL_REFERENCE,
+                *([None] * 7),
+                None,
+                75,
+            ]
+        )
+        total = [None] * 27
+        total[0] = "合计"
+        total[25] = 1650
+        sheet.append(total)
+        workbook.save(path)
+
+    def _write_supplement_file(self, path: Path) -> None:
+        workbook = Workbook()
+        sheet = workbook.active
+        sheet.append(("参考号", "单据号", "单据日期"))
+        workbook.save(path)
+
+    def _write_template(self, path: Path) -> None:
+        workbook = Workbook()
+        sheet = workbook.active
+        sheet.title = "益庄"
+        for column_index in range(1, store_report.EXPECTED_COLUMN_COUNT + 1):
+            sheet.cell(
+                row=1, column=column_index, value="标题" if column_index == 1 else ""
+            )
+        for coordinate, value in store_report.TEMPLATE_STRUCTURE_CELLS.items():
+            sheet[coordinate] = value
+        for range_ in store_report.EXPECTED_MERGED_RANGES:
+            sheet.merge_cells(range_)
+        for offset, number in enumerate(
+            range(1, store_report.TOTAL_ROW - 3), start=4
+        ):
+            sheet[f"B{offset}"] = number
+        sheet.row_dimensions[store_report.TEMPLATE_VERSION_ROW].hidden = True
+        workbook.save(path)
+
+    @staticmethod
+    def _measurement_font() -> Path | None:
+        """A real font file for the patched resolve_font: PIL must open it."""
+        candidates = (
+            Path("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"),
+            Path("/usr/share/fonts/truetype/dejavu/DejaVuSerif.ttf"),
+            Path.home() / ".local/share/fonts/MapleMono-NF-CN/MapleMono-NF-CN-Regular.ttf",
+        )
+        return next((path for path in candidates if path.exists()), None)
+
+    def _patches(self, data_dir: Path, output_dir: Path, font_path: Path):
+        output_files = {
+            "appliance": output_dir / "家电_已上传.xlsx",
+            "digital": output_dir / "数码_已上传.xlsx",
+            "receipts": output_dir / "收款单统计.xlsx",
+            "payment": output_dir / "回款明细.xlsx",
+            "coupon": output_dir / "审核明细.xlsx",
+            "store": output_dir / "2026年门店国补上传及回款情况表（益庄店）.xlsx",
+        }
+        submitted_profiles = dict(app_main.submitted.PROFILES)
+        submitted_profiles["家电"] = app_main.submitted.SubmittedProfile(
+            "家电", output_files["appliance"], Decimal("0.15"), Decimal("1500")
+        )
+        submitted_profiles["数码"] = app_main.submitted.SubmittedProfile(
+            "数码", output_files["digital"], Decimal("0.15"), Decimal("500")
+        )
+        return (
+            output_files,
+            [
+                patch.object(app_main, "resolve_data_dir", return_value=data_dir),
+                patch.object(
+                    app_main,
+                    "remove_stale_temporary_files",
+                    return_value=StaleFileCleanup((), ()),
+                ),
+                patch.object(
+                    app_main, "acquire_instance_lock", return_value=MagicMock()
+                ),
+                patch.object(
+                    app_main.submitted,
+                    "OUTPUT_FILES",
+                    (output_files["appliance"], output_files["digital"]),
+                ),
+                patch.object(app_main.submitted, "PROFILES", submitted_profiles),
+                patch.object(
+                    app_main.receipts, "OUTPUT_FILE", output_files["receipts"]
+                ),
+                patch.object(
+                    app_main.payment, "OUTPUT_FILE", output_files["payment"]
+                ),
+                patch.object(
+                    coupon_report, "OUTPUT_FILE", output_files["coupon"]
+                ),
+                patch.object(
+                    coupon_report, "PAYMENT_FILE", output_files["payment"]
+                ),
+                patch.object(
+                    coupon_appliance,
+                    "COUPON_REMARK_SOURCE_FILE",
+                    output_files["receipts"],
+                ),
+                patch.object(
+                    coupon_appliance,
+                    "COUPON_UPLOADED_SOURCE_FILE",
+                    output_files["appliance"],
+                ),
+                patch.object(
+                    coupons_digital,
+                    "COUPON_REMARK_SOURCE_FILE",
+                    output_files["receipts"],
+                ),
+                patch.object(
+                    coupons_digital,
+                    "COUPON_UPLOADED_SOURCE_FILE",
+                    output_files["digital"],
+                ),
+                patch.object(store_report, "UPLOAD_FILE", output_files["coupon"]),
+                patch.object(store_report, "PAYMENT_FILE", output_files["payment"]),
+                patch.object(store_report, "OUTPUT_FILE", output_files["store"]),
+                *(
+                    patch.object(
+                        module,
+                        "resolve_font",
+                        return_value=("Maple Mono NF CN", font_path),
+                    )
+                    for module in (
+                        app_main.submitted,
+                        app_main.receipts,
+                        app_main.payment,
+                        coupon_report,
+                        store_report,
+                    )
+                ),
+            ],
+        )
+
+    def test_full_all_mode_runs_end_to_end(self) -> None:
+        font_path = self._measurement_font()
+        if font_path is None:
+            self.skipTest("无可用字体文件（端到端测试需要真实字体测宽）")
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            data_dir = base / "data"
+            data_dir.mkdir()
+            output_dir = base / "output"
+            output_dir.mkdir()
+
+            self._write_mer_source(
+                data_dir,
+                "89813015722APT1",
+                [
+                    ("ORDER-1", self.HAIER_REFERENCE, 1000),
+                    ("ORDER-2", self.FOTILE_REFERENCE, 10000),
+                ],
+            )
+            self._write_mer_source(
+                data_dir,
+                "89813014812B06R",
+                [("ORDER-3", self.DIGITAL_REFERENCE, 500)],
+            )
+            self._write_receipts_source(data_dir / "收款单统计.xlsx")
+            appliance_profile = app_main.payment.PROFILES["家电"]
+            digital_profile = app_main.payment.PROFILES["数码"]
+            self._write_payment_source(
+                data_dir / "以旧换新补贴明细.xlsx",
+                appliance_profile,
+                [
+                    (self.HAIER_REFERENCE, "A02-电冰箱", "海尔冰箱", 150),
+                    (self.FOTILE_REFERENCE, "A02-电冰箱", "方太冰箱", 1500),
+                ],
+                "89813015722APT1",
+            )
+            self._write_payment_source(
+                data_dir / "数码补贴明细.xlsx",
+                digital_profile,
+                [(self.DIGITAL_REFERENCE, "B01-手机", "华为手机", 75)],
+                "89813014812B06R",
+            )
+            self._write_coupon_source(data_dir / "销售用券情况统计.xlsx")
+            self._write_supplement_file(
+                data_dir / "新建 Microsoft Excel 工作表.xlsx"
+            )
+            self._write_template(
+                data_dir / "2026年门店国补上传及回款情况表 （益庄店）.xlsx"
+            )
+
+            output_files, patches = self._patches(data_dir, output_dir, font_path)
+            from contextlib import ExitStack
+
+            with ExitStack() as stack:
+                for patch_ in patches:
+                    stack.enter_context(patch_)
+                self.assertEqual(app_main.main(["--all"]), 0)
+
+            for name, path in output_files.items():
+                self.assertTrue(path.exists(), f"缺少输出：{name}")
+
+            # 门店报表：方太冰箱行显示纠正后的金额，厨卫方太行保持为空。
+            result = load_workbook(output_files["store"], data_only=True)
+            sheet = result[result.sheetnames[0]]
+            self.assertEqual(sheet["D4"].value, 150)
+            self.assertEqual(sheet["F4"].value, 150)
+            self.assertEqual(sheet["J4"].value, 150)
+            self.assertEqual(sheet["D15"].value, 1500)
+            self.assertEqual(sheet["F15"].value, 1500)
+            self.assertEqual(sheet["J15"].value, 1500)
+            self.assertIsNone(sheet["D29"].value)
+            self.assertIsNone(sheet["J29"].value)
+            self.assertEqual(sheet["E34"].value, 75)
+            self.assertEqual(sheet["G34"].value, 75)
+            self.assertEqual(sheet["K34"].value, 75)
+            # 表 1 总计：D/E 为家电/数码发生额，J/K 为家电/数码回款额。
+            self.assertEqual(sheet["D35"].value, 1650)
+            self.assertEqual(sheet["E35"].value, 75)
+            self.assertEqual(sheet["J35"].value, 1650)
+            self.assertEqual(sheet["K35"].value, 75)
 
 
 if __name__ == "__main__":

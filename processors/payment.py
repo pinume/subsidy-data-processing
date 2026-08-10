@@ -18,6 +18,7 @@ from openpyxl import load_workbook
 from python_calamine import CalamineWorkbook
 from xlsxwriter import Workbook
 
+from processors import submitted
 from processors.common.config import load_payment_brand_config, merchant_id
 from processors.common.console import ConsoleReporter, format_count
 from processors.common.excel import (
@@ -33,6 +34,7 @@ from processors.common.excel import (
     write_xlsx_atomically,
 )
 from processors.common.paths import find_data_files
+from processors.common.references import validated_reference
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 OUTPUT_DIR = BASE_DIR / "output"
@@ -154,6 +156,7 @@ class DetailSection:
     # Rows whose brand could not be identified from keywords or model
     # aliases; reported as a warning only when non-zero.
     unidentified_brands: int = 0
+    supplemented_references: int = 0
 
 
 @dataclass(frozen=True)
@@ -741,6 +744,57 @@ def _process_sources(
     )
 
 
+def _fill_missing_references(
+    detail: DetailSection,
+    submitted_report: submitted.SubmittedReport,
+    profile_name: str,
+) -> int:
+    """Fill blank payment references from one uniquely matching upload order."""
+    reference_index = detail.header.index("交易参考号")
+    order_index = detail.header.index("交易订单号")
+    amount_index = detail.header.index("销售金额")
+    submitted_order_index = submitted_report.header.index("订单号")
+    submitted_reference_index = submitted_report.header.index("检索参考号")
+    submitted_amount_index = submitted_report.header.index("交易金额")
+
+    rows_by_order: dict[str, list[list[object]]] = defaultdict(list)
+    for row in submitted_report.summary_rows:
+        order = str(row[submitted_order_index] or "").strip()
+        if order:
+            rows_by_order[order].append(row)
+
+    supplemented = 0
+    for row in detail.rows:
+        if str(row[reference_index] or "").strip():
+            continue
+        order = str(row[order_index] or "").strip()
+        matches = rows_by_order.get(order, [])
+        if len(matches) != 1:
+            raise ValueError(
+                f"{profile_name}回款订单 {order or '<空>'} 的交易参考号为空，"
+                f"按交易订单号在已上传数据中找到 {len(matches)} 条记录，无法唯一补全"
+            )
+        match = matches[0]
+        location = f"{profile_name}已上传数据订单 {order} 的"
+        reference = validated_reference(
+            match[submitted_reference_index],
+            location,
+        )
+        try:
+            payment_amount = Decimal(str(row[amount_index]))
+            submitted_amount = Decimal(str(match[submitted_amount_index]))
+        except (InvalidOperation, ValueError) as error:
+            raise ValueError(f"{location}交易金额无效，无法补全交易参考号") from error
+        if payment_amount != submitted_amount:
+            raise ValueError(
+                f"{profile_name}回款订单 {order} 的销售金额 {payment_amount} "
+                f"与已上传交易金额 {submitted_amount} 不一致，无法补全交易参考号"
+            )
+        row[reference_index] = reference
+        supplemented += 1
+    return supplemented
+
+
 def _classify_sources() -> dict[str, list[Path]]:
     """Group the data directory's subsidy exports by data type."""
     if not SOURCE_FILES:
@@ -763,16 +817,31 @@ def build_report() -> PaymentReport:
         sources = classified.get(profile_name)
         if not sources:
             continue
-        sections.append(
-            (
-                PROFILES[profile_name],
-                _process_sources(
-                    sources,
-                    PROFILES[profile_name],
-                    merchant_id(profile_name),
-                ),
-            )
+        profile = PROFILES[profile_name]
+        detail = _process_sources(
+            sources,
+            profile,
+            merchant_id(profile_name),
         )
+        reference_index = detail.header.index("交易参考号")
+        if any(
+            not str(row[reference_index] or "").strip()
+            for row in detail.rows
+        ):
+            submitted.configure_data_dir(DATA_DIR)
+            supplemented = _fill_missing_references(
+                detail,
+                submitted.build_report(profile_name),
+                profile_name,
+            )
+            detail = DetailSection(
+                name=detail.name,
+                header=detail.header,
+                rows=detail.rows,
+                unidentified_brands=detail.unidentified_brands,
+                supplemented_references=supplemented,
+            )
+        sections.append((profile, detail))
 
     if not sections:
         raise ValueError("没有任何明细数据可输出")
@@ -1016,6 +1085,11 @@ def process_payment_files(reporter: ConsoleReporter) -> None:
                 f"{profile.name}有 {format_count(detail.unidentified_brands)} 行"
                 "品牌未识别",
                 ("处理：品牌列为空，请在 config/payment_brands.yaml 中补充关键词",),
+            )
+        if detail.supplemented_references:
+            reporter.metric(
+                f"{profile.name}补全交易参考号",
+                f"{format_count(detail.supplemented_references)} 条",
             )
     reporter.metric("汇总", f"{format_count(report.summary_groups)} 组")
     reporter.output(OUTPUT_FILE)

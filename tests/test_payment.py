@@ -9,13 +9,14 @@ from unittest.mock import patch
 
 from openpyxl import Workbook, load_workbook
 
-from processors import payment
+from processors import payment, submitted
 
 
 def _detail_row(profile, category: str, product: str, subsidy: str | None = None):
     row = [None] * len(profile.detail_headers)
     row[profile.detail_headers.index("拨付批次")] = "batch"
     row[profile.detail_headers.index("商户编号")] = "ABC123"
+    row[profile.detail_headers.index("交易参考号")] = "12345678901N"
     row[profile.detail_headers.index("编码品类")] = category
     row[profile.detail_headers.index("商品名称")] = product
     if subsidy is not None:
@@ -32,6 +33,91 @@ def _write_source(path: Path, profile, category: str, product: str, subsidy: str
 
 
 class DetailProcessingTests(unittest.TestCase):
+    def test_fills_blank_reference_from_unique_order_with_matching_amount(self) -> None:
+        profile = payment.PROFILES["家电"]
+        detail_row = _detail_row(profile, "A04-空调", "格力空调")
+        detail_row[profile.detail_headers.index("交易参考号")] = None
+        detail_row[profile.detail_headers.index("交易订单号")] = "ORDER-1"
+        detail_row[profile.detail_headers.index("销售金额")] = 1599
+        detail = payment.DetailSection(
+            name=profile.detail_sheet_name,
+            header=profile.detail_headers + payment.DERIVED_HEADERS,
+            rows=[detail_row + ["空调", "格力"]],
+        )
+        submitted_report = submitted.SubmittedReport(
+            header=("订单号", "交易金额", "检索参考号"),
+            summary_rows=[["ORDER-1", "1599", "18048591365n"]],
+            status_rows={},
+            file_count=1,
+            data_row_count=1,
+            unknown_status_counts={},
+            unknown_status_records=(),
+            deleted_invalid_files=(),
+        )
+
+        count = payment._fill_missing_references(
+            detail, submitted_report, "家电"
+        )
+
+        self.assertEqual(count, 1)
+        self.assertEqual(
+            detail.rows[0][profile.detail_headers.index("交易参考号")],
+            "18048591365N",
+        )
+
+    def test_rejects_blank_reference_when_order_is_not_unique(self) -> None:
+        profile = payment.PROFILES["家电"]
+        detail_row = _detail_row(profile, "A04-空调", "格力空调")
+        detail_row[profile.detail_headers.index("交易参考号")] = None
+        detail_row[profile.detail_headers.index("交易订单号")] = "ORDER-1"
+        detail_row[profile.detail_headers.index("销售金额")] = 1599
+        detail = payment.DetailSection(
+            name=profile.detail_sheet_name,
+            header=profile.detail_headers + payment.DERIVED_HEADERS,
+            rows=[detail_row + ["空调", "格力"]],
+        )
+        submitted_report = submitted.SubmittedReport(
+            header=("订单号", "交易金额", "检索参考号"),
+            summary_rows=[
+                ["ORDER-1", "1599", "18048591365N"],
+                ["ORDER-1", "1599", "18048591366N"],
+            ],
+            status_rows={},
+            file_count=1,
+            data_row_count=2,
+            unknown_status_counts={},
+            unknown_status_records=(),
+            deleted_invalid_files=(),
+        )
+
+        with self.assertRaisesRegex(ValueError, "找到 2 条记录，无法唯一补全"):
+            payment._fill_missing_references(detail, submitted_report, "家电")
+
+    def test_rejects_blank_reference_when_amounts_disagree(self) -> None:
+        profile = payment.PROFILES["家电"]
+        detail_row = _detail_row(profile, "A04-空调", "格力空调")
+        detail_row[profile.detail_headers.index("交易参考号")] = None
+        detail_row[profile.detail_headers.index("交易订单号")] = "ORDER-1"
+        detail_row[profile.detail_headers.index("销售金额")] = 1599
+        detail = payment.DetailSection(
+            name=profile.detail_sheet_name,
+            header=profile.detail_headers + payment.DERIVED_HEADERS,
+            rows=[detail_row + ["空调", "格力"]],
+        )
+        submitted_report = submitted.SubmittedReport(
+            header=("订单号", "交易金额", "检索参考号"),
+            summary_rows=[["ORDER-1", "1600", "18048591365N"]],
+            status_rows={},
+            file_count=1,
+            data_row_count=1,
+            unknown_status_counts={},
+            unknown_status_records=(),
+            deleted_invalid_files=(),
+        )
+
+        with self.assertRaisesRegex(ValueError, "交易金额 1600 不一致"):
+            payment._fill_missing_references(detail, submitted_report, "家电")
+
     def test_non_target_merchant_row_only_reads_the_merchant_field(self) -> None:
         class CountingRow:
             def __init__(self, values):

@@ -18,7 +18,7 @@ import math
 from copy import copy
 from dataclasses import dataclass
 from datetime import datetime
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -34,11 +34,17 @@ from processors.common.excel import (
     save_workbook_atomically,
 )
 from processors.common.paths import find_data_files, resolve_unique_file
+from processors.common.references import normalize_reference
 from processors.coupon_report import OUTPUT_FILE as UPLOAD_FILE
 from processors.coupon_report import SUBSIDY_YEAR
 from processors.coupon_report import SUMMARY_HEADER as UPLOAD_HEADER
 from processors.coupon_report import SUMMARY_SHEET_NAME as UPLOAD_SHEET_NAME
+from processors.coupons import appliance as coupon_appliance
+from processors.coupons.matching import as_currency
+from processors.payment import APPLIANCE_CATEGORY_MAP as PAYMENT_CATEGORY_MAP
+from processors.payment import DERIVED_HEADERS as PAYMENT_DERIVED_HEADERS
 from processors.payment import OUTPUT_FILE as PAYMENT_FILE
+from processors.payment import PROFILES as PAYMENT_PROFILES
 from processors.payment import SUMMARY_HEADERS as PAYMENT_HEADER
 from processors.payment import SUMMARY_SHEET_NAME as PAYMENT_SHEET_NAME
 
@@ -56,16 +62,50 @@ DATA_NUMBER_FORMAT = "General"
 PERCENT_NUMBER_FORMAT = "0.00%"
 CURRENCY_COLUMN_WIDTH = 16.93
 CURRENCY_COLUMNS = ("D", "E", "F", "G", "J", "K")
-TOTAL_ROW = 34
+TOTAL_ROW = 35
 DETAIL_ROWS = range(4, TOTAL_ROW)
-BRAND_GROUP_TOTAL_ROW = 45
-BRAND_GROUP_DETAIL_ROWS = range(38, BRAND_GROUP_TOTAL_ROW)
-TABLE3_PROJECT_ROWS = {"家电": 49, "数码": 50}
-TABLE3_TOTAL_ROW = 51
+BRAND_GROUP_TOTAL_ROW = 46
+BRAND_GROUP_DETAIL_ROWS = range(39, BRAND_GROUP_TOTAL_ROW)
+TABLE3_PROJECT_ROWS = {"家电": 50, "数码": 51}
+TABLE3_TOTAL_ROW = 52
 EXPECTED_SHEET_COUNT = 1
 EXPECTED_COLUMN_COUNT = 13  # A..M
 EXPECTED_SHEET_TITLE = "益庄"
-MIN_TEMPLATE_ROW_COUNT = TABLE3_TOTAL_ROW
+
+# 正式模板的版本标识，写在表 3 下方一行。data/ 不进 Git，模板由操作员按
+# README 手工放入各环境，因此这个标记是防止误用旧模板的唯一防线：旧模板
+# （含手工修改版）没有它，validate_template 直接给出更换提示。
+# 版本标记行必须隐藏，否则会出现在最终报表的打印结果里。
+TEMPLATE_VERSION_CELL = "A53"
+TEMPLATE_VERSION_ROW = 53
+TEMPLATE_VERSION_MARKER = "模板版本：2026-V2"
+# 版本标记在第 53 行：模板至少 53 行，与版本契约一致。
+MIN_TEMPLATE_ROW_COUNT = TEMPLATE_VERSION_ROW
+
+# 正式模板的全部固定合并区域。校验“必须包含”——模板被改动丢失任一合并
+# 都会让标签错位（品类纵向合并、表头分组、表 3 分组），多余合并不拒绝。
+# style_id 不校验（Excel 重新保存后可能变化）。
+EXPECTED_MERGED_RANGES = frozenset(
+    {
+        "A1:M1",
+        "A2:A3",
+        "B2:B3",
+        "C2:C3",
+        "D2:E2",
+        "F2:G2",
+        "H2:I2",
+        "J2:K2",
+        "L2:M2",
+        "A4:A15",
+        "A16:A20",
+        "A21:A27",
+        "A28:A33",
+        "A35:C35",
+        "C37:H37",
+        "D48:E48",
+        "F48:G48",
+    }
+)
 
 # A handful of fixed labels that only exist in the right blank template.
 # Checked before writing (wrong/stale template must not silently produce a
@@ -73,20 +113,23 @@ MIN_TEMPLATE_ROW_COUNT = TABLE3_TOTAL_ROW
 TEMPLATE_STRUCTURE_CELLS: dict[str, str] = {
     "A2": "品类",
     "C4": "海尔/卡萨帝冰箱",
-    "A34": "费用总计",
-    "C37": "品牌",
-    "C38": "海尔系",
-    "C45": "合计",
-    "C47": "表3",
-    "D47": "审核中",
-    "F47": "未上传",
-    "D48": "数量",
-    "E48": "26年国补上传额",
-    "F48": "数量",
-    "G48": "26年国补上传额",
-    "C49": "家电",
-    "C50": "数码",
-    "C51": "合计",
+    "C15": "方太冰箱",
+    "C29": "方太",
+    "A35": "费用总计",
+    "C38": "品牌",
+    "C39": "海尔系",
+    "C46": "合计",
+    "C48": "表3",
+    "D48": "审核中",
+    "F48": "未上传",
+    "D49": "数量",
+    "E49": "26年国补上传额",
+    "F49": "数量",
+    "G49": "26年国补上传额",
+    "C50": "家电",
+    "C51": "数码",
+    "C52": "合计",
+    TEMPLATE_VERSION_CELL: TEMPLATE_VERSION_MARKER,
 }
 
 
@@ -124,6 +167,37 @@ def validate_template(workbook: Workbook) -> None:
     if sheet.max_row < MIN_TEMPLATE_ROW_COUNT:
         raise ValueError(f"空白模板行数至少应为 {MIN_TEMPLATE_ROW_COUNT}，实际为 {sheet.max_row}")
 
+    # 版本标记先行检查：旧模板（含无标记的手工修改版）在这里被明确拒绝，
+    # 而不是混入下面的通用结构错误里让人猜。
+    if sheet[TEMPLATE_VERSION_CELL].value != TEMPLATE_VERSION_MARKER:
+        raise ValueError(
+            f"空白模板版本校验失败：{TEMPLATE_VERSION_CELL} 应为"
+            f" {TEMPLATE_VERSION_MARKER!r}，实际为 {sheet[TEMPLATE_VERSION_CELL].value!r}。"
+            "请更换为新版模板（含版本标记的正式模板，见 README「门店报表模板」）"
+        )
+    if not sheet.row_dimensions[TEMPLATE_VERSION_ROW].hidden:
+        raise ValueError(
+            f"空白模板版本标记行（第 {TEMPLATE_VERSION_ROW} 行）应为隐藏，"
+            "否则会出现在报表打印结果中；请更换为新版模板"
+        )
+
+    actual_merges = {str(range_) for range_ in sheet.merged_cells.ranges}
+    missing_merges = sorted(EXPECTED_MERGED_RANGES - actual_merges)
+    if missing_merges:
+        raise ValueError(
+            "空白模板缺少合并区域：" + "、".join(missing_merges)
+            + "；请更换为新版模板"
+        )
+
+    # 明细行 4..TOTAL_ROW-1 共 31 行，序号 1..31。
+    for offset, expected in enumerate(range(1, TOTAL_ROW - 3), start=4):
+        actual = sheet[f"B{offset}"].value
+        if actual != expected:
+            raise ValueError(
+                f"空白模板序号校验失败：B{offset} 应为 {expected}，"
+                f"实际为 {actual!r}；请更换为新版模板"
+            )
+
     mismatches = [
         f"{coordinate}（应为 {expected!r}，实际为 {sheet[coordinate].value!r}）"
         for coordinate, expected in TEMPLATE_STRUCTURE_CELLS.items()
@@ -131,7 +205,8 @@ def validate_template(workbook: Workbook) -> None:
     ]
     if mismatches:
         raise ValueError(
-            "空白模板结构校验失败，可能选错了文件或模板已被改动：" + "；".join(mismatches)
+            "空白模板结构校验失败，可能选错了文件或模板已被改动，请更换为新版模板："
+            + "；".join(mismatches)
         )
 
 
@@ -157,25 +232,30 @@ ROW_RULES = (
     RowRule(12, "冰箱", ("美菱",), "冰箱", ("美菱",)),
     RowRule(13, "洗衣机", ("美菱",), "洗衣机", ("美菱",)),
     RowRule(14, "洗衣机", ("小鸭",), "洗衣机", ("小鸭",)),
-    RowRule(15, "国产彩电", ("海信",), "电视", ("海信",)),
-    RowRule(16, "国产彩电", ("创维",), "电视", ("创维",)),
-    RowRule(17, "国产彩电", ("TCL",), "电视", ("TCL",)),
-    RowRule(18, "国产彩电", ("海尔", "卡萨帝"), "电视", ("海尔", "卡萨帝")),
-    RowRule(19, "国产彩电", ("华为", "华为（终端）"), "电视", ("华为", "华为（终端）")),
-    RowRule(20, "空调", ("格力",), "空调", ("格力",)),
-    RowRule(21, "空调", ("美的",), "空调", ("美的",)),
-    RowRule(22, "空调", ("海尔", "卡萨帝"), "空调", ("海尔", "卡萨帝")),
-    RowRule(23, "空调", ("海信",), "空调", ("海信",)),
-    RowRule(24, "空调", ("奥克斯",), "空调", ("奥克斯",)),
-    RowRule(25, "空调", ("科龙",), "空调", ("科龙",)),
-    RowRule(26, "空调", ("TCL",), "空调", ("TCL",)),
-    RowRule(27, "厨卫", ("老板",), "厨卫", ("老板",)),
-    RowRule(28, "厨卫", ("方太",), "厨卫", ("方太",)),
-    RowRule(29, "厨卫", ("AO史密斯", "A.O.史密斯"), "厨卫", ("AO史密斯", "A.O.史密斯")),
-    RowRule(30, "厨卫", ("海尔", "卡萨帝"), "厨卫", ("海尔", "卡萨帝")),
-    RowRule(31, "厨卫", ("美的", "COLMO"), "厨卫", ("美的系", "美的", "COLMO")),
-    RowRule(32, "厨卫", ("万家乐",), "厨卫", ("万家乐",)),
-    RowRule(33, None, (), "数码", (), fill_digital=True),
+    # 方太冰箱：审核侧原品类为厨卫的记录由 load_upload_data 按回款明细的
+    # 交易参考号纠正为冰箱后再进入本行（见 load_payment_data 的编码品类
+    # 索引与 load_upload_data 的品类纠正），因此两侧规则都写冰箱。
+    RowRule(15, "冰箱", ("方太",), "冰箱", ("方太",)),
+    RowRule(16, "国产彩电", ("海信",), "电视", ("海信",)),
+    RowRule(17, "国产彩电", ("创维",), "电视", ("创维",)),
+    RowRule(18, "国产彩电", ("TCL",), "电视", ("TCL",)),
+    RowRule(19, "国产彩电", ("海尔", "卡萨帝"), "电视", ("海尔", "卡萨帝")),
+    RowRule(20, "国产彩电", ("华为", "华为（终端）"), "电视", ("华为", "华为（终端）")),
+    RowRule(21, "空调", ("格力",), "空调", ("格力",)),
+    RowRule(22, "空调", ("美的",), "空调", ("美的",)),
+    RowRule(23, "空调", ("海尔", "卡萨帝"), "空调", ("海尔", "卡萨帝")),
+    RowRule(24, "空调", ("海信",), "空调", ("海信",)),
+    RowRule(25, "空调", ("奥克斯",), "空调", ("奥克斯",)),
+    RowRule(26, "空调", ("科龙",), "空调", ("科龙",)),
+    RowRule(27, "空调", ("TCL",), "空调", ("TCL",)),
+    RowRule(28, "厨卫", ("老板",), "厨卫", ("老板",)),
+    # 真正的方太厨卫商品（若有）走本行；方太冰箱经参考号纠正后不再占用。
+    RowRule(29, "厨卫", ("方太",), "厨卫", ("方太",)),
+    RowRule(30, "厨卫", ("AO史密斯", "A.O.史密斯"), "厨卫", ("AO史密斯", "A.O.史密斯")),
+    RowRule(31, "厨卫", ("海尔", "卡萨帝"), "厨卫", ("海尔", "卡萨帝")),
+    RowRule(32, "厨卫", ("美的", "COLMO"), "厨卫", ("美的系", "美的", "COLMO")),
+    RowRule(33, "厨卫", ("万家乐",), "厨卫", ("万家乐",)),
+    RowRule(34, None, (), "数码", (), fill_digital=True),
 )
 
 # Every payment-file 财务大类 this report knows how to place. A category
@@ -183,6 +263,13 @@ ROW_RULES = (
 # load_payment_data.
 HOUSEHOLD_PAYMENT_CATEGORIES = frozenset({"冰箱", "洗衣机", "电视", "空调", "厨卫"})
 DIGITAL_PAYMENT_CATEGORIES = frozenset({"手机", "平板", "智能穿戴"})
+
+# 审核侧品类纠正的白名单：只有纠正目标落在 ROW_RULES 的审核侧品类内才
+# 执行纠正。回款侧“电视”对应审核侧“国产彩电”——那是两套口径的体系差异，
+# 不是错标，纠正会让纠正后的行失去规则匹配，因此这类目标品类不纠正。
+UPLOAD_CATEGORIES = frozenset(
+    rule.upload_category for rule in ROW_RULES if rule.upload_category
+)
 
 
 @dataclass(frozen=True)
@@ -205,9 +292,36 @@ class CountAmount:
     amount: Decimal
 
 
+@dataclass(frozen=True)
+class PaymentDetailRecord:
+    """回款明细「家电明细」中的一行，按交易参考号索引，用于审核侧品类纠正。
+
+    category 是由编码品类映射出的财务大类；编码品类未配置时为空，此时
+    该参考号无法参与纠正（列入人工核对）。raw_category 保留编码品类原文，
+    供纠正提示展示依据。
+    """
+
+    category: str | None
+    raw_category: str
+    brand: str
+    subsidy: Decimal
+
+
+@dataclass(frozen=True)
+class CategoryCorrection:
+    """一条已执行的审核侧品类纠正，用于控制台提示。"""
+
+    document_number: str
+    reference: str
+    brand: str
+    original_category: str
+    corrected_category: str
+    raw_payment_category: str
+
+
 BRAND_GROUP_RULES = (
     BrandGroupRule(
-        38,
+        39,
         "海尔系",
         (
             BrandGroupCategory("冰箱", "冰箱", ("海尔", "卡萨帝")),
@@ -218,7 +332,7 @@ BRAND_GROUP_RULES = (
         ),
     ),
     BrandGroupRule(
-        39,
+        40,
         "美的系",
         (
             BrandGroupCategory("冰箱", "冰箱", ("美的", "COLMO", "东芝")),
@@ -227,9 +341,9 @@ BRAND_GROUP_RULES = (
             BrandGroupCategory("厨卫", "厨卫", ("美的", "COLMO")),
         ),
     ),
-    BrandGroupRule(40, "格力", (BrandGroupCategory("空调", "空调", ("格力",)),)),
+    BrandGroupRule(41, "格力", (BrandGroupCategory("空调", "空调", ("格力",)),)),
     BrandGroupRule(
-        41,
+        42,
         "博西",
         (
             BrandGroupCategory("冰箱", "冰箱", ("西门子", "博世")),
@@ -237,16 +351,16 @@ BRAND_GROUP_RULES = (
         ),
     ),
     BrandGroupRule(
-        42,
+        43,
         "海信系",
         (
             BrandGroupCategory("国产彩电", "电视", ("海信",)),
             BrandGroupCategory("空调", "空调", ("海信", "科龙")),
         ),
     ),
-    BrandGroupRule(43, "创维", (BrandGroupCategory("国产彩电", "电视", ("创维",)),)),
+    BrandGroupRule(44, "创维", (BrandGroupCategory("国产彩电", "电视", ("创维",)),)),
     BrandGroupRule(
-        44,
+        45,
         "TCL",
         (
             BrandGroupCategory("国产彩电", "电视", ("TCL",)),
@@ -257,14 +371,29 @@ BRAND_GROUP_RULES = (
 
 
 def to_decimal(value: object) -> Decimal:
+    """Excel 浮点金额统一量化为两位小数。
+
+    源文件里 2280155.7 这类值经 IEEE-754 往返后可能带尾差
+    （2280155.70000000000101）；Decimal(str()) 会原样保留它们，导致精确
+    相等校验、比例计算和人工核对全部带上尾数。复用 as_currency 的
+    ROUND_HALF_UP 规则，与 payment/submitted 的金额口径一致。
+    """
     if value is None or value == "":
         return Decimal("0")
-    return Decimal(str(value))
+    return as_currency(Decimal(str(value)))
 
 
 def to_count(value: object) -> int:
-    count = to_decimal(value)
-    if count != count.to_integral_value():
+    """数量必须原样校验：不能用 to_decimal（量化到两位小数会把 1.004
+    变成 1.00 而漏过非整数检查），也不能接受 NaN/Infinity。非数值文本
+    （Decimal 抛 InvalidOperation）统一转成数量应为整数的 ValueError。"""
+    if value is None or value == "":
+        return 0
+    try:
+        count = Decimal(str(value))
+    except InvalidOperation:
+        raise ValueError(f"数量应为整数，实际为 {value!r}") from None
+    if not count.is_finite() or count != count.to_integral_value():
         raise ValueError(f"数量应为整数，实际为 {value!r}")
     return int(count)
 
@@ -364,72 +493,378 @@ def _validate_header(
         )
 
 
+def _build_payment_detail_index(
+    rows: list[list[object]],
+) -> tuple[
+    dict[str, PaymentDetailRecord],
+    dict[str, tuple[PaymentDetailRecord, ...]],
+]:
+    """按交易参考号索引回款明细「家电明细」行，供审核侧品类纠正使用。
+
+    - 参考号唯一 → index[ref] = 记录
+    - 同参考号多条但 (品类, 品牌) 相同（如一笔销售加一笔冲正，正负成对）→
+      记入 ambiguous_refs，纠正阶段仅在回款品类与审核品类不同时提示
+    - 同参考号多条且 (品类, 品牌) 不同 → 记入 ambiguous_refs 的完整集合
+    - 编码品类不在 PAYMENT_CATEGORY_MAP → 记录 category 为空，纠正阶段
+      列入人工核对，不自动纠正
+    - 编码品类映射结果与明细财务大类不一致 → 直接报错：口径漂移不能猜测
+    """
+    detail_header = PAYMENT_PROFILES["家电"].detail_headers + PAYMENT_DERIVED_HEADERS
+    positions = {name: index for index, name in enumerate(detail_header)}
+    reference_index = positions["交易参考号"]
+    raw_category_index = positions["编码品类"]
+    category_index = positions["财务大类"]
+    brand_index = positions["品牌"]
+    subsidy_index = positions["补贴金额"]
+
+    grouped: dict[str, list[PaymentDetailRecord]] = {}
+    for row in rows[1:]:
+        reference = normalize_reference(row[reference_index])
+        if not reference:
+            continue  # 空参考号行不参与纠正
+        raw_category = normalize_text(row[raw_category_index])
+        category = normalize_text(row[category_index])
+        brand = normalize_text(row[brand_index])
+        mapped = PAYMENT_CATEGORY_MAP.get(raw_category)
+        if mapped is not None and mapped != category:
+            raise ValueError(
+                f"回款明细编码品类 {raw_category!r} 映射为财务大类 {mapped!r}，"
+                f"与明细行财务大类 {category!r} 不一致；"
+                "请检查 config/payment_brands.yaml 的 categories.appliance"
+            )
+        grouped.setdefault(reference, []).append(
+            PaymentDetailRecord(
+                category=mapped,
+                raw_category=raw_category,
+                brand=brand,
+                subsidy=to_decimal(row[subsidy_index]),
+            )
+        )
+
+    index: dict[str, PaymentDetailRecord] = {}
+    ambiguous: dict[str, tuple[PaymentDetailRecord, ...]] = {}
+    for reference, records in grouped.items():
+        # dict.fromkeys 保留源文件行序去重（set 迭代顺序不稳定，提示候选
+        # 会随机排序）。
+        distinct = list(dict.fromkeys(records))
+        if len(distinct) == 1:
+            index[reference] = distinct[0]
+        else:
+            ambiguous[reference] = tuple(distinct)
+    return index, ambiguous
+
+
+def _correct_upload_category(
+    document_number: str,
+    category: str,
+    brand: str,
+    amount: Decimal,
+    reference: str,
+    payment_index: dict[str, PaymentDetailRecord],
+    ambiguous_refs: dict[str, tuple[PaymentDetailRecord, ...]],
+) -> tuple[str, PaymentDetailRecord | None, tuple[str, tuple[str, ...]] | None]:
+    """按回款明细的交易参考号纠正一条审核记录的品类。
+
+    返回 (纠正后品类, 命中的回款记录, 人工核对提示)。不纠正的情形：
+    - 参考号为空或未匹配回款记录：保留原品类（未回款是常态，不提示）
+    - 回款品类与审核品类相同：无需纠正
+    - 回款品类不在审核侧行规则白名单（电视↔国产彩电是两套口径的差异）：
+      不纠正也不提示
+    - 品牌不一致 / 补贴金额不一致 / 编码品类未配置 / 参考号对应多条回款
+      记录且回款品类唯一：不纠正，列入人工核对
+    """
+    if not reference:
+        return category, None, None
+
+    record = payment_index.get(reference)
+    if record is not None:
+        if record.category is None:
+            return category, record, (
+                "审核明细品类纠正未执行：编码品类未配置",
+                (f"{document_number}｜{reference}｜品牌 {brand}",),
+            )
+        if record.category == category:
+            return category, record, None
+        if record.category not in UPLOAD_CATEGORIES:
+            return category, record, None
+        if record.brand != brand:
+            return category, record, (
+                "审核明细品类纠正未执行：品牌不一致",
+                (
+                    f"{document_number}｜{reference}｜审核侧品牌 {brand}"
+                    f" vs 回款侧品牌 {record.brand}",
+                ),
+            )
+        if record.subsidy != amount:
+            return category, record, (
+                "审核明细品类纠正未执行：补贴金额不一致",
+                (
+                    f"{document_number}｜{reference}｜审核侧 {amount}"
+                    f" vs 回款侧 {record.subsidy}",
+                ),
+            )
+        return record.category, record, None
+
+    records = ambiguous_refs.get(reference)
+    if records is not None:
+        categories = {record.category for record in records if record.category is not None}
+        if len(categories) == 1:
+            # 候选品类唯一（如一笔销售加一笔冲正的正负对）：仅当与审核
+            # 品类不同且目标在白名单内才提示，避免常态冲正刷屏。
+            only = next(iter(categories))
+            if category not in categories and only in UPLOAD_CATEGORIES:
+                return category, None, (
+                    "审核明细品类纠正未执行：参考号对应多条回款记录",
+                    (f"{document_number}｜{reference}｜品牌 {brand}",),
+                )
+        else:
+            # 多个候选品类（或全部未配置）：无法唯一确定，必须人工核对，
+            # 列出全部候选，绝不自动纠正。
+            candidates = "；".join(
+                f"{record.raw_category}｜{record.brand}｜{record.subsidy}"
+                for record in records
+            )
+            return category, None, (
+                "审核明细品类纠正未执行：参考号对应多个编码品类",
+                (
+                    f"{document_number}｜{reference}｜品牌 {brand}",
+                    f"回款候选：{candidates}",
+                ),
+            )
+    return category, None, None
+
+
+def _amount_difference_items(
+    detail: dict[tuple[str, str], dict[str, Decimal]],
+    summary: dict[tuple[str, str], dict[str, Decimal]],
+) -> list[str]:
+    """两份品牌金额字典的差异描述：缺的键、多的键、金额不同的键。
+
+    全量字典不适合进错误消息（真实数据几十个品牌，每个键带两份子字典
+    会让报错刷屏），只产出人类可读的单行差异项。
+    """
+    items: list[str] = []
+    for key in sorted(set(summary) - set(detail)):
+        items.append(f"{key[0]}/{key[1]}：仅汇总存在")
+    for key in sorted(set(detail) - set(summary)):
+        items.append(f"{key[0]}/{key[1]}：仅明细存在")
+    for key in sorted(set(detail) & set(summary)):
+        for status in ("已上传", "未上传"):
+            detail_amount = detail[key].get(status, Decimal("0"))
+            summary_amount = summary[key].get(status, Decimal("0"))
+            if detail_amount != summary_amount:
+                items.append(
+                    f"{key[0]}/{key[1]}/{status}：明细 {detail_amount}，汇总 {summary_amount}"
+                )
+    return items
+
+
+def _aggregate_upload_detail(
+    detail_rows: list[list[object]],
+    payment_index: dict[str, PaymentDetailRecord],
+    ambiguous_refs: dict[str, tuple[PaymentDetailRecord, ...]],
+) -> tuple[
+    dict[tuple[str, str], dict[str, Decimal]],  # 纠正前
+    dict[tuple[str, str], dict[str, Decimal]],  # 纠正后
+    list[CategoryCorrection],
+    list[tuple[str, tuple[str, ...]]],
+]:
+    """从审核明细「家电-明细总表」逐行聚合品牌金额，并按参考号纠正品类。
+
+    与数据汇总品牌行的口径一致：仅备注为已上传/未上传的行计入，错分类到
+    数码的行与退换货/倒票行不计入。逐行聚合使品类纠正天然按行生效——
+    同 (原品类, 品牌) 下部分行被纠正、部分行保留，各自落入对应报表行。
+    """
+    header = coupon_appliance.COUPON_OUTPUT_HEADER
+    positions = {name: index for index, name in enumerate(header)}
+    document_index = positions["单据号"]
+    category_index = positions["财务大类"]
+    brand_index = positions["品牌"]
+    reference_index = positions["明细摘要"]
+    subsidy_index = positions[header[6]]
+    remark_index = positions["备注"]
+
+    pre_amounts: dict[tuple[str, str], dict[str, Decimal]] = {}
+    amounts: dict[tuple[str, str], dict[str, Decimal]] = {}
+    corrections: list[CategoryCorrection] = []
+    reviews: list[tuple[str, tuple[str, ...]]] = []
+
+    for row in detail_rows[1:]:
+        category = normalize_text(row[category_index])
+        brand = normalize_text(row[brand_index])
+        remark = normalize_text(row[remark_index])
+        if category == "数码" or remark not in ("已上传", "未上传"):
+            continue
+        amount = to_decimal(row[subsidy_index])
+        reference = normalize_reference(row[reference_index])
+        document_number = str(row[document_index] or "")
+
+        # 纠正前聚合：与数据汇总品牌行逐键比对（load_upload_data 内校验），
+        # 任何一行被意外跳过、状态改名或品牌归一化漂移都会在这里暴露。
+        pre_bucket = pre_amounts.setdefault(
+            (category, brand),
+            {"已上传": Decimal("0"), "未上传": Decimal("0")},
+        )
+        pre_bucket[remark] = pre_bucket.get(remark, Decimal("0")) + amount
+
+        corrected_category, record, review = _correct_upload_category(
+            document_number,
+            category,
+            brand,
+            amount,
+            reference,
+            payment_index,
+            ambiguous_refs,
+        )
+        if review is not None:
+            reviews.append(review)
+        if record is not None and corrected_category != category:
+            corrections.append(
+                CategoryCorrection(
+                    document_number=document_number,
+                    reference=reference,
+                    brand=brand,
+                    original_category=category,
+                    corrected_category=corrected_category,
+                    raw_payment_category=record.raw_category,
+                )
+            )
+
+        key = (corrected_category, brand)
+        bucket = amounts.setdefault(
+            key,
+            {"已上传": Decimal("0"), "未上传": Decimal("0")},
+        )
+        bucket[remark] = bucket.get(remark, Decimal("0")) + amount
+
+    return pre_amounts, amounts, corrections, reviews
+
+
 def load_upload_data(
     upload_file: Path = UPLOAD_FILE,
+    payment_index: dict[str, PaymentDetailRecord] | None = None,
+    ambiguous_refs: dict[str, tuple[PaymentDetailRecord, ...]] | None = None,
 ) -> tuple[
     dict[tuple[str, str], dict[str, Decimal]],
     dict[str, Decimal],
     dict[str, dict[str, CountAmount]],
+    list[CategoryCorrection],
+    list[tuple[str, tuple[str, ...]]],
 ]:
+    """读审核明细的两个工作表：数据汇总（项目行、数码口径、品牌金额基准）
+    与家电-明细总表（品牌金额的行级聚合 + 按回款参考号的品类纠正）。
+
+    品牌行的权威来源是明细总表而不是数据汇总——只有明细行才携带交易参考号，
+    品类纠正必须发生在行级。但数据汇总的品牌行保留为校验基准：与明细聚合的
+    纠正前金额逐键比对，任何一行被意外跳过、状态改名或品牌归一化漂移都会
+    在这里报错而不是静默产出偏差报表。
+    """
+    payment_index = payment_index or {}
+    ambiguous_refs = ambiguous_refs or {}
     workbook = _open_source_workbook(upload_file, "审核明细", "审核明细（销售用券情况统计）")
     try:
         rows = _sheet_rows_or_raise(workbook, UPLOAD_SHEET_NAME, upload_file.name, "审核明细")
         _validate_header(rows, UPLOAD_HEADER, upload_file.name, "审核明细")
-        header_width = len(UPLOAD_HEADER)
-
-        amounts: dict[tuple[str, str], dict[str, Decimal]] = {}
-        current_category = ""
-        current_brand = ""
-        digital_uploaded = Decimal("0")
-        digital_not_uploaded = Decimal("0")
-        digital_total: Decimal | None = None
-        project_metrics: dict[str, dict[str, CountAmount]] = {
-            "家电": {},
-            "数码": {},
-        }
-
-        for row in (r[:header_width] for r in rows[1:]):
-            category_raw, brand_raw, status_raw, count_raw, amount_raw = row
-            if category_raw:
-                current_category = normalize_text(category_raw)
-                if not brand_raw:
-                    current_brand = ""
-            if brand_raw:
-                current_brand = normalize_text(brand_raw)
-            if current_category in {"财务大类", "合计"}:
-                current_brand = ""
-                continue
-
-            status = normalize_text(status_raw)
-            amount = to_decimal(amount_raw)
-
-            if current_category in project_metrics and not current_brand:
-                if status in {"已上传", "未上传", "合计"}:
-                    project_metrics[current_category][status] = CountAmount(
-                        to_count(count_raw),
-                        amount,
-                    )
-                if current_category == "数码":
-                    if status == "已上传":
-                        digital_uploaded += amount
-                    elif status == "未上传":
-                        digital_not_uploaded += amount
-                    elif status == "合计":
-                        digital_total = amount
-                continue
-
-            if not current_brand:
-                continue
-
-            brand = current_brand
-            key = (current_category, brand)
-            bucket = amounts.setdefault(
-                key,
-                {"已上传": Decimal("0"), "未上传": Decimal("0")},
-            )
-            bucket[status] = bucket.get(status, Decimal("0")) + amount
+        detail_rows = _sheet_rows_or_raise(
+            workbook,
+            coupon_appliance.DETAILS_SHEET_NAME,
+            upload_file.name,
+            "审核明细",
+        )
+        _validate_header(
+            detail_rows,
+            coupon_appliance.COUPON_OUTPUT_HEADER,
+            upload_file.name,
+            "审核明细",
+        )
     finally:
         workbook.close()
+
+    header_width = len(UPLOAD_HEADER)
+    current_category = ""
+    current_brand = ""
+    digital_uploaded = Decimal("0")
+    digital_not_uploaded = Decimal("0")
+    digital_total: Decimal | None = None
+    project_metrics: dict[str, dict[str, CountAmount]] = {
+        "家电": {},
+        "数码": {},
+    }
+    summary_amounts: dict[tuple[str, str], dict[str, Decimal]] = {}
+
+    for row in (r[:header_width] for r in rows[1:]):
+        category_raw, brand_raw, status_raw, count_raw, amount_raw = row
+        if category_raw:
+            current_category = normalize_text(category_raw)
+            if not brand_raw:
+                current_brand = ""
+        if brand_raw:
+            current_brand = normalize_text(brand_raw)
+        if current_category in {"财务大类", "合计"}:
+            current_brand = ""
+            continue
+
+        status = normalize_text(status_raw)
+        amount = to_decimal(amount_raw)
+
+        if current_category in project_metrics and not current_brand:
+            if status in {"已上传", "未上传", "合计"}:
+                project_metrics[current_category][status] = CountAmount(
+                    to_count(count_raw),
+                    amount,
+                )
+            if current_category == "数码":
+                if status == "已上传":
+                    digital_uploaded += amount
+                elif status == "未上传":
+                    digital_not_uploaded += amount
+                elif status == "合计":
+                    digital_total = amount
+            continue
+
+        if not current_brand or status not in ("已上传", "未上传"):
+            continue
+        key = (current_category, current_brand)
+        bucket = summary_amounts.setdefault(
+            key,
+            {"已上传": Decimal("0"), "未上传": Decimal("0")},
+        )
+        bucket[status] = bucket.get(status, Decimal("0")) + amount
+
+    pre_amounts, amounts, corrections, reviews = _aggregate_upload_detail(
+        detail_rows,
+        payment_index,
+        ambiguous_refs,
+    )
+
+    if pre_amounts != summary_amounts:
+        differences = _amount_difference_items(pre_amounts, summary_amounts)
+        shown = differences[:5]
+        remainder = len(differences) - len(shown)
+        suffix = f"；……其余 {remainder} 项" if remainder else ""
+        raise ValueError(
+            f"{upload_file.name} 审核明细品牌金额不一致，共 {len(differences)} 项"
+            f"（明细状态改名、行被跳过或品牌归一化漂移）："
+            + "；".join(shown)
+            + suffix
+        )
+
+    # 品类纠正只改键不改金额：纠正前后各状态总额必须守恒，防止纠正逻辑
+    # 造成金额重复或丢失。
+    for status in ("已上传", "未上传"):
+        pre_total = sum(
+            (bucket.get(status, Decimal("0")) for bucket in pre_amounts.values()),
+            Decimal("0"),
+        )
+        post_total = sum(
+            (bucket.get(status, Decimal("0")) for bucket in amounts.values()),
+            Decimal("0"),
+        )
+        if pre_total != post_total:
+            raise ValueError(
+                f"{upload_file.name} 品类纠正前后 {status} 金额不守恒："
+                f"纠正前 {pre_total}，纠正后 {post_total}"
+            )
 
     digital_totals = {
         "发生额": digital_total or digital_uploaded + digital_not_uploaded,
@@ -448,7 +883,7 @@ def load_upload_data(
                 f"{'、'.join(sorted(missing_statuses))}"
             )
 
-    return amounts, digital_totals, project_metrics
+    return amounts, digital_totals, project_metrics, corrections, reviews
 
 
 def load_payment_data(
@@ -457,7 +892,14 @@ def load_payment_data(
     dict[tuple[str, str], Decimal],
     Decimal,
     dict[str, CountAmount],
+    dict[str, PaymentDetailRecord],
+    dict[str, tuple[PaymentDetailRecord, ...]],
 ]:
+    """读回款明细：汇总（品牌金额、项目计数）与家电明细（编码品类索引）。
+
+    编码品类索引供 load_upload_data 按交易参考号纠正审核侧品类——回款明细
+    的编码品类（A02-电冰箱 → 冰箱）是权威口径，审核明细的财务大类偶有错标。
+    """
     workbook = _open_source_workbook(payment_file, "回款明细", "回款明细（家电+数码）")
     try:
         rows = _sheet_rows_or_raise(workbook, PAYMENT_SHEET_NAME, payment_file.name, "回款明细")
@@ -508,10 +950,25 @@ def load_payment_data(
                     "需先确认业务口径（单独一行/并入数码/不纳入报表），"
                     "再把该品类加入 HOUSEHOLD_PAYMENT_CATEGORIES 或 DIGITAL_PAYMENT_CATEGORIES"
                 )
+
+        detail_sheet_name = PAYMENT_PROFILES["家电"].detail_sheet_name
+        detail_rows = _sheet_rows_or_raise(
+            workbook,
+            detail_sheet_name,
+            payment_file.name,
+            "回款明细",
+        )
+        _validate_header(
+            detail_rows,
+            PAYMENT_PROFILES["家电"].detail_headers + PAYMENT_DERIVED_HEADERS,
+            payment_file.name,
+            "回款明细",
+        )
+        payment_index, ambiguous_refs = _build_payment_detail_index(detail_rows)
     finally:
         workbook.close()
 
-    return amounts, digital_amount, project_metrics
+    return amounts, digital_amount, project_metrics, payment_index, ambiguous_refs
 
 
 def sum_upload_amount(
@@ -971,12 +1428,43 @@ def validate_output(
         workbook.close()
 
 
+def report_category_corrections(
+    reporter: ConsoleReporter,
+    corrections: list[CategoryCorrection],
+) -> None:
+    """One consolidated corrected() block: every executed 品类纠正 with its 依据."""
+    if not corrections:
+        return
+    details: list[str] = []
+    for correction in corrections:
+        details.append(
+            f"{correction.document_number}｜{correction.reference}｜"
+            f"{correction.brand}｜{correction.original_category}"
+            f" → {correction.corrected_category}"
+        )
+        details.append(
+            f"依据：回款明细编码品类 {correction.raw_payment_category}"
+        )
+    reporter.corrected(f"审核明细品类纠正：{len(corrections)} 条", tuple(details))
+
+
 def process_store_report(reporter: ConsoleReporter) -> None:
     timestamp = current_timestamp()
     font_name, _ = resolve_font()
-    upload_data, digital_upload, upload_metrics = load_upload_data(UPLOAD_FILE)
-    payment_data, digital_payment, payment_metrics = load_payment_data(PAYMENT_FILE)
+    payment_data, digital_payment, payment_metrics, payment_index, ambiguous_refs = (
+        load_payment_data(PAYMENT_FILE)
+    )
+    (
+        upload_data,
+        digital_upload,
+        upload_metrics,
+        category_corrections,
+        review_items,
+    ) = load_upload_data(UPLOAD_FILE, payment_index, ambiguous_refs)
     validate_rule_coverage(upload_data, payment_data)
+    report_category_corrections(reporter, category_corrections)
+    for title, details in review_items:
+        reporter.review_required(title, details)
 
     template_file = resolve_template_file()
     workbook = load_workbook(template_file)
