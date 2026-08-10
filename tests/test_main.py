@@ -280,6 +280,41 @@ class MainErrorHandlingTest(unittest.TestCase):
         self.assertTrue(ran["all"])
 
 
+class LockBeforeCleanupTest(unittest.TestCase):
+    def test_lock_failure_skips_stale_file_cleanup(self) -> None:
+        class Selection:
+            is_all = False
+            step_label = "测试模式"
+
+            def run(self, reporter) -> None:
+                raise AssertionError("锁失败后不应开始处理")
+
+        with (
+            patch.object(app_main, "resolve_data_dir", return_value=Path("data")),
+            patch.object(app_main.submitted, "configure_data_dir"),
+            patch.object(app_main.receipts, "configure_data_dir"),
+            patch.object(app_main.coupon_sources, "configure_data_dir"),
+            patch.object(app_main.payment, "configure_data_dir"),
+            patch.object(app_main.store_report, "configure_data_dir"),
+            patch.object(
+                app_main,
+                "resolve_selection",
+                return_value=Selection(),
+            ),
+            patch.object(
+                app_main,
+                "acquire_instance_lock",
+                side_effect=SystemExit(3),
+            ),
+            patch.object(app_main, "remove_stale_temporary_files") as cleanup,
+        ):
+            with self.assertRaises(SystemExit) as raised:
+                app_main.main(["--mode", "1"])
+
+        self.assertEqual(raised.exception.code, 3)
+        cleanup.assert_not_called()
+
+
 class TransactionLifecycleTest(unittest.TestCase):
     """process_all's console lifecycle: success only after commit, failures
     and cancellations flush concerns, and a post-commit cleanup failure is

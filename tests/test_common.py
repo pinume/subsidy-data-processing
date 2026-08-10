@@ -28,23 +28,36 @@ from processors.common.excel import (
 
 
 class RemoveStaleTemporaryFilesTest(unittest.TestCase):
-    def test_removes_only_dot_prefixed_files(self) -> None:
+    def test_removes_only_known_xlsx_temporaries_and_rollbacks(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             output_dir = Path(directory)
+            known_outputs = (
+                output_dir / "收款单统计.xlsx",
+                output_dir / "2026年数码补贴明细.xlsx",
+            )
             keep = (
                 "回款明细.xlsx",
                 "家电_已上传.xlsx",
-                "~$回款明细.xlsx",
+                "~$回款单统计.xlsx",
+                ".gitkeep",
+                ".未知输出-evx66gk1.xlsx",
+                ".收款单统计-人工备份.xlsx",
+                ".收款单统计-evx66gk1.txt",
             )
             remove = (
                 ".收款单统计-evx66gk1.xlsx",
-                ".2026年数码补贴明细.xlsx.working.xlsx",
+                ".收款单统计-rollback-abc12345.xlsx",
+                ".2026年数码补贴明细-random12.xlsx",
             )
             for name in (*keep, *remove):
                 (output_dir / name).write_bytes(b"x")
             (output_dir / ".子目录").mkdir()
 
-            removed = remove_stale_temporary_files(output_dir, minimum_age_seconds=0)
+            removed = remove_stale_temporary_files(
+                output_dir,
+                known_outputs,
+                minimum_age_seconds=0,
+            )
 
             self.assertEqual(sorted(removed.removed), sorted(remove))
             self.assertEqual(removed.failed, ())
@@ -55,7 +68,10 @@ class RemoveStaleTemporaryFilesTest(unittest.TestCase):
 
     def test_missing_output_directory_is_not_an_error(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
-            cleanup = remove_stale_temporary_files(Path(directory) / "output")
+            cleanup = remove_stale_temporary_files(
+                Path(directory) / "output",
+                (),
+            )
             self.assertEqual(cleanup.removed, ())
             self.assertEqual(cleanup.failed, ())
 
@@ -70,7 +86,9 @@ class RemoveStaleTemporaryFilesTest(unittest.TestCase):
             in_flight.write_bytes(b"x")
 
             removed = remove_stale_temporary_files(
-                output_dir, minimum_age_seconds=180
+                output_dir,
+                (output_dir / "收款单统计.xlsx",),
+                minimum_age_seconds=180,
             )
 
             self.assertEqual(removed.removed, ())

@@ -296,8 +296,8 @@ def acquire_instance_lock(
     """Exclusive non-blocking flock; raise SystemExit(3) if another instance holds it.
 
     The returned file object must stay open for the lock lifetime (fcntl
-    releases on close). Lock path must not be a dot-prefixed file under
-    output/, or startup cleanup could remove it.
+    releases on close). Keep the lock path outside output/ so it cannot be
+    confused with a generated output temporary or rollback backup.
     """
     path = lock_path if lock_path is not None else LOCK_PATH
     lock_file = open(path, "a+", encoding="utf-8")
@@ -340,10 +340,23 @@ def main(argv: Sequence[str] | None = None) -> int:
         payment.configure_data_dir(data_dir)
         store_report.configure_data_dir(data_dir)
 
-        # Every pipeline writes into the same output directory and cleans up
-        # after itself; anything dot-prefixed still sitting there is from a run
-        # that was interrupted before it could.
-        cleanup = remove_stale_temporary_files(submitted.OUTPUT_DIR)
+        # Resolve the operator's choice before taking the lock, so opening the
+        # menu or choosing 0 never blocks other instances.
+        selection = resolve_selection(args)
+        if selection is None:
+            return 0
+
+        # Lock before startup cleanup. A second process must not remove stale
+        # files while an existing process is still using them.
+        global _instance_lock_file
+        _instance_lock_file = acquire_instance_lock()
+
+        # Every pipeline writes into the same output directory. Only temporary
+        # files belonging to those known output paths are eligible for cleanup.
+        cleanup = remove_stale_temporary_files(
+            submitted.OUTPUT_DIR,
+            all_output_files(),
+        )
         if cleanup.removed:
             reporter.metric(
                 "已清理残留临时文件",
@@ -354,15 +367,6 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "无法删除残留临时文件",
                 (f"文件：{name}", f"原因：{reason}"),
             )
-
-        selection = resolve_selection(args)
-        if selection is None:
-            return 0
-
-        # Lock only after the operator (or CLI) has committed to a run, so
-        # opening the menu or choosing 0 never blocks other instances.
-        global _instance_lock_file
-        _instance_lock_file = acquire_instance_lock()
     except KeyboardInterrupt:
         print("\n处理已取消", file=sys.stderr)
         return 130

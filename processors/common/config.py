@@ -96,20 +96,30 @@ def load_merchants() -> dict[str, str]:
     The two subsidy programs number the same store differently, so the id is
     per data type rather than per store. Both pipelines read it from here:
     回款明细 filters source rows by it, and 已上传数据 locates its export files
-    by it (see submitted_file_marker).
+    by it (see submitted_file_marker). Both required IDs are validated as
+    non-empty strings before they are returned, so callers never build a
+    marker such as ``MER_None`` from malformed YAML.
     """
     if not MERCHANTS_FILE.exists():
         raise FileNotFoundError(f"未找到商户编号配置文件：{MERCHANTS_FILE}")
 
-    with MERCHANTS_FILE.open("r", encoding="utf-8") as file:
-        config = yaml.safe_load(file) or {}
-
+    config = _load_yaml_mapping(MERCHANTS_FILE)
     merchants = config.get("merchants") or {}
     if not isinstance(merchants, dict):
         raise ValueError(
             f"{MERCHANTS_FILE.name} 的 merchants 应为「数据类型: 商户编号」映射"
         )
-    return {str(key).strip(): str(value).strip() for key, value in merchants.items()}
+
+    validated = _string_mapping(
+        merchants,
+        f"{MERCHANTS_FILE.name} 的 merchants",
+    )
+    for data_type in ("家电", "数码"):
+        if data_type not in validated:
+            raise ValueError(
+                f"{MERCHANTS_FILE.name} 缺少{data_type}的商户编号"
+            )
+    return validated
 
 
 def merchant_id(data_type: str) -> str:

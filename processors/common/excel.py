@@ -1,8 +1,9 @@
 import os
+import re
 import shutil
 import sys
 import time
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass
 from datetime import date, datetime
 from pathlib import Path
@@ -420,16 +421,17 @@ class StaleFileCleanup:
 
 def remove_stale_temporary_files(
     output_dir: Path,
+    output_paths: Iterable[Path],
     minimum_age_seconds: float = STALE_TEMPORARY_FILE_AGE_SECONDS,
 ) -> StaleFileCleanup:
-    """Delete leftover intermediate files from an interrupted earlier run.
+    """Delete known output temporaries left by an interrupted earlier run.
 
-    Everything this program writes into the output directory as an
-    intermediate is dot-prefixed: save_workbook_atomically's ".<名字>-<随机>"
-    temporary file. It is removed on a normal run; a crash or a killed
-    process leaves it behind, where it accumulates invisibly and still holds
-    business data. Excel's own lock files are named "~$...", so they are
-    never touched.
+    Atomic XLSX writes use names of the form
+    ``.<output-stem>-<8-char random>.xlsx``; the multi-output rollback
+    transaction uses ``.<output-stem>-rollback-<8-char random>.xlsx``. The
+    random part is the exact ``[a-z0-9_]`` alphabet used by tempfile. Only
+    those patterns, derived from the supplied output paths, are eligible. In
+    particular, unrelated dot files such as ``.gitkeep`` are never touched.
 
     Only files older than minimum_age_seconds are removed. This program was
     never designed for two instances to run against the same output
@@ -446,11 +448,24 @@ def remove_stale_temporary_files(
     if not output_dir.is_dir():
         return StaleFileCleanup((), ())
 
+    temporary_patterns = tuple(
+        re.compile(
+            rf"\.{re.escape(output_path.stem)}-"
+            rf"(?:rollback-)?[a-z0-9_]{{8}}\.xlsx"
+        )
+        for output_path in map(Path, output_paths)
+        if output_path.suffix.lower() == ".xlsx"
+    )
+    if not temporary_patterns:
+        return StaleFileCleanup((), ())
+
     now = time.time()
     removed: list[str] = []
     failed: list[tuple[str, str]] = []
     for path in sorted(output_dir.iterdir()):
-        if not path.is_file() or not path.name.startswith("."):
+        if not path.is_file() or not any(
+            pattern.fullmatch(path.name) for pattern in temporary_patterns
+        ):
             continue
         try:
             age_seconds = now - path.stat().st_mtime
