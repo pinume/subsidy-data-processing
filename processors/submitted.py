@@ -94,12 +94,10 @@ class SubmittedReport:
     status_rows: dict[str, list[list[object]]]
     file_count: int
     data_row_count: int
-    # Statuses the export carried that STATUS_ORDER does not name, counted per
-    # status. Those rows reach Summary but no status sheet, so without this
+    # Rows whose status STATUS_ORDER does not name, with their source
+    # location, for the console warning only (see UnknownStatusRecord).
+    # Those rows reach Summary but no status sheet, so without the warning
     # they are invisible to an operator working from the status tabs.
-    unknown_status_counts: dict[str, int]
-    # The same rows as records with their source location, for the console
-    # warning only (see UnknownStatusRecord).
     unknown_status_records: tuple[UnknownStatusRecord, ...]
     # Invalid exports (no worksheets). Deletion is deferred to
     # process_submitted_files, after every input has been validated, so the
@@ -349,10 +347,6 @@ def build_report(
         status = str(row[status_column_index] or "")
         if status in rows_by_status:
             rows_by_status[status].append(row)
-    unknown_status_counts = Counter(
-        record.status for record in unknown_status_records
-    )
-
     for status in STATUS_ORDER:
         status_rows = rows_by_status[status]
         status_rows.sort(
@@ -369,7 +363,6 @@ def build_report(
         status_rows=rows_by_status,
         file_count=valid_file_count,
         data_row_count=data_row_count,
-        unknown_status_counts=dict(unknown_status_counts),
         unknown_status_records=tuple(unknown_status_records),
         deleted_invalid_files=tuple(deleted_invalid_files),
     )

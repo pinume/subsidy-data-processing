@@ -331,10 +331,7 @@ def prepare_receipt_data(kept_rows: list[list[object]], source_name: str):
     key_rows: dict[str, list[int]] = {}
     referenced_original_invoice_numbers: set[str] = set()
     bridge_originals_by_match_key: dict[str, set[str]] = {}
-    excluded_product_count = 0
     excluded_product_records: list[ExcludedProductRecord] = []
-    blank_row_count = 0
-    total_row_count = 0
 
     # start=3 because kept_rows[0] is the field header (Excel row 2) and the
     # export opens with a title row; every row read stays at its original
@@ -342,15 +339,12 @@ def prepare_receipt_data(kept_rows: list[list[object]], source_name: str):
     # it are skipped below.
     for source_row, row in enumerate(kept_rows[1:], start=3):
         if is_empty_receipt_row(row):
-            blank_row_count += 1
             continue
         if is_receipt_total_row(row):
-            total_row_count += 1
             continue
 
         product_name = normalize_receipt_identifier(row[3])
         if RECEIPTS_EXCLUDED_PRODUCT_KEYWORD in product_name:
-            excluded_product_count += 1
             excluded_product_records.append(
                 ExcludedProductRecord(
                     source_row=source_row,
@@ -449,13 +443,6 @@ def prepare_receipt_data(kept_rows: list[list[object]], source_name: str):
     }
     min_receipt_year = min(receipt_years) if receipt_years else None
 
-    only_return_count = 0
-    only_original_count = 0
-    both_count = 0
-    unmatched_original_count = 0
-    invalid_original_count = 0
-    missing_match_key_count = 0
-    remark_count = 0
     output_rows: list[list[object]] = []
     # Output coordinates come from this enumeration over the sorted order,
     # one row per record, so 问题明细 points at the row an operator will
@@ -464,10 +451,9 @@ def prepare_receipt_data(kept_rows: list[list[object]], source_name: str):
         original_invoice_number = record.original_invoice_number
         match_key = record.match_key
         # The same exclusion the remark went through: 原票号 is not acted on
-        # for these rows, so neither the 退单/原单 tallies nor the issues
-        # derived from it may claim them, or the counts stop describing the
-        # sheet — every one of them carries an 原票号 and would land in
-        # 仅退单数量 while its 备注 stays blank.
+        # for these rows, so the issues derived from it must not claim them
+        # either — every one of them carries an 原票号 and would land in
+        # 原票号未匹配 while its 备注 stays blank.
         is_unremarked = (
             record.sale_category in RECEIPTS_UNREMARKED_SALE_CATEGORIES
         )
@@ -481,7 +467,6 @@ def prepare_receipt_data(kept_rows: list[list[object]], source_name: str):
         )
 
         if not match_key:
-            missing_match_key_count += 1
             issues.append(
                 (
                     "缺少匹配键",
@@ -493,7 +478,6 @@ def prepare_receipt_data(kept_rows: list[list[object]], source_name: str):
         if has_original and not is_valid_original_invoice_number(
             original_invoice_number
         ):
-            invalid_original_count += 1
             issues.append(
                 (
                     "原票号格式异常",
@@ -512,7 +496,6 @@ def prepare_receipt_data(kept_rows: list[list[object]], source_name: str):
                 < min_receipt_year
             )
             if not is_prior_period_reference:
-                unmatched_original_count += 1
                 issues.append(
                     (
                         "原票号未匹配",
@@ -522,16 +505,7 @@ def prepare_receipt_data(kept_rows: list[list[object]], source_name: str):
                     )
                 )
 
-        if has_original and is_referenced:
-            both_count += 1
-        elif has_original:
-            only_return_count += 1
-        elif is_referenced:
-            only_original_count += 1
-
         remark = record.remark
-        if remark:
-            remark_count += 1
 
         output_rows.append(
             [
@@ -542,20 +516,6 @@ def prepare_receipt_data(kept_rows: list[list[object]], source_name: str):
         )
 
     stats = {
-        "总数据量": len(records),
-        "删除北国商品行数": excluded_product_count,
-        "跳过空白行数": blank_row_count,
-        "跳过合计行数": total_row_count,
-        "仅退单数量": only_return_count,
-        "仅原单数量": only_original_count,
-        "退单及原单数量": both_count,
-        "备注总数": remark_count,
-        "未匹配原票号数量": unmatched_original_count,
-        "重复匹配键数量": sum(
-            1 for source_rows in key_rows.values() if len(source_rows) > 1
-        ),
-        "原票号格式异常数量": invalid_original_count,
-        "缺少匹配键数量": missing_match_key_count,
         # Console-warning only; never written to 问题明细 (the exclusion is
         # business policy, not a data problem).
         "北国剔除明细": tuple(excluded_product_records),

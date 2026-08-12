@@ -50,7 +50,6 @@ class DetailProcessingTests(unittest.TestCase):
             status_rows={},
             file_count=1,
             data_row_count=1,
-            unknown_status_counts={},
             unknown_status_records=(),
             deleted_invalid_files=(),
         )
@@ -85,7 +84,6 @@ class DetailProcessingTests(unittest.TestCase):
             status_rows={},
             file_count=1,
             data_row_count=2,
-            unknown_status_counts={},
             unknown_status_records=(),
             deleted_invalid_files=(),
         )
@@ -110,7 +108,6 @@ class DetailProcessingTests(unittest.TestCase):
             status_rows={},
             file_count=1,
             data_row_count=1,
-            unknown_status_counts={},
             unknown_status_records=(),
             deleted_invalid_files=(),
         )

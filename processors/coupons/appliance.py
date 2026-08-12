@@ -586,14 +586,9 @@ class CouponComputation:
     reference_universe: set[str]
     payment_references: frozenset[str]
     payment_match_count: int
-    reference_supplement_count: int
-    ambiguous_reference_supplement_count: int
     reference_supplement_matches: Counter[tuple[str, date, str]]
     supplement_conflicts: tuple[SupplementReferenceConflict, ...]
     reference_supplement_missing: bool
-    corrected_count: int
-    unresolved_count: int
-    correction_collision_count: int
     reference_decisions: list[matching.ReferenceDecision]
     final_unresolved_reference_count: int
     uploaded_count: int
@@ -661,8 +656,8 @@ def compute_coupon_data(
         )
     )
     (
-        reference_supplement_count,
-        ambiguous_reference_supplement_count,
+        _reference_supplement_count,
+        _ambiguous_reference_supplement_count,
         reference_supplement_row_ids,
         reference_supplement_matches,
         reference_supplement_conflicts,
@@ -673,9 +668,9 @@ def compute_coupon_data(
         matched_count,
     )
     (
-        corrected_count,
-        unresolved_count,
-        correction_collision_count,
+        _corrected_count,
+        _unresolved_count,
+        _correction_collision_count,
         reference_decisions,
     ) = matching.correct_coupon_references(
         rows,
@@ -739,16 +734,9 @@ def compute_coupon_data(
         reference_universe=reference_universe,
         payment_references=payment_references,
         payment_match_count=payment_match_count,
-        reference_supplement_count=reference_supplement_count,
-        ambiguous_reference_supplement_count=(
-            ambiguous_reference_supplement_count
-        ),
         reference_supplement_matches=reference_supplement_matches,
         supplement_conflicts=reference_supplement_conflicts,
         reference_supplement_missing=reference_supplement_missing,
-        corrected_count=corrected_count,
-        unresolved_count=unresolved_count,
-        correction_collision_count=correction_collision_count,
         reference_decisions=reference_decisions,
         final_unresolved_reference_count=final_unresolved_reference_count,
         uploaded_count=uploaded_count,

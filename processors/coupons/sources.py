@@ -31,9 +31,6 @@ from processors.common.references import (
     validated_reference,
 )
 
-BASE_DIR = Path(__file__).resolve().parent.parent.parent
-OUTPUT_DIR = BASE_DIR / "output"
-
 COUPON_STATISTICS_KEYWORD = "销售用券情况统计"
 # The coupon export's field header row (row 2) at these columns.
 COUPON_FAMILY_SUBSIDY_COLUMN = 26

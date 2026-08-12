@@ -647,10 +647,6 @@ class SubmittedRowValidationTest(unittest.TestCase):
 
         self.assertEqual(report.data_row_count, 5)
         self.assertEqual(
-            report.unknown_status_counts,
-            {"核销成功": 2, "": 1},
-        )
-        self.assertEqual(
             report.unknown_status_records,
             (
                 submitted.UnknownStatusRecord(
@@ -684,7 +680,7 @@ class SubmittedRowValidationTest(unittest.TestCase):
     def test_no_unknown_statuses_reports_nothing(self) -> None:
         report = self.build_from_rows([submitted_row(SUBMITTED_HEADER)])
 
-        self.assertEqual(report.unknown_status_counts, {})
+        self.assertEqual(report.unknown_status_records, ())
 
     def test_unknown_status_warning_names_count_and_sources(self) -> None:
         rows = []
@@ -747,7 +743,7 @@ class SubmittedRowValidationTest(unittest.TestCase):
         row[column_index_from_string(STATUS_COLUMN) - 1] = "待同步"
         report = self.build_from_rows([row])
 
-        self.assertEqual(report.unknown_status_counts, {})
+        self.assertEqual(report.unknown_status_records, ())
         self.assertEqual(len(report.status_rows["待同步"]), 1)
         self.assertEqual(
             report.status_rows["待同步"][0][

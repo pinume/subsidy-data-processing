@@ -98,9 +98,6 @@ class CouponComputation:
     uploaded_subsidy_total: Decimal
     uploaded_match_count: int
     unmatched_count: int
-    corrected_count: int
-    unresolved_count: int
-    correction_collision_count: int
     reference_decisions: list[matching.ReferenceDecision]
     summary_rows: list[tuple[object, ...]]
 
@@ -143,9 +140,9 @@ def compute_coupon_data(
     )
     payment_references = frozenset(payment_reference_locations)
     (
-        corrected_count,
-        unresolved_count,
-        correction_collision_count,
+        _corrected_count,
+        _unresolved_count,
+        _correction_collision_count,
         reference_decisions,
     # matched_count is passed to every pass below for the same reason 家电
     # passes it: those trailing rows are the 退换货 block, already settled by
@@ -191,9 +188,6 @@ def compute_coupon_data(
         uploaded_subsidy_total=uploaded_subsidy_total,
         uploaded_match_count=uploaded_match_count,
         unmatched_count=unmatched_count,
-        corrected_count=corrected_count,
-        unresolved_count=unresolved_count,
-        correction_collision_count=correction_collision_count,
         reference_decisions=reference_decisions,
         summary_rows=summary_rows,
     )

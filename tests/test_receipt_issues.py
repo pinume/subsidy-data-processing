@@ -34,7 +34,7 @@ class PrepareReceiptDataIssuesTest(unittest.TestCase):
             ["ZH0003", "2026-01-25", "notvalid", "小米手机"],
         ]
 
-        _output_rows, stats, issues = prepare(kept_rows)
+        _output_rows, _stats, issues = prepare(kept_rows)
 
         # A duplicate match key is expected here (multi-line suite sales
         # share one 单据号/日期) and is never reported as an issue — see
@@ -65,25 +65,20 @@ class PrepareReceiptDataIssuesTest(unittest.TestCase):
                 ),
             ],
         )
-        self.assertEqual(stats["重复匹配键数量"], 1)
-        self.assertEqual(stats["缺少匹配键数量"], 1)
-        self.assertEqual(stats["原票号格式异常数量"], 1)
 
     def test_duplicate_match_keys_are_not_reported_as_issues(self) -> None:
         """Same 单据号/日期 with two line items is a normal suite sale (e.g.
-        烟机+灶具 sold together), not a data problem — it still counts
-        towards 重复匹配键数量 for diagnostics, but is neither highlighted
-        nor written to 问题明细."""
+        烟机+灶具 sold together), not a data problem — it is neither
+        highlighted nor written to 问题明细."""
         kept_rows = [
             HEADER,
             ["ZH0001", "2026-01-24", "", "老板-欧式烟机-K1L"],
             ["ZH0001", "2026-01-24", "", "老板-嵌入式灶-9B5-B1"],
         ]
 
-        _output_rows, stats, issues = prepare(kept_rows)
+        _output_rows, _stats, issues = prepare(kept_rows)
 
         self.assertEqual(issues, [])
-        self.assertEqual(stats["重复匹配键数量"], 1)
 
     def test_beiguo_rows_are_excluded_and_recorded_not_issued(self) -> None:
         """北国 rows keep being dropped — from the output, from remark
@@ -100,8 +95,8 @@ class PrepareReceiptDataIssuesTest(unittest.TestCase):
         output_rows, stats, issues = prepare(kept_rows)
 
         self.assertEqual([row[0] for row in output_rows], ["ZH0001", "ZH0003"])
-        self.assertEqual(stats["删除北国商品行数"], 2)
-        self.assertEqual(stats["备注总数"], 0)
+        self.assertEqual([row[-1] for row in output_rows], [None, None])
+        self.assertEqual(len(stats["北国剔除明细"]), 2)
         self.assertEqual(issues, [])
         self.assertEqual(
             stats["北国剔除明细"],
@@ -194,21 +189,10 @@ class UnremarkedSaleCategoryTest(unittest.TestCase):
     def test_neither_the_pair_nor_its_original_is_remarked(self) -> None:
         for category in ("零售补差", "同型号换货"):
             with self.subTest(category):
-                output_rows, stats, issues = prepare(self.rows(category))
+                output_rows, _stats, issues = prepare(self.rows(category))
 
                 self.assertEqual([row[-1] for row in output_rows], [None] * 3)
-                self.assertEqual(stats["备注总数"], 0)
                 self.assertEqual(issues, [])
-                # Every one of these rows carries an 原票号, so the tallies
-                # would claim them as 退单 while their 备注 stayed blank.
-                self.assertEqual(
-                    (
-                        stats["仅退单数量"],
-                        stats["仅原单数量"],
-                        stats["退单及原单数量"],
-                    ),
-                    (0, 0, 0),
-                )
 
     def test_later_return_traces_through_unremarked_bridge(self) -> None:
         """A return through either bridge pairs with the subsidy-bearing original."""
@@ -226,7 +210,7 @@ class UnremarkedSaleCategoryTest(unittest.TestCase):
                     ],
                 ]
 
-                output_rows, stats, _issues = prepare(kept_rows)
+                output_rows, _stats, _issues = prepare(kept_rows)
 
                 self.assertEqual(
                     {(row[0], row[-1]) for row in output_rows},
@@ -235,15 +219,6 @@ class UnremarkedSaleCategoryTest(unittest.TestCase):
                         ("0233000588", None),
                         ("0233000901", receipts.RECEIPTS_REMARK_RETURN),
                     },
-                )
-                self.assertEqual(stats["备注总数"], 2)
-                self.assertEqual(
-                    (
-                        stats["仅退单数量"],
-                        stats["仅原单数量"],
-                        stats["退单及原单数量"],
-                    ),
-                    (1, 1, 0),
                 )
 
     def test_reference_bridge_is_followed_transitively(self) -> None:
@@ -266,7 +241,7 @@ class UnremarkedSaleCategoryTest(unittest.TestCase):
             ],
         ]
 
-        output_rows, stats, issues = prepare(kept_rows)
+        output_rows, _stats, issues = prepare(kept_rows)
 
         self.assertEqual(
             {(row[0], row[-1]) for row in output_rows},
@@ -276,7 +251,6 @@ class UnremarkedSaleCategoryTest(unittest.TestCase):
                 ("0233000077", receipts.RECEIPTS_REMARK_RETURN),
             },
         )
-        self.assertEqual(stats["备注总数"], 2)
         self.assertEqual(issues, [])
 
     def test_an_ordinary_return_of_the_same_original_still_reports(self) -> None:
@@ -287,7 +261,7 @@ class UnremarkedSaleCategoryTest(unittest.TestCase):
             ["0233000900", "2026-01-24", "260107ZFP3000067", "美的空调", "退货"],
         ]
 
-        output_rows, stats, _issues = prepare(kept_rows)
+        output_rows, _stats, _issues = prepare(kept_rows)
 
         self.assertEqual(
             {(row[0], row[-1]) for row in output_rows},
@@ -297,7 +271,6 @@ class UnremarkedSaleCategoryTest(unittest.TestCase):
                 ("0233000900", receipts.RECEIPTS_REMARK_RETURN),
             },
         )
-        self.assertEqual(stats["备注总数"], 2)
 
 class PrepareReceiptDataOriginalInvoiceTest(unittest.TestCase):
     def test_original_invoice_from_before_the_file_is_not_reported(self) -> None:
@@ -309,14 +282,13 @@ class PrepareReceiptDataOriginalInvoiceTest(unittest.TestCase):
             ["ZH0001", "2026-01-24", "250101ZH9999", "海尔冰箱"],
         ]
 
-        output_rows, stats, issues = prepare(kept_rows)
+        output_rows, _stats, issues = prepare(kept_rows)
 
         self.assertEqual(
             output_rows[0][-1],
             receipts.RECEIPTS_REMARK_RETURN,
         )
         self.assertEqual(issues, [])
-        self.assertEqual(stats["未匹配原票号数量"], 0)
 
     def test_original_invoice_from_the_same_year_is_still_reported(self) -> None:
         kept_rows = [
@@ -324,7 +296,7 @@ class PrepareReceiptDataOriginalInvoiceTest(unittest.TestCase):
             ["ZH0001", "2026-01-24", "260101ZH9999", "海尔冰箱"],
         ]
 
-        _output_rows, stats, issues = prepare(kept_rows)
+        _output_rows, _stats, issues = prepare(kept_rows)
 
         self.assertEqual(
             issues,
@@ -337,7 +309,6 @@ class PrepareReceiptDataOriginalInvoiceTest(unittest.TestCase):
                 )
             ],
         )
-        self.assertEqual(stats["未匹配原票号数量"], 1)
 
     def test_no_issues_yields_empty_list(self) -> None:
         kept_rows = [
@@ -374,11 +345,9 @@ class BlankAndTotalRowTest(unittest.TestCase):
             ["", "  ", "", ""],
         ]
 
-        output_rows, stats, issues = prepare(kept_rows)
+        output_rows, _stats, issues = prepare(kept_rows)
 
         self.assertEqual(len(output_rows), 1)
-        self.assertEqual(stats["总数据量"], 1)
-        self.assertEqual(stats["跳过空白行数"], 2)
         self.assertEqual(issues, [])
 
     def test_row_with_any_value_is_kept(self) -> None:
@@ -387,10 +356,9 @@ class BlankAndTotalRowTest(unittest.TestCase):
             [None, None, None, "海尔冰箱"],
         ]
 
-        output_rows, stats, issues = prepare(kept_rows)
+        output_rows, _stats, issues = prepare(kept_rows)
 
         self.assertEqual(len(output_rows), 1)
-        self.assertEqual(stats["跳过空白行数"], 0)
         # Still incomplete data, so it must keep reporting itself.
         self.assertEqual([issue[0] for issue in issues], ["缺少匹配键"])
 
@@ -400,10 +368,9 @@ class BlankAndTotalRowTest(unittest.TestCase):
             [0, None, None, None],
         ]
 
-        output_rows, stats, _issues = prepare(kept_rows)
+        output_rows, _stats, _issues = prepare(kept_rows)
 
         self.assertEqual(len(output_rows), 1)
-        self.assertEqual(stats["跳过空白行数"], 0)
 
     def test_total_row_is_skipped_in_either_column(self) -> None:
         for total_row in (
@@ -418,10 +385,9 @@ class BlankAndTotalRowTest(unittest.TestCase):
                     total_row,
                 ]
 
-                output_rows, stats, _issues = prepare(kept_rows)
+                output_rows, _stats, _issues = prepare(kept_rows)
 
                 self.assertEqual(len(output_rows), 1)
-                self.assertEqual(stats["跳过合计行数"], 1)
 
     def test_合计_inside_text_fields_is_not_a_total_row(self) -> None:
         kept_rows = [
@@ -429,10 +395,9 @@ class BlankAndTotalRowTest(unittest.TestCase):
             ["ZH0001", "2026-01-24", "", "合计套装"],
         ]
 
-        output_rows, stats, _issues = prepare(kept_rows)
+        output_rows, _stats, _issues = prepare(kept_rows)
 
         self.assertEqual(len(output_rows), 1)
-        self.assertEqual(stats["跳过合计行数"], 0)
 
     def test_skipped_rows_shift_the_reported_output_row(self) -> None:
         kept_rows = [
@@ -455,17 +420,16 @@ class BlankAndTotalRowTest(unittest.TestCase):
         )
 
 
-class ReceiptRemarkStatsTest(unittest.TestCase):
-    def test_ordinary_remarks_still_counted(self) -> None:
+class ReceiptRemarkTest(unittest.TestCase):
+    def test_ordinary_return_gets_a_remark(self) -> None:
         kept_rows = [
             HEADER,
             ["ZH0001", "2026-01-24", "260101ZH9999", "海尔冰箱"],
         ]
 
-        _output_rows, stats, _issues = prepare(kept_rows)
+        output_rows, _stats, _issues = prepare(kept_rows)
 
-        self.assertEqual(stats["仅退单数量"], 1)
-        self.assertEqual(stats["备注总数"], 1)
+        self.assertEqual(output_rows[0][-1], receipts.RECEIPTS_REMARK_RETURN)
 
 
 class ReceiptOutputSortTest(unittest.TestCase):
