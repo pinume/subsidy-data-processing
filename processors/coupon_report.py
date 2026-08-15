@@ -4,9 +4,8 @@ Kept as its own module (rather than living inside either project) because
 each project's package needs to refer to the other's output file or menu
 entry, and importing across processors.coupons.digital <->
 processors.coupons.appliance at module load time would be circular. This
-module imports both at the top level; main.py only ever reaches it through a
-function-local import inside build_processors(), which runs long after both
-packages have finished loading.
+module imports both at the top level and exposes the combined
+process_coupon_sales pipeline.
 
 Re-exports SUMMARY_SHEET_NAME/SUMMARY_HEADER from
 processors.coupons.report_contract so store_report.py can depend on this
@@ -31,6 +30,7 @@ from processors.common.excel import (
 from processors.coupons import appliance, digital, matching, sources, xlsx_output
 from processors.coupons.report_contract import (
     SUBSIDY_YEAR,
+    SUMMARY_CORE_HEADER,
     SUMMARY_HEADER,
     SUMMARY_SHEET_NAME,
     SUMMARY_SUBSIDY_HEADER,
@@ -39,11 +39,12 @@ from processors.coupons.sources import load_coupon_remark_lookup
 from processors.payment import OUTPUT_FILE as PAYMENT_FILE
 
 # Not unused despite the lack of a local reference: re-exported for
-# store_report.py, which imports SUMMARY_SHEET_NAME/SUMMARY_HEADER from this
+# store_report.py, which imports SUMMARY_SHEET_NAME/SUMMARY_CORE_HEADER from this
 # module rather than reaching into processors.coupons.report_contract itself.
 # Listing them in __all__ (rather than an "as"-aliased import) tells pyflakes
 # the same thing without tripping pylint's redundant-alias rule.
 __all__ = [
+    "SUMMARY_CORE_HEADER",
     "SUMMARY_HEADER",
     "SUMMARY_SHEET_NAME",
     "SUMMARY_SUBSIDY_HEADER",
@@ -178,13 +179,21 @@ def supplement_conflict_warning(
 def digital_extra_summary_rows(
     digital_computation: digital.CouponComputation,
 ) -> list[tuple[object, ...]]:
-    """Recast digital's 3-column summary rows (上传状态, 数量, 合计) as rows in
-    家电's 5-column 数据汇总 table, labeling every row (including digital's
+    """Recast digital's 4-column summary rows (上传状态, 数量, 合计, 退回) as rows in
+    家电's 6-column 数据汇总 table, labeling every row (including digital's
     own "合计" row) with 财务大类="数码" and no 品牌, so the block mirrors the
     家电 one that precedes it (see appliance.COUPON_SUMMARY_PROJECT_LABEL)."""
     return [
-        (DIGITAL_SUMMARY_PROJECT_LABEL, None, remark, count, total)
-        for remark, count, total in digital_computation.summary_rows
+        (
+            DIGITAL_SUMMARY_PROJECT_LABEL,
+            None,
+            status,
+            count,
+            amount,
+            returned_count,
+        )
+        for status, count, amount, returned_count
+        in digital_computation.summary_rows
     ]
 
 
@@ -260,7 +269,7 @@ def write_coupon_workbook(
             left_aligned_headers=("商品名称",),
             matched_count=digital_computation.matched_count,
         )
-        for sheet_name, _, _, grouped_rows in appliance_computation.group_sheets:
+        for sheet_name, grouped_rows in appliance_computation.group_sheets:
             xlsx_output.write_group_sheet(
                 workbook,
                 sheet_name,
@@ -393,6 +402,8 @@ def _comparable_output_value(value: object) -> object:
     """Normalize harmless XLSX round trips before comparing written values."""
     if value in (None, ""):
         return None
+    if isinstance(value, bool):
+        return ("__bool__", value)
     if isinstance(value, datetime):
         return value.date()
     if isinstance(value, date):
@@ -456,7 +467,7 @@ def _expected_coupon_output(
             tuple(row) for row in digital_computation.rows
         ],
     }
-    for sheet_name, _, _, grouped_rows in appliance_computation.group_sheets:
+    for sheet_name, grouped_rows in appliance_computation.group_sheets:
         expected_rows[sheet_name] = [
             appliance.COUPON_GROUP_HEADER,
             *(

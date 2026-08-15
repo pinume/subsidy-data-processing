@@ -89,17 +89,21 @@ class CouponReferenceSupplementTest(unittest.TestCase):
         rows = [list(COUPON_OUTPUT_HEADER), row]
         reference = "12345678901N"
 
-        result = fill_coupon_reference_supplement(
-            rows,
-            {("1001", date(2026, 7, 6)): frozenset({reference})},
-            {reference},
-            excluded_bottom_rows=0,
+        matched_row_ids, matched_values, conflicts = (
+            fill_coupon_reference_supplement(
+                rows,
+                {("1001", date(2026, 7, 6)): frozenset({reference})},
+                {reference},
+                excluded_bottom_rows=0,
+            )
         )
 
-        self.assertEqual(result[0:2], (1, 0))
         self.assertEqual(row[COUPON_OUTPUT_HEADER.index("明细摘要")], reference)
-        self.assertEqual(result[2], {id(row)})
-        self.assertEqual(result[3][("1001", date(2026, 7, 6), reference)], 1)
+        self.assertEqual(matched_row_ids, {id(row)})
+        self.assertEqual(
+            matched_values[("1001", date(2026, 7, 6), reference)], 1
+        )
+        self.assertEqual(conflicts, ())
 
     def test_ambiguous_references_do_not_change_row(self) -> None:
         row = self.coupon_row("1001", date(2026, 7, 6), "待补充")
@@ -109,22 +113,23 @@ class CouponReferenceSupplementTest(unittest.TestCase):
         # console warning is stable across runs.
         references = frozenset({"12345678902N", "12345678901N"})
 
-        result = fill_coupon_reference_supplement(
-            rows,
-            {("1001", date(2026, 7, 6)): references},
-            set(references),
-            excluded_bottom_rows=0,
+        matched_row_ids, matched_values, conflicts = (
+            fill_coupon_reference_supplement(
+                rows,
+                {("1001", date(2026, 7, 6)): references},
+                set(references),
+                excluded_bottom_rows=0,
+            )
         )
 
-        self.assertEqual(result[0:2], (0, 1))
         self.assertEqual(row[COUPON_OUTPUT_HEADER.index("明细摘要")], "待补充")
-        self.assertEqual(result[2], set())
-        self.assertEqual(result[3], {})
+        self.assertEqual(matched_row_ids, set())
+        self.assertEqual(matched_values, {})
         # No column touched — upload and payment statuses stay exactly as the
         # row carried them.
         self.assertEqual(row, original)
         self.assertEqual(
-            result[4],
+            conflicts,
             (
                 appliance.SupplementReferenceConflict(
                     document_number="1001",
@@ -142,18 +147,24 @@ class CouponReferenceSupplementTest(unittest.TestCase):
         rows = [list(COUPON_OUTPUT_HEADER), known_row, bottom_row]
         replacement = "12345678902N"
 
-        result = fill_coupon_reference_supplement(
-            rows,
-            {
-                ("1001", date(2026, 7, 6)): frozenset({replacement}),
-                ("1002", date(2026, 7, 6)): frozenset({replacement}),
-            },
-            {known, replacement},
-            excluded_bottom_rows=1,
+        matched_row_ids, matched_values, conflicts = (
+            fill_coupon_reference_supplement(
+                rows,
+                {
+                    ("1001", date(2026, 7, 6)): frozenset({replacement}),
+                    ("1002", date(2026, 7, 6)): frozenset({replacement}),
+                },
+                {known, replacement},
+                excluded_bottom_rows=1,
+            )
         )
 
-        self.assertEqual(result[0:2], (0, 0))
-        self.assertEqual(known_row[COUPON_OUTPUT_HEADER.index("明细摘要")], known)
+        self.assertEqual(matched_row_ids, set())
+        self.assertEqual(matched_values, {})
+        self.assertEqual(conflicts, ())
+        self.assertEqual(
+            known_row[COUPON_OUTPUT_HEADER.index("明细摘要")], known
+        )
         self.assertEqual(
             bottom_row[COUPON_OUTPUT_HEADER.index("明细摘要")],
             "待补充",

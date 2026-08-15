@@ -54,7 +54,7 @@ class LargeApplianceMatchOrderTest(unittest.TestCase):
         rows = [list(appliance.COUPON_OUTPUT_HEADER), row]
         supplement = {("001", self.day): frozenset({SUPPLEMENT_REFERENCE})}
 
-        matched, ambiguous, row_ids, _, _ = (
+        row_ids, _, conflicts = (
             appliance.fill_coupon_reference_supplement(
                 rows,
                 supplement,
@@ -63,8 +63,8 @@ class LargeApplianceMatchOrderTest(unittest.TestCase):
             )
         )
 
-        self.assertEqual((matched, ambiguous), (0, 0))
         self.assertEqual(row_ids, set())
+        self.assertEqual(conflicts, ())
         self.assertEqual(row[self.summary_index], SUBMITTED_REFERENCE)
 
     def test_supplement_wins_over_algorithmic_correction(self) -> None:
@@ -75,7 +75,7 @@ class LargeApplianceMatchOrderTest(unittest.TestCase):
         rows = [list(appliance.COUPON_OUTPUT_HEADER), row]
         supplement = {("001", self.day): frozenset({SUPPLEMENT_REFERENCE})}
 
-        _, _, protected_row_ids, _, _ = (
+        protected_row_ids, _, _ = (
             appliance.fill_coupon_reference_supplement(
                 rows,
                 supplement,
@@ -85,16 +85,13 @@ class LargeApplianceMatchOrderTest(unittest.TestCase):
         )
         self.assertEqual(row[self.summary_index], SUPPLEMENT_REFERENCE)
 
-        corrected, unresolved, collisions, decisions = (
-            matching.correct_coupon_references(
-                rows,
-                self.universe,
-                0,
-                protected_row_ids,
-            )
+        decisions = matching.correct_coupon_references(
+            rows,
+            self.universe,
+            0,
+            protected_row_ids,
         )
 
-        self.assertEqual((corrected, unresolved, collisions), (0, 0, 0))
         self.assertEqual(decisions, [])
         self.assertEqual(row[self.summary_index], SUPPLEMENT_REFERENCE)
 
@@ -104,7 +101,7 @@ class LargeApplianceMatchOrderTest(unittest.TestCase):
         )
         rows = [list(appliance.COUPON_OUTPUT_HEADER), row]
 
-        _, _, protected_row_ids, _, _ = (
+        protected_row_ids, _, _ = (
             appliance.fill_coupon_reference_supplement(
                 rows,
                 {},
@@ -112,15 +109,15 @@ class LargeApplianceMatchOrderTest(unittest.TestCase):
                 0,
             )
         )
-        corrected, _, _, decisions = matching.correct_coupon_references(
+        decisions = matching.correct_coupon_references(
             rows,
             self.universe,
             0,
             protected_row_ids,
         )
 
-        self.assertEqual(corrected, 1)
         self.assertEqual(row[self.summary_index], CORRECTABLE_REFERENCE)
+        self.assertEqual(len(decisions), 1)
         self.assertEqual(
             decisions[0][0],
             matching.REFERENCE_REPORT_CORRECTED,
@@ -152,7 +149,7 @@ class LargeApplianceMatchOrderTest(unittest.TestCase):
         )
         rows = [list(appliance.COUPON_OUTPUT_HEADER), row]
 
-        corrected, _, _, _ = matching.correct_coupon_references(
+        decisions = matching.correct_coupon_references(
             rows,
             {target},
         )
@@ -162,7 +159,8 @@ class LargeApplianceMatchOrderTest(unittest.TestCase):
         )
         paid_count = matching.fill_payment_statuses(rows, {target})
 
-        self.assertEqual(corrected, 1)
+        self.assertEqual(len(decisions), 1)
+        self.assertEqual(decisions[0][0], matching.REFERENCE_REPORT_CORRECTED)
         self.assertEqual(upload_counts, (1, 0))
         self.assertEqual(paid_count, 1)
         self.assertEqual(

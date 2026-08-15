@@ -112,13 +112,16 @@ class CouponReferenceCorrectionTest(unittest.TestCase):
         for header in HEADERS:
             with self.subTest(header=header):
                 rows = coupon_rows(header, dirty)
-                corrected, unresolved, collisions, decisions = (
-                    matching.correct_coupon_references(rows, {target})
+                decisions = matching.correct_coupon_references(
+                    rows, {target}
                 )
                 summary_index = header.index("明细摘要")
-                self.assertEqual((corrected, unresolved, collisions), (1, 0, 0))
                 self.assertEqual(rows[1][summary_index], target)
                 # Decisions store the upper-cased original summary text.
+                self.assertEqual(len(decisions), 1)
+                self.assertEqual(
+                    decisions[0][0], matching.REFERENCE_REPORT_CORRECTED
+                )
                 self.assertEqual(decisions[0][3], dirty.upper())
 
     def test_chinese_prefix_unique_candidate_is_written_back(self) -> None:
@@ -127,12 +130,12 @@ class CouponReferenceCorrectionTest(unittest.TestCase):
         for header in HEADERS:
             with self.subTest(header=header):
                 rows = coupon_rows(header, dirty)
-                corrected, unresolved, collisions, decisions = (
-                    matching.correct_coupon_references(rows, {target})
+                decisions = matching.correct_coupon_references(
+                    rows, {target}
                 )
                 summary_index = header.index("明细摘要")
-                self.assertEqual((corrected, unresolved, collisions), (1, 0, 0))
                 self.assertEqual(rows[1][summary_index], target)
+                self.assertEqual(len(decisions), 1)
                 self.assertEqual(
                     decisions[0][0], matching.REFERENCE_REPORT_CORRECTED
                 )
@@ -144,12 +147,12 @@ class CouponReferenceCorrectionTest(unittest.TestCase):
         for header in HEADERS:
             with self.subTest(header=header):
                 rows = coupon_rows(header, dirty)
-                corrected, unresolved, collisions, decisions = (
-                    matching.correct_coupon_references(rows, {target})
+                decisions = matching.correct_coupon_references(
+                    rows, {target}
                 )
                 summary_index = header.index("明细摘要")
-                self.assertEqual((corrected, unresolved, collisions), (1, 0, 0))
                 self.assertEqual(rows[1][summary_index], target)
+                self.assertEqual(len(decisions), 1)
                 self.assertEqual(
                     decisions[0][0], matching.REFERENCE_REPORT_CORRECTED
                 )
@@ -211,12 +214,12 @@ class CouponReferenceCorrectionTest(unittest.TestCase):
         for header in HEADERS:
             with self.subTest(header=header):
                 rows = coupon_rows(header, dirty)
-                corrected, unresolved, collisions, decisions = (
-                    matching.correct_coupon_references(rows, {target})
+                decisions = matching.correct_coupon_references(
+                    rows, {target}
                 )
                 summary_index = header.index("明细摘要")
-                self.assertEqual((corrected, unresolved, collisions), (1, 0, 0))
                 self.assertEqual(rows[1][summary_index], target)
+                self.assertEqual(len(decisions), 1)
                 self.assertEqual(
                     decisions[0][0], matching.REFERENCE_REPORT_CORRECTED
                 )
@@ -240,12 +243,11 @@ class CouponReferenceCorrectionTest(unittest.TestCase):
             with self.subTest(header=header):
                 rows = coupon_rows(header, "12345 678901 N")
 
-                corrected, unresolved, collisions, decisions = (
-                    matching.correct_coupon_references(rows, {target})
+                decisions = matching.correct_coupon_references(
+                    rows, {target}
                 )
 
                 summary_index = header.index("明细摘要")
-                self.assertEqual((corrected, unresolved, collisions), (1, 0, 0))
                 self.assertEqual(rows[1][summary_index], target)
                 # Every applied correction must be auditable in the report.
                 self.assertEqual(len(decisions), 1)
@@ -256,7 +258,9 @@ class CouponReferenceCorrectionTest(unittest.TestCase):
                     original,
                     explanation,
                 ) = decisions[0]
-                self.assertEqual(result_kind, matching.REFERENCE_REPORT_CORRECTED)
+                self.assertEqual(
+                    result_kind, matching.REFERENCE_REPORT_CORRECTED
+                )
                 # Identified by document, not row position: the detail rows get
                 # re-sorted after this runs, so a row number would go stale.
                 self.assertEqual(document_number, "1000")
@@ -274,12 +278,11 @@ class CouponReferenceCorrectionTest(unittest.TestCase):
                     "12345678901-N",
                 )
 
-                corrected, unresolved, collisions, decisions = (
-                    matching.correct_coupon_references(rows, {target})
+                decisions = matching.correct_coupon_references(
+                    rows, {target}
                 )
 
                 summary_index = header.index("明细摘要")
-                self.assertEqual((corrected, unresolved, collisions), (0, 0, 2))
                 self.assertEqual(rows[1][summary_index], "12345 678901 N")
                 self.assertEqual(rows[2][summary_index], "12345678901-N")
                 self.assertEqual(
@@ -300,12 +303,11 @@ class CouponReferenceCorrectionTest(unittest.TestCase):
             with self.subTest(header=header):
                 rows = coupon_rows(header, "99999999999N")
 
-                corrected, unresolved, collisions, decisions = (
-                    matching.correct_coupon_references(rows, {"12345678901N"})
+                decisions = matching.correct_coupon_references(
+                    rows, {"12345678901N"}
                 )
 
                 summary_index = header.index("明细摘要")
-                self.assertEqual((corrected, unresolved, collisions), (0, 1, 0))
                 self.assertEqual(rows[1][summary_index], "99999999999N")
                 self.assertEqual(decisions, [])
 
@@ -323,16 +325,10 @@ class CouponReferenceCorrectionTest(unittest.TestCase):
                 with self.subTest(header=header, raw_reference=raw_reference):
                     rows = coupon_rows(header, raw_reference)
 
-                    corrected, unresolved, collisions, decisions = (
-                        matching.correct_coupon_references(
-                            rows, {"12345678901N"}
-                        )
+                    decisions = matching.correct_coupon_references(
+                        rows, {"12345678901N"}
                     )
 
-                    self.assertEqual(
-                        (corrected, unresolved, collisions),
-                        (0, 1, 0),
-                    )
                     self.assertEqual(len(decisions), 1)
                     self.assertEqual(
                         decisions[0][0],

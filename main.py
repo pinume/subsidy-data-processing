@@ -9,7 +9,13 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import IO
 
-from processors import payment, receipts, store_report, submitted
+from processors import (
+    coupon_report,
+    payment,
+    receipts,
+    store_report,
+    submitted,
+)
 from processors.common.console import ConsoleReporter, format_count
 from processors.common.excel import (
     OutputCleanupError,
@@ -26,61 +32,49 @@ LOCK_PATH = Path("/tmp/subsidy-data-processing.lock")
 
 
 def all_output_files() -> tuple[Path, ...]:
-    from processors.coupon_report import OUTPUT_FILE as coupon_output_file
-
     return (
         *submitted.OUTPUT_FILES,
         receipts.OUTPUT_FILE,
-        coupon_output_file,
+        coupon_report.OUTPUT_FILE,
         payment.OUTPUT_FILE,
         store_report.OUTPUT_FILE,
     )
 
 
 def build_processors() -> tuple[
-    tuple[str, str, Path, Callable[[ConsoleReporter], None]],
+    tuple[str, str, Callable[[ConsoleReporter], None]],
     ...,
 ]:
     """List every processing mode across both projects.
 
-    Each entry is (menu label, step label, source path, processor). The step
-    label is the short name shown on the [i/N] stage lines; the menu label
-    keeps the full descriptive text. Receipt statistics and subsidy coupon
-    statistics are shared, produced once regardless of which entry triggers
-    them. The coupon_report import is deferred so it only runs after both
-    projects have finished loading (see processors/coupon_report.py for why).
+    Each entry is (menu label, step label, processor). The step label is the
+    short name shown on the [i/N] stage lines; the menu label keeps the full
+    descriptive text.
     """
-    from processors.coupon_report import process_coupon_sales as process_coupon_report
-
     return (
         (
             "已上传数据（家电+数码）",
             "已上传数据",
-            submitted.DATA_DIR,
             submitted.process_all,
         ),
         (
             "收款单统计",
             "收款单统计",
-            receipts.RECEIPTS_SOURCE_FILE or receipts.DATA_DIR,
             receipts.process_receipts,
         ),
         (
             "回款明细（家电+数码）",
             "回款明细",
-            payment.DATA_DIR,
             payment.process_payment_files,
         ),
         (
             "审核明细（销售用券情况统计）",
             "审核明细",
-            coupon_sources.COUPON_SOURCE_FILE or coupon_sources.DATA_DIR,
-            process_coupon_report,
+            coupon_report.process_coupon_sales,
         ),
         (
             "门店国补上传及回款情况表",
             "门店报表",
-            store_report.DATA_DIR,
             store_report.process_store_report,
         ),
     )
@@ -96,7 +90,7 @@ class ProcessorSelection:
 
 
 def process_all(
-    processors: tuple[tuple[str, str, Path, Callable[[ConsoleReporter], None]], ...],
+    processors: tuple[tuple[str, str, Callable[[ConsoleReporter], None]], ...],
     reporter: ConsoleReporter,
 ) -> None:
     total = len(processors)
@@ -105,7 +99,7 @@ def process_all(
     def process_everything() -> None:
         nonlocal succeeded
         reporter.run_start()
-        for index, (_menu_label, step_label, _source_path, processor) in enumerate(
+        for index, (_menu_label, step_label, processor) in enumerate(
             processors,
             start=1,
         ):
@@ -120,7 +114,7 @@ def process_all(
                     error,
                     "本次输出已回滚，原文件保持不变",
                 )
-                if os.environ.get("UPLOAD_DATA_DEBUG"):
+                if os.environ.get("UPLOAD_DATA_DEBUG") == "1":
                     traceback.print_exc()
                 raise
             reporter.step_success()
@@ -168,7 +162,7 @@ def process_all(
 
 
 def selection_for_all(
-    processors: tuple[tuple[str, str, Path, Callable[[ConsoleReporter], None]], ...],
+    processors: tuple[tuple[str, str, Callable[[ConsoleReporter], None]], ...],
 ) -> ProcessorSelection:
     return ProcessorSelection(
         run=lambda reporter: process_all(processors, reporter),
@@ -178,7 +172,7 @@ def selection_for_all(
 
 
 def selection_for_mode(
-    processors: tuple[tuple[str, str, Path, Callable[[ConsoleReporter], None]], ...],
+    processors: tuple[tuple[str, str, Callable[[ConsoleReporter], None]], ...],
     mode: int,
 ) -> ProcessorSelection:
     if mode < 1 or mode > len(processors):
@@ -188,7 +182,7 @@ def selection_for_mode(
             file=sys.stderr,
         )
         raise SystemExit(2)
-    _, step_label, _, processor = processors[mode - 1]
+    _, step_label, processor = processors[mode - 1]
     return ProcessorSelection(
         run=processor,
         step_label=step_label,
@@ -201,7 +195,7 @@ def choose_data_processor() -> ProcessorSelection | None:
     all_choice = len(processors) + 1
 
     print("请选择处理模式：")
-    for index, (menu_label, _, _, _) in enumerate(processors, start=1):
+    for index, (menu_label, _, _) in enumerate(processors, start=1):
         print(f"  {index}. {menu_label}")
     print(f"  {all_choice}. 全部处理")
     print("  0. 退出")
@@ -376,7 +370,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             error,
             "现有输出文件保持不变，请检查配置或源文件后重试",
         )
-        if os.environ.get("UPLOAD_DATA_DEBUG"):
+        if os.environ.get("UPLOAD_DATA_DEBUG") == "1":
             traceback.print_exc()
         return 1
 
@@ -428,7 +422,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     except Exception:
         # All mode reported the failing step and the rollback inside
         # process_all; only the traceback is still useful here.
-        if os.environ.get("UPLOAD_DATA_DEBUG"):
+        if os.environ.get("UPLOAD_DATA_DEBUG") == "1":
             traceback.print_exc()
         return 1
 

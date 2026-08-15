@@ -24,12 +24,12 @@ from processors.common.dates import (
 )
 from processors.common.excel import (
     FONT_SIZE,
-    ROW_HEIGHT,
     load_measurement_font,
     normalize_calamine_value,
     pixels_to_column_pixels,
     resolve_font,
     width_measurer,
+    write_formatted_sheet,
     write_xlsx_atomically,
 )
 from processors.common.paths import find_data_files, resolve_unique_file
@@ -523,69 +523,6 @@ def prepare_receipt_data(kept_rows: list[list[object]], source_name: str):
     return output_rows, stats, issues
 
 
-def _write_issues_sheet(
-    workbook: Workbook,
-    issues: list[tuple[str, str, str, str]],
-    font_name: str,
-    measurement_font,
-) -> None:
-    sheet = workbook.add_worksheet(ISSUES_SHEET_NAME)
-    header_format = workbook.add_format(
-        {
-            "font_name": font_name,
-            "font_size": FONT_SIZE,
-            "bold": True,
-            "font_color": "#FFFFFF",
-            "bg_color": "#000000",
-            "align": "center",
-            "valign": "vcenter",
-        }
-    )
-    centered_format = workbook.add_format(
-        {
-            "font_name": font_name,
-            "font_size": FONT_SIZE,
-            "font_color": "#000000",
-            "align": "center",
-            "valign": "vcenter",
-        }
-    )
-    left_format = workbook.add_format(
-        {
-            "font_name": font_name,
-            "font_size": FONT_SIZE,
-            "font_color": "#000000",
-            "align": "left",
-            "valign": "vcenter",
-        }
-    )
-    left_columns = {
-        ISSUES_HEADER.index("内容"),
-        ISSUES_HEADER.index("说明"),
-    }
-    measure = width_measurer(measurement_font)
-    maximum_widths = [measure(value) for value in ISSUES_HEADER]
-
-    sheet.set_row(0, ROW_HEIGHT)
-    for column, value in enumerate(ISSUES_HEADER):
-        sheet.write(0, column, value, header_format)
-    for row_number, row in enumerate(issues, start=1):
-        sheet.set_row(row_number, ROW_HEIGHT)
-        for column, value in enumerate(row):
-            cell_format = left_format if column in left_columns else centered_format
-            sheet.write(row_number, column, value, cell_format)
-            maximum_widths[column] = max(maximum_widths[column], measure(value))
-
-    sheet.freeze_panes(1, 0)
-    sheet.autofilter(0, 0, len(issues), len(ISSUES_HEADER) - 1)
-    for column, maximum_pixels in enumerate(maximum_widths):
-        sheet.set_column_pixels(
-            column,
-            column,
-            pixels_to_column_pixels(maximum_pixels),
-        )
-
-
 def _comparable_receipt_row(row) -> tuple[object, ...]:
     """One output row reduced to what survives a round trip through .xlsx.
 
@@ -854,11 +791,14 @@ def _write_receipts_workbook(
             )
 
         if issues:
-            _write_issues_sheet(
+            write_formatted_sheet(
                 workbook,
+                ISSUES_SHEET_NAME,
+                ISSUES_HEADER,
                 issues,
                 font_name,
                 measurement_font,
+                left_aligned_headers=("内容", "说明"),
             )
 
 

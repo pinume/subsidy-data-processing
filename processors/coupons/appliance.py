@@ -2,10 +2,9 @@
 
 家电 is a strict superset of 数码's report: it additionally reads an optional
 reference-supplement file, builds 财务大类/品牌 group sheets, and closes
-数据汇总 with a five-column (财务大类, 品牌, 上传状态, 数量, 2026国补金额)
-summary instead
-of 数码's three-column one. Those are real differences in what gets built,
-not just different constants, so 数码 keeps its own module
+数据汇总 with a six-column (财务大类, 品牌, 上传状态, 数量, 2026国补金额, 退回)
+summary instead of 数码's four-column one. Those are real differences in what
+gets built, not just different constants, so 数码 keeps its own module
 (processors/coupons/digital.py) rather than being forced through this one
 with a bundle of feature flags.
 """
@@ -181,16 +180,12 @@ def fill_coupon_reference_supplement(
     reference_universe: set[str],
     excluded_bottom_rows: int,
 ) -> tuple[
-    int,
-    int,
     set[int],
     Counter[tuple[str, date, str]],
     tuple[SupplementReferenceConflict, ...],
 ]:
     summary_index = COUPON_SUMMARY_COLUMN_INDEX
     included_rows = coupon_data_rows(rows, excluded_bottom_rows)
-    matched_count = 0
-    ambiguous_count = 0
     matched_row_ids: set[int] = set()
     matched_values: Counter[tuple[str, date, str]] = Counter()
     conflicts: list[SupplementReferenceConflict] = []
@@ -209,7 +204,6 @@ def fill_coupon_reference_supplement(
         elif current_reference in references:
             reference = current_reference
         else:
-            ambiguous_count += 1
             conflicts.append(
                 SupplementReferenceConflict(
                     document_number=key[0],
@@ -220,12 +214,9 @@ def fill_coupon_reference_supplement(
             )
             continue
         row[summary_index] = reference
-        matched_count += 1
         matched_row_ids.add(id(row))
         matched_values[(key[0], key[1], reference)] += 1
     return (
-        matched_count,
-        ambiguous_count,
         matched_row_ids,
         matched_values,
         tuple(conflicts),
@@ -333,9 +324,11 @@ def build_coupon_summary(
     brand_index = COUPON_BRAND_INDEX
     remark_index = COUPON_REMARK_INDEX
     subsidy_index = COUPON_SUBSIDY_INDEX
+    detail_index = COUPON_DETAIL_INDEX
     included_rows = coupon_data_rows(rows, excluded_bottom_rows)
     grouped_counts: Counter[tuple[str, str, str]] = Counter()
     grouped_totals: dict[tuple[str, str, str], Decimal] = {}
+    grouped_returned_counts: Counter[tuple[str, str, str]] = Counter()
     coupon_count = 0
     coupon_total = Decimal("0")
     zero_subsidy_count = 0
@@ -348,6 +341,8 @@ def build_coupon_summary(
         key = (category, brand, remark)
         grouped_counts[key] += 1
         grouped_totals.setdefault(key, Decimal("0"))
+        if remark == "已上传" and sources.is_returned_detail(row[detail_index]):
+            grouped_returned_counts[key] += 1
         subsidy = row[subsidy_index]
         if subsidy not in (None, ""):
             try:
@@ -367,9 +362,11 @@ def build_coupon_summary(
             *key,
             grouped_counts[key],
             float(grouped_totals[key].quantize(Decimal("0.01"))),
+            grouped_returned_counts[key] or None,
         )
         for key in sorted(grouped_counts)
     ]
+    returned_total = sum(grouped_returned_counts.values())
     # Labelled 财务大类=家电 with the status in 备注, so this block reads the
     # same way as the 数码 block appended after it in the merged 审核明细
     # workbook (see processors/coupon_report.py).
@@ -381,6 +378,7 @@ def build_coupon_summary(
                 "已上传",
                 uploaded_subsidy_count,
                 float(as_currency(uploaded_subsidy_total)),
+                returned_total or None,
             ),
             (
                 COUPON_SUMMARY_PROJECT_LABEL,
@@ -388,6 +386,7 @@ def build_coupon_summary(
                 "未上传",
                 coupon_count - uploaded_subsidy_count,
                 float(as_currency(coupon_total - uploaded_subsidy_total)),
+                None,
             ),
             (
                 COUPON_SUMMARY_PROJECT_LABEL,
@@ -395,6 +394,7 @@ def build_coupon_summary(
                 "合计",
                 coupon_count,
                 float(as_currency(coupon_total)),
+                returned_total or None,
             ),
         )
     )
@@ -423,7 +423,7 @@ def coupon_group_sheet_title(
 def build_coupon_group_sheets(
     rows: list[list[object]],
     excluded_bottom_rows: int,
-) -> list[tuple[str, str, str, list[tuple[list[object], bool]]]]:
+) -> list[tuple[str, list[tuple[list[object], bool]]]]:
     category_index = COUPON_CATEGORY_INDEX
     brand_index = COUPON_BRAND_INDEX
     first_pink_index = len(rows) - excluded_bottom_rows
@@ -456,8 +456,6 @@ def build_coupon_group_sheets(
     return [
         (
             coupon_group_sheet_title(category, brand, used_titles),
-            category,
-            brand,
             grouped_rows,
         )
         for (category, brand), grouped_rows in sorted(groups.items())
@@ -600,7 +598,7 @@ class CouponComputation:
     source_total: Decimal | None
     computed_total: Decimal
     summary_rows: list[tuple[object, ...]]
-    group_sheets: list[tuple[str, str, str, list[tuple[list[object], bool]]]]
+    group_sheets: list[tuple[str, list[tuple[list[object], bool]]]]
 
 
 _SOURCE_TOTAL_UNSET = object()
@@ -656,8 +654,6 @@ def compute_coupon_data(
         )
     )
     (
-        _reference_supplement_count,
-        _ambiguous_reference_supplement_count,
         reference_supplement_row_ids,
         reference_supplement_matches,
         reference_supplement_conflicts,
@@ -667,12 +663,7 @@ def compute_coupon_data(
         reference_universe,
         matched_count,
     )
-    (
-        _corrected_count,
-        _unresolved_count,
-        _correction_collision_count,
-        reference_decisions,
-    ) = matching.correct_coupon_references(
+    reference_decisions = matching.correct_coupon_references(
         rows,
         reference_universe,
         matched_count,
@@ -954,3 +945,50 @@ def validate_computation(
             f"预期 {expected_count} / {as_currency(expected_total)}，"
             f"实际 {total_row[3]} / {total_row[4]}"
         )
+    expected_brand_returns: Counter[tuple[str, str]] = Counter()
+    for row in coupon_data_rows(computation.rows, expected_matched_rows):
+        category = str(row[COUPON_CATEGORY_INDEX] or "").strip()
+        if category == COUPON_EXCLUDED_CATEGORY:
+            continue
+        brand = str(row[brand_column] or "").strip()
+        remark = str(row[remark_column] or "").strip()
+        if remark == "已上传" and sources.is_returned_detail(row[detail_column]):
+            expected_brand_returns[(category, brand)] += 1
+
+    seen_brand_keys: set[tuple[str, str, str]] = set()
+    actual_brand_returns: dict[tuple[str, str], int] = {}
+    for row in brand_summary_rows:
+        category, brand, status = row[0], row[1], row[2]
+        returned_val = row[5]
+        if status not in ("已上传", "未上传"):
+            raise RuntimeError(f"销售用券汇总品牌行状态无效：{status!r}")
+        key = (category, brand, status)
+        if key in seen_brand_keys:
+            raise RuntimeError(f"销售用券汇总品牌行重复：{key!r}")
+        seen_brand_keys.add(key)
+        if status == "已上传":
+            if returned_val is not None:
+                if type(returned_val) is not int or returned_val <= 0:
+                    raise RuntimeError("销售用券汇总品牌行退回数量应为正整数或空")
+                actual_brand_returns[(category, brand)] = returned_val
+        else:
+            if returned_val is not None:
+                raise RuntimeError("销售用券汇总未上传品牌行退回数量应为空")
+
+    if actual_brand_returns != dict(expected_brand_returns):
+        raise RuntimeError("销售用券汇总品牌行退回数量校验失败")
+
+    expected_returned_count = sum(expected_brand_returns.values())
+    if expected_returned_count > 0:
+        if (
+            type(uploaded_row[5]) is not int
+            or uploaded_row[5] != expected_returned_count
+            or type(total_row[5]) is not int
+            or total_row[5] != expected_returned_count
+        ):
+            raise RuntimeError("销售用券汇总已上传/合计退回数量校验失败")
+    else:
+        if uploaded_row[5] is not None or total_row[5] is not None:
+            raise RuntimeError("销售用券汇总已上传/合计退回数量校验失败")
+    if unuploaded_row[5] is not None:
+        raise RuntimeError("销售用券汇总未上传退回数量校验失败")

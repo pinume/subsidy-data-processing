@@ -1,8 +1,8 @@
 """数码 side of 销售用券情况统计 processing.
 
 数码 has no group sheets, reference-supplement file, or approved-detail
-panel, so its summary is a simpler three-column (上传状态, 数量, 合计) table
-instead of 家电's five-column one — see processors/coupons/appliance.py's
+panel, so its summary is a simpler four-column (上传状态, 数量, 合计, 退回) table
+instead of 家电's six-column one — see processors/coupons/appliance.py's
 module docstring for why this stays a separate module rather than a
 feature-flagged variant of that one.
 """
@@ -43,9 +43,16 @@ def build_coupon_summary(
     uploaded_subsidy_total: Decimal,
 ) -> list[tuple[object, ...]]:
     subsidy_index = matching.SUBSIDY_INDEX
+    remark_index = matching.REMARK_INDEX
+    detail_index = matching.DETAIL_INDEX
     coupon_count = 0
     coupon_total = Decimal("0")
+    returned_count = 0
     for row_number, row in enumerate(rows[1:], start=2):
+        if row[remark_index] == "已上传" and sources.is_returned_detail(
+            row[detail_index]
+        ):
+            returned_count += 1
         subsidy = row[subsidy_index]
         if subsidy in (None, ""):
             continue
@@ -68,13 +75,20 @@ def build_coupon_summary(
             "已上传",
             uploaded_count,
             float(as_currency(uploaded_subsidy_total)),
+            returned_count or None,
         ),
         (
             "未上传",
             unuploaded_count,
             float(as_currency(unuploaded_total)),
+            None,
         ),
-        ("合计", coupon_count, float(as_currency(coupon_total))),
+        (
+            "合计",
+            coupon_count,
+            float(as_currency(coupon_total)),
+            returned_count or None,
+        ),
     ]
 
 
@@ -94,8 +108,6 @@ class CouponComputation:
     reference_universe: set[str]
     payment_references: frozenset[str]
     payment_match_count: int
-    uploaded_subsidy_count: int
-    uploaded_subsidy_total: Decimal
     uploaded_match_count: int
     unmatched_count: int
     reference_decisions: list[matching.ReferenceDecision]
@@ -139,18 +151,13 @@ def compute_coupon_data(
         reference_universe,
     )
     payment_references = frozenset(payment_reference_locations)
-    (
-        _corrected_count,
-        _unresolved_count,
-        _correction_collision_count,
-        reference_decisions,
     # matched_count is passed to every pass below for the same reason 家电
     # passes it: those trailing rows are the 退换货 block, already settled by
     # the receipt remark and pinned pink. Leaving it off let the reference
     # passes overwrite their remarks with 已上传/未上传 and count them into
     # the upload tallies, so the sheet ended up with pink rows labelled
     # 已上传.
-    ) = matching.correct_coupon_references(
+    reference_decisions = matching.correct_coupon_references(
         rows, reference_universe, matched_count
     )
     uploaded_match_count, unmatched_count = matching.fill_upload_statuses(
@@ -184,8 +191,6 @@ def compute_coupon_data(
         reference_universe=reference_universe,
         payment_references=payment_references,
         payment_match_count=payment_match_count,
-        uploaded_subsidy_count=uploaded_subsidy_count,
-        uploaded_subsidy_total=uploaded_subsidy_total,
         uploaded_match_count=uploaded_match_count,
         unmatched_count=unmatched_count,
         reference_decisions=reference_decisions,
@@ -278,3 +283,24 @@ def validate_computation(computation: CouponComputation) -> None:
             f"销售用券匹配行的{COUPON_SUBSIDY_HEADER}合计不为 0："
             f"{actual_matched_subsidy_total}"
         )
+    expected_returned_count = sum(
+        row[remark_column] == "已上传"
+        and sources.is_returned_detail(row[detail_column])
+        for row in rows[1:]
+    )
+    if [row[0] for row in computation.summary_rows] != ["已上传", "未上传", "合计"]:
+        raise RuntimeError("数码销售用券汇总缺少已上传/未上传/合计三行")
+    uploaded_row, unuploaded_row, total_row = computation.summary_rows
+    if expected_returned_count > 0:
+        if (
+            type(uploaded_row[3]) is not int
+            or uploaded_row[3] != expected_returned_count
+            or type(total_row[3]) is not int
+            or total_row[3] != expected_returned_count
+        ):
+            raise RuntimeError("数码销售用券汇总已上传/合计退回数量校验失败")
+    else:
+        if uploaded_row[3] is not None or total_row[3] is not None:
+            raise RuntimeError("数码销售用券汇总已上传/合计退回数量校验失败")
+    if unuploaded_row[3] is not None:
+        raise RuntimeError("数码销售用券汇总未上传退回数量校验失败")

@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from pathlib import Path
 
+from openpyxl.utils import column_index_from_string
 from python_calamine import CalamineWorkbook
 from xlsxwriter import Workbook
 
@@ -41,15 +42,9 @@ OUTPUT_DIR = BASE_DIR / "output"
 KEPT_SOURCE_COLUMNS = ("D", "E", "F", "G", "I", "J")
 
 
-def _column_index(column: str) -> int:
-    """1-based index of a spreadsheet column letter, "A" -> 1, "AB" -> 28."""
-    index = 0
-    for letter in column:
-        index = index * 26 + (ord(letter) - ord("A") + 1)
-    return index
-
-
-KEPT_COLUMN_INDEXES = tuple(_column_index(column) for column in KEPT_SOURCE_COLUMNS)
+KEPT_COLUMN_INDEXES = tuple(
+    column_index_from_string(column) for column in KEPT_SOURCE_COLUMNS
+)
 # "补贴金额" is inserted by add_subsidy_column, so only source fields are listed.
 REQUIRED_SUBMITTED_HEADERS = ("检索参考号", "状态", "描述", "交易金额")
 STATUS_ORDER = (
@@ -65,7 +60,6 @@ STATUS_ORDER = (
 
 @dataclass(frozen=True)
 class SubmittedProfile:
-    data_type: str
     output_file: Path
     subsidy_rate: Decimal
     subsidy_cap: Decimal
@@ -111,13 +105,11 @@ class SubmittedReport:
 # default.
 PROFILES: dict[str, SubmittedProfile] = {
     "家电": SubmittedProfile(
-        data_type="家电",
         output_file=OUTPUT_DIR / "家电_已上传.xlsx",
         subsidy_rate=Decimal("0.15"),
         subsidy_cap=Decimal("1500"),
     ),
     "数码": SubmittedProfile(
-        data_type="数码",
         output_file=OUTPUT_DIR / "数码_已上传.xlsx",
         subsidy_rate=Decimal("0.15"),
         subsidy_cap=Decimal("500"),

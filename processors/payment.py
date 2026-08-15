@@ -515,11 +515,10 @@ def _sort_detail_rows(
     rows: list[list[object]],
     headers: tuple[str, ...],
     category_map: dict[str, str],
-) -> int:
+) -> None:
     """Sort plain detail records before writing the output worksheet."""
-    data_row_count = len(rows)
-    if data_row_count <= 1:
-        return data_row_count
+    if len(rows) <= 1:
+        return
 
     header_positions = {header: index for index, header in enumerate(headers)}
     missing = [header for header in DETAIL_SORT_HEADERS if header not in header_positions]
@@ -543,7 +542,6 @@ def _sort_detail_rows(
             _sort_scalar(item[product_column]),
         ),
     )
-    return data_row_count
 
 
 def _sum_detail_groups(detail_sections) -> dict[tuple[str, str], list]:
@@ -597,7 +595,7 @@ def _append_summary_row(rows, category, brand, amount: Decimal, count: int) -> N
 
 
 def _build_summary_rows(
-    sections: list[tuple[str, list, dict[str, str]]],
+    sections: list[tuple[list, dict[str, str]]],
 ) -> tuple[list[list[object]], list[int], int]:
     """Build 汇总 as plain rows: one subtotaled block per data type.
 
@@ -613,7 +611,7 @@ def _build_summary_rows(
     grand_count = 0
     written_sections = 0
 
-    for _label, detail_sections, category_map in sections:
+    for detail_sections, category_map in sections:
         groups = _sum_detail_groups(detail_sections)
         if not groups:
             continue
@@ -849,7 +847,6 @@ def build_report() -> PaymentReport:
     summary_rows, bold_rows, summary_groups = _build_summary_rows(
         [
             (
-                profile.name,
                 [(detail.name, [detail.header, *detail.rows])],
                 profile.category_map,
             )

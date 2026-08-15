@@ -292,6 +292,14 @@ def load_coupon_remark_lookup(source: Path) -> dict[tuple[str, date], str]:
         workbook.close()
 
 
+RETURNED_STATUSES = frozenset({"核销失败", "审核失败"})
+
+
+def is_returned_detail(value: object) -> bool:
+    status = str(value or "").partition("：")[0].strip()
+    return status in RETURNED_STATUSES
+
+
 def load_uploaded_summary(source: Path) -> tuple[dict[str, str], int, Decimal]:
     """Read a generated 已上传 workbook's Summary sheet once for everything
     both appliance.py and digital.py need from it: the per-reference detail

@@ -401,7 +401,6 @@ def write_formatted_sheet(
         sheet.set_column_pixels(
             column, column, pixels_to_column_pixels(maximum_pixels)
         )
-    return sheet
 
 
 STALE_TEMPORARY_FILE_AGE_SECONDS = 180

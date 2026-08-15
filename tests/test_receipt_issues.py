@@ -8,6 +8,7 @@ from unittest.mock import patch
 from openpyxl import load_workbook
 
 from processors import receipts
+from processors.common.excel import ROW_HEIGHT
 
 HEADER = list(receipts.RECEIPTS_SOURCE_HEADER)
 SOURCE_NAME = "收款单统计.xlsx"
@@ -692,6 +693,33 @@ class IssuesSheetRoundTripTest(unittest.TestCase):
                         )
                     ],
                     [("缺少匹配键", "5", None, "日期或单据号为空，无法生成匹配键")],
+                )
+                self.assertEqual(issues_sheet.freeze_panes, "A2")
+                self.assertEqual(issues_sheet.auto_filter.ref, "A1:D2")
+                self.assertEqual(
+                    issues_sheet.row_dimensions[1].height, ROW_HEIGHT
+                )
+                self.assertEqual(
+                    issues_sheet["A1"].fill.fgColor.rgb[-6:], "000000"
+                )
+                self.assertEqual(
+                    issues_sheet["A1"].font.color.rgb[-6:], "FFFFFF"
+                )
+                self.assertTrue(issues_sheet["A1"].font.bold)
+                self.assertEqual(
+                    issues_sheet["A1"].alignment.horizontal, "center"
+                )
+                self.assertEqual(
+                    issues_sheet["A2"].alignment.horizontal, "center"
+                )
+                self.assertEqual(
+                    issues_sheet["B2"].alignment.horizontal, "center"
+                )
+                self.assertEqual(
+                    issues_sheet["C2"].alignment.horizontal, "left"
+                )
+                self.assertEqual(
+                    issues_sheet["D2"].alignment.horizontal, "left"
                 )
             finally:
                 workbook.close()

@@ -271,9 +271,7 @@ class SubmittedFileMarkerTest(unittest.TestCase):
                     f"MER_{merchants[data_type]}",
                 )
 
-    def test_each_profile_uses_its_own_data_type(self) -> None:
-        self.assertEqual(submitted.PROFILES["数码"].data_type, "数码")
-        self.assertEqual(submitted.PROFILES["家电"].data_type, "家电")
+    def test_each_profile_configures_its_marker(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             data_dir = Path(directory)
             submitted.configure_data_dir(data_dir)

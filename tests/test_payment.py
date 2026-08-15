@@ -212,7 +212,7 @@ class DetailProcessingTests(unittest.TestCase):
         ]
 
         rows, bold_rows, groups = payment._build_summary_rows(
-            [("家电", [("明细", detail_rows)], payment.APPLIANCE_CATEGORY_MAP)]
+            [([("明细", detail_rows)], payment.APPLIANCE_CATEGORY_MAP)]
         )
 
         self.assertEqual(groups, 1)

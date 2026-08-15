@@ -353,7 +353,7 @@ def correct_coupon_references(
     reference_universe: set[str],
     excluded_bottom_rows: int = 0,
     protected_row_ids: set[int] | None = None,
-) -> tuple[int, int, int, list[ReferenceDecision]]:
+) -> list[ReferenceDecision]:
     """Rewrite dirty 明细摘要 values to uploaded references; return audit trail.
 
     Two phases:
@@ -363,7 +363,7 @@ def correct_coupon_references(
     Report policy for non-unique candidates:
       - multiple candidates, or zero with a non-legal raw string → 无唯一候选
       - zero candidates but raw is already legal \\d{11}N → unsubmitted only
-        (counted in unresolved, omitted from the report sheet)
+        (omitted from the report sheet)
     """
     included_end = len(rows) - excluded_bottom_rows
     included_rows = rows[1:included_end]
@@ -379,7 +379,6 @@ def correct_coupon_references(
     # --- phase 1: propose ---
     proposed: dict[int, str] = {}
     target_counts: Counter[str] = Counter()
-    unresolved_count = 0
     decisions: list[ReferenceDecision] = []
 
     for row_index, row in enumerate(included_rows, start=1):
@@ -393,7 +392,6 @@ def correct_coupon_references(
             raw_reference, correction_index
         )
         if len(candidates) != 1:
-            unresolved_count += 1
             # Legal-but-missing refs are left off the report (see docstring).
             if candidates or not REFERENCE_RE.fullmatch(raw_reference):
                 decisions.append(
@@ -412,13 +410,10 @@ def correct_coupon_references(
         target_counts[target] += 1
 
     # --- phase 2: apply (or record collision) ---
-    corrected_count = 0
-    collision_count = 0
     for row_index, target in proposed.items():
         row = rows[row_index]
         raw_reference = normalize_receipt_identifier(row[SUMMARY_INDEX]).upper()
         if existing_counts[target] > 0 or target_counts[target] > 1:
-            collision_count += 1
             decisions.append(
                 reference_decision(
                     REFERENCE_REPORT_COLLISION,
@@ -429,7 +424,6 @@ def correct_coupon_references(
             )
             continue
         row[SUMMARY_INDEX] = target
-        corrected_count += 1
         decisions.append(
             reference_decision(
                 REFERENCE_REPORT_CORRECTED,
@@ -440,7 +434,7 @@ def correct_coupon_references(
         )
 
     decisions.sort(key=lambda decision: REFERENCE_REPORT_ORDER[decision[0]])
-    return corrected_count, unresolved_count, collision_count, decisions
+    return decisions
 
 
 def fill_upload_statuses(

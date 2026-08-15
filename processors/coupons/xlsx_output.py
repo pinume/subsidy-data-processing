@@ -30,6 +30,8 @@ from processors.common.excel import (
     width_measurer,
 )
 
+from .report_contract import SUMMARY_SUBSIDY_HEADER
+
 TEXT_FORMAT = "@"
 # Shared with the other XlsxWriter writers: openpyxl stamped these onto a cell
 # by itself the moment a date or datetime was assigned, and a date-formatted
@@ -304,7 +306,7 @@ def write_summary_sheet(
         formats,
         measurement_font,
         number_formats=column_number_formats(
-            currency_columns=(len(header) - 1,)
+            currency_columns=(header.index(SUMMARY_SUBSIDY_HEADER),)
         ),
         bordered_rows=bordered_rows,
     )

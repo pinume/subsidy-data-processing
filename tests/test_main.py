@@ -16,6 +16,10 @@ from processors.common.console import ConsoleReporter
 from processors.common.excel import OutputCleanupError, StaleFileCleanup
 from processors.coupons import appliance as coupon_appliance
 from processors.coupons import digital as coupons_digital
+from tests.test_store_report import (
+    LITERAL_EXPECTED_MERGED_RANGES,
+    LITERAL_STRUCTURE_CELLS,
+)
 
 
 class RequireLinuxTest(unittest.TestCase):
@@ -61,8 +65,8 @@ class ParseCliArgsTest(unittest.TestCase):
 class SelectionHelpersTest(unittest.TestCase):
     def _processors(self):
         return (
-            ("已上传数据（家电+数码）", "已上传数据", Path("a"), lambda r: None),
-            ("收款单统计", "收款单统计", Path("b"), lambda r: None),
+            ("已上传数据（家电+数码）", "已上传数据", lambda r: None),
+            ("收款单统计", "收款单统计", lambda r: None),
         )
 
     def test_selection_for_mode_in_range(self) -> None:
@@ -171,7 +175,7 @@ class ProcessorOrderTest(unittest.TestCase):
             app_main.payment.configure_data_dir(data_dir)
             app_main.store_report.configure_data_dir(data_dir)
 
-            labels = [label for label, _, _, _ in app_main.build_processors()]
+            labels = [label for label, _, _ in app_main.build_processors()]
             coupon_report_index = labels.index("审核明细（销售用券情况统计）")
             store_report_index = labels.index("门店国补上传及回款情况表")
 
@@ -206,10 +210,10 @@ class AllModeRollbackTest(unittest.TestCase):
                 raise ValueError("store report failed")
 
             processors = (
-                ("已上传数据（家电+数码）", "已上传数据", paths["large_appliances"], write_ok("large_appliances")),
-                ("审核明细（销售用券情况统计）", "审核明细", paths["coupon_report"], write_ok("coupon_report")),
-                ("回款明细（家电+数码）", "回款明细", paths["payment"], write_ok("payment")),
-                ("门店国补上传及回款情况表", "门店报表", paths["store_report"], fail_store_report),
+                ("已上传数据（家电+数码）", "已上传数据", write_ok("large_appliances")),
+                ("审核明细（销售用券情况统计）", "审核明细", write_ok("coupon_report")),
+                ("回款明细（家电+数码）", "回款明细", write_ok("payment")),
+                ("门店国补上传及回款情况表", "门店报表", fail_store_report),
             )
 
             with (
@@ -322,7 +326,7 @@ class TransactionLifecycleTest(unittest.TestCase):
 
     def _processors(self, *behaviors):
         return tuple(
-            (f"模式{index}", f"步骤{index}", None, behavior)
+            (f"模式{index}", f"步骤{index}", behavior)
             for index, behavior in enumerate(behaviors, start=1)
         )
 
@@ -485,6 +489,51 @@ class TransactionLifecycleTest(unittest.TestCase):
         self.assertNotIn("现有输出文件保持不变", text)
 
 
+class UploadDataDebugTest(unittest.TestCase):
+    def test_debug_enabled_when_value_is_one(self) -> None:
+        def failing_processor(reporter):
+            raise ValueError("boom")
+
+        processors = [("1", "失败步骤", failing_processor)]
+        reporter = ConsoleReporter(
+            stream=io.StringIO(), error_stream=io.StringIO()
+        )
+
+        with patch.dict("os.environ", {"UPLOAD_DATA_DEBUG": "1"}):
+            with patch("traceback.print_exc") as mock_print:
+                with patch.object(
+                    app_main,
+                    "run_with_output_rollback",
+                    side_effect=lambda paths, op: op(),
+                ):
+                    with self.assertRaises(ValueError):
+                        app_main.process_all(processors, reporter)
+                mock_print.assert_called_once()
+
+    def test_debug_disabled_when_unset_or_empty_or_zero(self) -> None:
+        def failing_processor(reporter):
+            raise ValueError("boom")
+
+        processors = [("1", "失败步骤", failing_processor)]
+
+        for env_val in (None, "", "0", "true", "yes"):
+            with self.subTest(env_val=env_val):
+                env = {} if env_val is None else {"UPLOAD_DATA_DEBUG": env_val}
+                reporter = ConsoleReporter(
+                    stream=io.StringIO(), error_stream=io.StringIO()
+                )
+                with patch.dict("os.environ", env, clear=True):
+                    with patch("traceback.print_exc") as mock_print:
+                        with patch.object(
+                            app_main,
+                            "run_with_output_rollback",
+                            side_effect=lambda paths, op: op(),
+                        ):
+                            with self.assertRaises(ValueError):
+                                app_main.process_all(processors, reporter)
+                        mock_print.assert_not_called()
+
+
 class EndToEndAllModeTest(unittest.TestCase):
     """完整 --all 端到端：5 个模式用最小真实源文件跑通。
 
@@ -511,14 +560,19 @@ class EndToEndAllModeTest(unittest.TestCase):
         header[8] = "状态"
         header[9] = "描述"
         sheet.append(header)
-        for order, reference, amount in rows:
+        for item in rows:
+            if len(item) == 5:
+                order, reference, amount, status, description = item
+            else:
+                order, reference, amount = item
+                status, description = "审核通过", "说明"
             row = ["v"] * 24
             row[3] = order
             row[4] = "2026-01-01"
             row[5] = amount
             row[6] = reference
-            row[8] = "审核通过"
-            row[9] = "说明"
+            row[8] = status
+            row[9] = description
             sheet.append(row)
         workbook.save(path)
         return path
@@ -656,17 +710,19 @@ class EndToEndAllModeTest(unittest.TestCase):
         sheet.title = "益庄"
         for column_index in range(1, store_report.EXPECTED_COLUMN_COUNT + 1):
             sheet.cell(
-                row=1, column=column_index, value="标题" if column_index == 1 else ""
+                row=1,
+                column=column_index,
+                value="        2026年（益庄店 ）门店国补上传及回款情况表\n\n        更新时间："
+                if column_index == 1
+                else "",
             )
-        for coordinate, value in store_report.TEMPLATE_STRUCTURE_CELLS.items():
+        for coordinate, value in LITERAL_STRUCTURE_CELLS.items():
             sheet[coordinate] = value
-        for range_ in store_report.EXPECTED_MERGED_RANGES:
+        for range_ in LITERAL_EXPECTED_MERGED_RANGES:
             sheet.merge_cells(range_)
-        for offset, number in enumerate(
-            range(1, store_report.TOTAL_ROW - 3), start=4
-        ):
-            sheet[f"B{offset}"] = number
-        sheet.row_dimensions[store_report.TEMPLATE_VERSION_ROW].hidden = True
+        for expected, row in enumerate(range(3, 34), start=1):
+            sheet[f"B{row}"] = expected
+        sheet.row_dimensions[55].hidden = True
         workbook.save(path)
 
     @staticmethod
@@ -690,10 +746,10 @@ class EndToEndAllModeTest(unittest.TestCase):
         }
         submitted_profiles = dict(app_main.submitted.PROFILES)
         submitted_profiles["家电"] = app_main.submitted.SubmittedProfile(
-            "家电", output_files["appliance"], Decimal("0.15"), Decimal("1500")
+            output_files["appliance"], Decimal("0.15"), Decimal("1500")
         )
         submitted_profiles["数码"] = app_main.submitted.SubmittedProfile(
-            "数码", output_files["digital"], Decimal("0.15"), Decimal("500")
+            output_files["digital"], Decimal("0.15"), Decimal("500")
         )
         return (
             output_files,
@@ -780,14 +836,34 @@ class EndToEndAllModeTest(unittest.TestCase):
                 data_dir,
                 "89813015722APT1",
                 [
-                    ("ORDER-1", self.HAIER_REFERENCE, 1000),
-                    ("ORDER-2", self.FOTILE_REFERENCE, 10000),
+                    (
+                        "ORDER-1",
+                        self.HAIER_REFERENCE,
+                        1000,
+                        "核销失败",
+                        "商品已核销",
+                    ),
+                    (
+                        "ORDER-2",
+                        self.FOTILE_REFERENCE,
+                        10000,
+                        "审核通过",
+                        "说明",
+                    ),
                 ],
             )
             self._write_mer_source(
                 data_dir,
                 "89813014812B06R",
-                [("ORDER-3", self.DIGITAL_REFERENCE, 500)],
+                [
+                    (
+                        "ORDER-3",
+                        self.DIGITAL_REFERENCE,
+                        500,
+                        "审核失败",
+                        "SN编码错误",
+                    )
+                ],
             )
             self._write_receipts_source(data_dir / "收款单统计.xlsx")
             appliance_profile = app_main.payment.PROFILES["家电"]
@@ -826,25 +902,69 @@ class EndToEndAllModeTest(unittest.TestCase):
             for name, path in output_files.items():
                 self.assertTrue(path.exists(), f"缺少输出：{name}")
 
+            # 审核明细：验证数据汇总表 F 列“退回”统计正确
+            coupon_result = load_workbook(output_files["coupon"], data_only=True)
+            summary_sheet = coupon_result[coupon_report.SUMMARY_SHEET_NAME]
+            self.assertEqual(summary_sheet.max_column, 6)
+            self.assertEqual(summary_sheet["F1"].value, "退回")
+            summary_data = {}
+            current_category = None
+            current_brand = None
+            for row in summary_sheet.iter_rows(min_row=2, values_only=True):
+                if not any(v is not None for v in row):
+                    continue
+                category, brand, status, count, amount, returned = row[:6]
+                if category is not None:
+                    current_category = category
+                    current_brand = brand
+                elif brand is not None:
+                    current_brand = brand
+                summary_data[(current_category, current_brand, status)] = (
+                    count,
+                    amount,
+                    returned,
+                )
+            self.assertEqual(summary_data[("冰箱", "海尔", "已上传")][2], 1)
+            self.assertIsNone(summary_data[("厨卫", "方太", "已上传")][2])
+            self.assertEqual(summary_data[("家电", None, "已上传")][2], 1)
+            self.assertIsNone(summary_data[("家电", None, "未上传")][2])
+            self.assertEqual(summary_data[("家电", None, "合计")][2], 1)
+            self.assertEqual(summary_data[("数码", None, "已上传")][2], 1)
+            self.assertIsNone(summary_data[("数码", None, "未上传")][2])
+            self.assertEqual(summary_data[("数码", None, "合计")][2], 1)
+
             # 门店报表：方太冰箱行显示纠正后的金额，厨卫方太行保持为空。
             result = load_workbook(output_files["store"], data_only=True)
             sheet = result[result.sheetnames[0]]
-            self.assertEqual(sheet["D4"].value, 150)
-            self.assertEqual(sheet["F4"].value, 150)
-            self.assertEqual(sheet["J4"].value, 150)
-            self.assertEqual(sheet["D15"].value, 1500)
-            self.assertEqual(sheet["F15"].value, 1500)
-            self.assertEqual(sheet["J15"].value, 1500)
-            self.assertIsNone(sheet["D29"].value)
-            self.assertIsNone(sheet["J29"].value)
-            self.assertEqual(sheet["E34"].value, 75)
-            self.assertEqual(sheet["G34"].value, 75)
-            self.assertEqual(sheet["K34"].value, 75)
-            # 表 1 总计：D/E 为家电/数码发生额，J/K 为家电/数码回款额。
-            self.assertEqual(sheet["D35"].value, 1650)
-            self.assertEqual(sheet["E35"].value, 75)
-            self.assertEqual(sheet["J35"].value, 1650)
-            self.assertEqual(sheet["K35"].value, 75)
+            self.assertEqual(sheet.max_column, 8)
+            self.assertEqual(sheet["D3"].value, 150)
+            self.assertEqual(sheet["E3"].value, 150)
+            self.assertEqual(sheet["G3"].value, 150)
+            self.assertEqual(sheet["D14"].value, 1500)
+            self.assertEqual(sheet["E14"].value, 1500)
+            self.assertEqual(sheet["G14"].value, 1500)
+            self.assertIsNone(sheet["D28"].value)
+            self.assertIsNone(sheet["G28"].value)
+            self.assertEqual(sheet["D33"].value, 75)
+            self.assertEqual(sheet["E33"].value, 75)
+            self.assertEqual(sheet["G33"].value, 75)
+            # 表 1 总计：
+            self.assertEqual(sheet["D34"].value, 1725)
+            self.assertEqual(sheet["E34"].value, 1725)
+            self.assertEqual(sheet["G34"].value, 1725)
+            self.assertEqual(sheet["F34"].value, 1)
+            self.assertEqual(sheet["H34"].value, 1)
+            # 表 2 品牌汇总：海尔系 发生 150, 回款 150, 回款率 1；其余为空；第 48 行合计。
+            self.assertEqual(sheet["D41"].value, 150)
+            self.assertEqual(sheet["E41"].value, 150)
+            self.assertEqual(sheet["F41"].value, 1)
+            for row in range(42, 48):
+                self.assertIsNone(sheet[f"D{row}"].value)
+                self.assertIsNone(sheet[f"E{row}"].value)
+                self.assertIsNone(sheet[f"F{row}"].value)
+            self.assertEqual(sheet["D48"].value, 150)
+            self.assertEqual(sheet["E48"].value, 150)
+            self.assertEqual(sheet["F48"].value, 1)
 
 
 if __name__ == "__main__":

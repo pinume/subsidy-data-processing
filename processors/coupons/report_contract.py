@@ -14,10 +14,14 @@ SUBSIDY_YEAR = 2026
 
 SUMMARY_SHEET_NAME = "数据汇总"
 SUMMARY_SUBSIDY_HEADER = f"{SUBSIDY_YEAR}国补金额"
-SUMMARY_HEADER = (
+SUMMARY_CORE_HEADER = (
     "财务大类",
     "品牌",
     "上传状态",
     "数量",
     SUMMARY_SUBSIDY_HEADER,
+)
+SUMMARY_HEADER = (
+    *SUMMARY_CORE_HEADER,
+    "退回",
 )

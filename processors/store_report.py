@@ -37,7 +37,7 @@ from processors.common.paths import find_data_files, resolve_unique_file
 from processors.common.references import normalize_reference
 from processors.coupon_report import OUTPUT_FILE as UPLOAD_FILE
 from processors.coupon_report import SUBSIDY_YEAR
-from processors.coupon_report import SUMMARY_HEADER as UPLOAD_HEADER
+from processors.coupon_report import SUMMARY_CORE_HEADER as UPLOAD_HEADER
 from processors.coupon_report import SUMMARY_SHEET_NAME as UPLOAD_SHEET_NAME
 from processors.coupons import appliance as coupon_appliance
 from processors.coupons.matching import as_currency
@@ -60,26 +60,24 @@ SHANGHAI_TZ = ZoneInfo("Asia/Shanghai")
 FILLED_ALIGNMENT = Alignment(horizontal="left", vertical="center")
 DATA_NUMBER_FORMAT = "General"
 PERCENT_NUMBER_FORMAT = "0.00%"
-CURRENCY_COLUMN_WIDTH = 16.93
-CURRENCY_COLUMNS = ("D", "E", "F", "G", "J", "K")
-TOTAL_ROW = 35
-DETAIL_ROWS = range(4, TOTAL_ROW)
-BRAND_GROUP_TOTAL_ROW = 46
-BRAND_GROUP_DETAIL_ROWS = range(39, BRAND_GROUP_TOTAL_ROW)
-TABLE3_PROJECT_ROWS = {"家电": 50, "数码": 51}
-TABLE3_TOTAL_ROW = 52
+TOTAL_ROW = 34
+DETAIL_ROWS = range(3, TOTAL_ROW)
+BRAND_GROUP_TOTAL_ROW = 48
+BRAND_GROUP_DETAIL_ROWS = range(41, BRAND_GROUP_TOTAL_ROW)
+TABLE3_PROJECT_ROWS = {"家电": 52, "数码": 53}
+TABLE3_TOTAL_ROW = 54
 EXPECTED_SHEET_COUNT = 1
-EXPECTED_COLUMN_COUNT = 13  # A..M
+EXPECTED_COLUMN_COUNT = 8  # A..H
 EXPECTED_SHEET_TITLE = "益庄"
 
 # 正式模板的版本标识，写在表 3 下方一行。data/ 不进 Git，模板由操作员按
 # README 手工放入各环境，因此这个标记是防止误用旧模板的唯一防线：旧模板
 # （含手工修改版）没有它，validate_template 直接给出更换提示。
 # 版本标记行必须隐藏，否则会出现在最终报表的打印结果里。
-TEMPLATE_VERSION_CELL = "A53"
-TEMPLATE_VERSION_ROW = 53
-TEMPLATE_VERSION_MARKER = "模板版本：2026-V2"
-# 版本标记在第 53 行：模板至少 53 行，与版本契约一致。
+TEMPLATE_VERSION_CELL = "A55"
+TEMPLATE_VERSION_ROW = 55
+TEMPLATE_VERSION_MARKER = "模板版本：2026-V3"
+# 版本标记在第 55 行：模板至少 55 行，与版本契约一致。
 MIN_TEMPLATE_ROW_COUNT = TEMPLATE_VERSION_ROW
 
 # 正式模板的全部固定合并区域。校验“必须包含”——模板被改动丢失任一合并
@@ -87,23 +85,13 @@ MIN_TEMPLATE_ROW_COUNT = TEMPLATE_VERSION_ROW
 # style_id 不校验（Excel 重新保存后可能变化）。
 EXPECTED_MERGED_RANGES = frozenset(
     {
-        "A1:M1",
-        "A2:A3",
-        "B2:B3",
-        "C2:C3",
-        "D2:E2",
-        "F2:G2",
-        "H2:I2",
-        "J2:K2",
-        "L2:M2",
-        "A4:A15",
-        "A16:A20",
-        "A21:A27",
-        "A28:A33",
-        "A35:C35",
-        "C37:H37",
-        "D48:E48",
-        "F48:G48",
+        "A1:H1",
+        "A3:A14",
+        "A15:A19",
+        "A20:A26",
+        "A27:A32",
+        "A34:C34",
+        "C39:F39",
     }
 )
 
@@ -112,23 +100,68 @@ EXPECTED_MERGED_RANGES = frozenset(
 # wrong report) and again after saving (writing must not have corrupted them).
 TEMPLATE_STRUCTURE_CELLS: dict[str, str] = {
     "A2": "品类",
-    "C4": "海尔/卡萨帝冰箱",
-    "C15": "方太冰箱",
-    "C29": "方太",
-    "A35": "费用总计",
-    "C38": "品牌",
-    "C39": "海尔系",
-    "C46": "合计",
-    "C48": "表3",
-    "D48": "审核中",
-    "F48": "未上传",
-    "D49": "数量",
-    "E49": "26年国补上传额",
-    "F49": "数量",
-    "G49": "26年国补上传额",
-    "C50": "家电",
-    "C51": "数码",
-    "C52": "合计",
+    "B2": "序号",
+    "C2": "品牌",
+    "D2": "26年发生额",
+    "E2": "上传额",
+    "F2": "上传率",
+    "G2": "回款额",
+    "H2": "回款率",
+
+    "C3": "海尔系冰箱",
+    "C4": "海尔系洗衣机",
+    "C5": "美的系冰箱",
+    "C6": "美的系洗衣机",
+    "C7": "西门子冰箱",
+    "C8": "西门子洗衣机",
+    "C9": "博世冰箱",
+    "C10": "博世洗衣机",
+    "C11": "美菱冰箱",
+    "C12": "美菱洗衣机",
+    "C13": "小鸭洗衣机",
+    "C14": "方太冰箱",
+    "C15": "海信电视",
+    "C16": "创维电视",
+    "C17": "TCL电视",
+    "C18": "海尔电视",
+    "C19": "华为电视",
+    "C20": "格力",
+    "C21": "美的",
+    "C22": "海尔",
+    "C23": "海信",
+    "C24": "奥克斯",
+    "C25": "科龙",
+    "C26": "TCL",
+    "C27": "老板",
+    "C28": "方太",
+    "C29": "AO史密斯",
+    "C30": "海尔",
+    "C31": "美的",
+    "C32": "万家乐",
+    "C33": "数码",
+    "A34": "费用总计",
+
+    "C39": "主要品牌国补上传及回款情况",
+    "C40": "品牌",
+    "D40": "26年国补发生额",
+    "E40": "26年国补回款额",
+    "F40": "回款率",
+    "C41": "海尔系",
+    "C42": "美的系",
+    "C43": "格力",
+    "C44": "博西",
+    "C45": "海信系",
+    "C46": "创维",
+    "C47": "TCL",
+    "C48": "合计",
+
+    "C50": "表3",
+    "D50": "审核中",
+    "E50": "未上传",
+    "C52": "家电",
+    "C53": "数码",
+    "C54": "合计",
+
     TEMPLATE_VERSION_CELL: TEMPLATE_VERSION_MARKER,
 }
 
@@ -167,6 +200,9 @@ def validate_template(workbook: Workbook) -> None:
     if sheet.max_row < MIN_TEMPLATE_ROW_COUNT:
         raise ValueError(f"空白模板行数至少应为 {MIN_TEMPLATE_ROW_COUNT}，实际为 {sheet.max_row}")
 
+    if "更新时间：" not in str(sheet["A1"].value or ""):
+        raise ValueError("空白模板 A1 单元格缺少“更新时间：”标记；请更换为新版模板")
+
     # 版本标记先行检查：旧模板（含无标记的手工修改版）在这里被明确拒绝，
     # 而不是混入下面的通用结构错误里让人猜。
     if sheet[TEMPLATE_VERSION_CELL].value != TEMPLATE_VERSION_MARKER:
@@ -189,12 +225,12 @@ def validate_template(workbook: Workbook) -> None:
             + "；请更换为新版模板"
         )
 
-    # 明细行 4..TOTAL_ROW-1 共 31 行，序号 1..31。
-    for offset, expected in enumerate(range(1, TOTAL_ROW - 3), start=4):
-        actual = sheet[f"B{offset}"].value
+    # 明细行 3..TOTAL_ROW-1 共 31 行，序号 1..31。
+    for expected, row in enumerate(DETAIL_ROWS, start=1):
+        actual = sheet[f"B{row}"].value
         if actual != expected:
             raise ValueError(
-                f"空白模板序号校验失败：B{offset} 应为 {expected}，"
+                f"空白模板序号校验失败：B{row} 应为 {expected}，"
                 f"实际为 {actual!r}；请更换为新版模板"
             )
 
@@ -221,41 +257,41 @@ class RowRule:
 
 
 ROW_RULES = (
-    RowRule(4, "冰箱", ("海尔", "卡萨帝"), "冰箱", ("海尔", "卡萨帝")),
-    RowRule(5, "洗衣机", ("海尔", "卡萨帝"), "洗衣机", ("海尔", "卡萨帝")),
-    RowRule(6, "冰箱", ("美的", "COLMO", "东芝"), "冰箱", ("美的系", "COLMO", "东芝JX")),
-    RowRule(7, "洗衣机", ("美的", "小天鹅", "COLMO"), "洗衣机", ("美的系", "小天鹅", "COLMO")),
-    RowRule(8, "冰箱", ("西门子",), "冰箱", ("西门子",)),
-    RowRule(9, "洗衣机", ("西门子",), "洗衣机", ("西门子",)),
-    RowRule(10, "冰箱", ("博世",), "冰箱", ("博世",)),
-    RowRule(11, "洗衣机", ("博世",), "洗衣机", ("博世",)),
-    RowRule(12, "冰箱", ("美菱",), "冰箱", ("美菱",)),
-    RowRule(13, "洗衣机", ("美菱",), "洗衣机", ("美菱",)),
-    RowRule(14, "洗衣机", ("小鸭",), "洗衣机", ("小鸭",)),
+    RowRule(3, "冰箱", ("海尔", "卡萨帝"), "冰箱", ("海尔", "卡萨帝")),
+    RowRule(4, "洗衣机", ("海尔", "卡萨帝"), "洗衣机", ("海尔", "卡萨帝")),
+    RowRule(5, "冰箱", ("美的", "COLMO", "东芝"), "冰箱", ("美的系", "COLMO", "东芝JX")),
+    RowRule(6, "洗衣机", ("美的", "小天鹅", "COLMO"), "洗衣机", ("美的系", "小天鹅", "COLMO")),
+    RowRule(7, "冰箱", ("西门子",), "冰箱", ("西门子",)),
+    RowRule(8, "洗衣机", ("西门子",), "洗衣机", ("西门子",)),
+    RowRule(9, "冰箱", ("博世",), "冰箱", ("博世",)),
+    RowRule(10, "洗衣机", ("博世",), "洗衣机", ("博世",)),
+    RowRule(11, "冰箱", ("美菱",), "冰箱", ("美菱",)),
+    RowRule(12, "洗衣机", ("美菱",), "洗衣机", ("美菱",)),
+    RowRule(13, "洗衣机", ("小鸭",), "洗衣机", ("小鸭",)),
     # 方太冰箱：审核侧原品类为厨卫的记录由 load_upload_data 按回款明细的
     # 交易参考号纠正为冰箱后再进入本行（见 load_payment_data 的编码品类
     # 索引与 load_upload_data 的品类纠正），因此两侧规则都写冰箱。
-    RowRule(15, "冰箱", ("方太",), "冰箱", ("方太",)),
-    RowRule(16, "国产彩电", ("海信",), "电视", ("海信",)),
-    RowRule(17, "国产彩电", ("创维",), "电视", ("创维",)),
-    RowRule(18, "国产彩电", ("TCL",), "电视", ("TCL",)),
-    RowRule(19, "国产彩电", ("海尔", "卡萨帝"), "电视", ("海尔", "卡萨帝")),
-    RowRule(20, "国产彩电", ("华为", "华为（终端）"), "电视", ("华为", "华为（终端）")),
-    RowRule(21, "空调", ("格力",), "空调", ("格力",)),
-    RowRule(22, "空调", ("美的",), "空调", ("美的",)),
-    RowRule(23, "空调", ("海尔", "卡萨帝"), "空调", ("海尔", "卡萨帝")),
-    RowRule(24, "空调", ("海信",), "空调", ("海信",)),
-    RowRule(25, "空调", ("奥克斯",), "空调", ("奥克斯",)),
-    RowRule(26, "空调", ("科龙",), "空调", ("科龙",)),
-    RowRule(27, "空调", ("TCL",), "空调", ("TCL",)),
-    RowRule(28, "厨卫", ("老板",), "厨卫", ("老板",)),
+    RowRule(14, "冰箱", ("方太",), "冰箱", ("方太",)),
+    RowRule(15, "国产彩电", ("海信",), "电视", ("海信",)),
+    RowRule(16, "国产彩电", ("创维",), "电视", ("创维",)),
+    RowRule(17, "国产彩电", ("TCL",), "电视", ("TCL",)),
+    RowRule(18, "国产彩电", ("海尔", "卡萨帝"), "电视", ("海尔", "卡萨帝")),
+    RowRule(19, "国产彩电", ("华为", "华为（终端）"), "电视", ("华为", "华为（终端）")),
+    RowRule(20, "空调", ("格力",), "空调", ("格力",)),
+    RowRule(21, "空调", ("美的",), "空调", ("美的",)),
+    RowRule(22, "空调", ("海尔", "卡萨帝"), "空调", ("海尔", "卡萨帝")),
+    RowRule(23, "空调", ("海信",), "空调", ("海信",)),
+    RowRule(24, "空调", ("奥克斯",), "空调", ("奥克斯",)),
+    RowRule(25, "空调", ("科龙",), "空调", ("科龙",)),
+    RowRule(26, "空调", ("TCL",), "空调", ("TCL",)),
+    RowRule(27, "厨卫", ("老板",), "厨卫", ("老板",)),
     # 真正的方太厨卫商品（若有）走本行；方太冰箱经参考号纠正后不再占用。
-    RowRule(29, "厨卫", ("方太",), "厨卫", ("方太",)),
-    RowRule(30, "厨卫", ("AO史密斯", "A.O.史密斯"), "厨卫", ("AO史密斯", "A.O.史密斯")),
-    RowRule(31, "厨卫", ("海尔", "卡萨帝"), "厨卫", ("海尔", "卡萨帝")),
-    RowRule(32, "厨卫", ("美的", "COLMO"), "厨卫", ("美的系", "美的", "COLMO")),
-    RowRule(33, "厨卫", ("万家乐",), "厨卫", ("万家乐",)),
-    RowRule(34, None, (), "数码", (), fill_digital=True),
+    RowRule(28, "厨卫", ("方太",), "厨卫", ("方太",)),
+    RowRule(29, "厨卫", ("AO史密斯", "A.O.史密斯"), "厨卫", ("AO史密斯", "A.O.史密斯")),
+    RowRule(30, "厨卫", ("海尔", "卡萨帝"), "厨卫", ("海尔", "卡萨帝")),
+    RowRule(31, "厨卫", ("美的", "COLMO"), "厨卫", ("美的系", "美的", "COLMO")),
+    RowRule(32, "厨卫", ("万家乐",), "厨卫", ("万家乐",)),
+    RowRule(33, None, (), "数码", (), fill_digital=True),
 )
 
 # Every payment-file 财务大类 this report knows how to place. A category
@@ -287,12 +323,6 @@ class BrandGroupRule:
 
 
 @dataclass(frozen=True)
-class CountAmount:
-    count: int
-    amount: Decimal
-
-
-@dataclass(frozen=True)
 class PaymentDetailRecord:
     """回款明细「家电明细」中的一行，按交易参考号索引，用于审核侧品类纠正。
 
@@ -321,7 +351,7 @@ class CategoryCorrection:
 
 BRAND_GROUP_RULES = (
     BrandGroupRule(
-        39,
+        41,
         "海尔系",
         (
             BrandGroupCategory("冰箱", "冰箱", ("海尔", "卡萨帝")),
@@ -332,7 +362,7 @@ BRAND_GROUP_RULES = (
         ),
     ),
     BrandGroupRule(
-        40,
+        42,
         "美的系",
         (
             BrandGroupCategory("冰箱", "冰箱", ("美的", "COLMO", "东芝")),
@@ -341,9 +371,9 @@ BRAND_GROUP_RULES = (
             BrandGroupCategory("厨卫", "厨卫", ("美的", "COLMO")),
         ),
     ),
-    BrandGroupRule(41, "格力", (BrandGroupCategory("空调", "空调", ("格力",)),)),
+    BrandGroupRule(43, "格力", (BrandGroupCategory("空调", "空调", ("格力",)),)),
     BrandGroupRule(
-        42,
+        44,
         "博西",
         (
             BrandGroupCategory("冰箱", "冰箱", ("西门子", "博世")),
@@ -351,16 +381,16 @@ BRAND_GROUP_RULES = (
         ),
     ),
     BrandGroupRule(
-        43,
+        45,
         "海信系",
         (
             BrandGroupCategory("国产彩电", "电视", ("海信",)),
             BrandGroupCategory("空调", "空调", ("海信", "科龙")),
         ),
     ),
-    BrandGroupRule(44, "创维", (BrandGroupCategory("国产彩电", "电视", ("创维",)),)),
+    BrandGroupRule(46, "创维", (BrandGroupCategory("国产彩电", "电视", ("创维",)),)),
     BrandGroupRule(
-        45,
+        47,
         "TCL",
         (
             BrandGroupCategory("国产彩电", "电视", ("TCL",)),
@@ -443,11 +473,6 @@ def apply_report_font(sheet, font_name: str) -> None:
             font = copy(cell.font)
             font.name = font_name
             cell.font = font
-
-
-def widen_currency_columns(sheet) -> None:
-    for column in CURRENCY_COLUMNS:
-        sheet.column_dimensions[column].width = CURRENCY_COLUMN_WIDTH
 
 
 def _open_source_workbook(path: Path, business_name: str, processing_mode: str):
@@ -747,7 +772,7 @@ def load_upload_data(
 ) -> tuple[
     dict[tuple[str, str], dict[str, Decimal]],
     dict[str, Decimal],
-    dict[str, dict[str, CountAmount]],
+    dict[str, dict[str, int]],
     list[CategoryCorrection],
     list[tuple[str, tuple[str, ...]]],
 ]:
@@ -786,7 +811,7 @@ def load_upload_data(
     digital_uploaded = Decimal("0")
     digital_not_uploaded = Decimal("0")
     digital_total: Decimal | None = None
-    project_metrics: dict[str, dict[str, CountAmount]] = {
+    upload_counts: dict[str, dict[str, int]] = {
         "家电": {},
         "数码": {},
     }
@@ -807,12 +832,11 @@ def load_upload_data(
         status = normalize_text(status_raw)
         amount = to_decimal(amount_raw)
 
-        if current_category in project_metrics and not current_brand:
+        if current_category in upload_counts and not current_brand:
             if status in {"已上传", "未上传", "合计"}:
-                project_metrics[current_category][status] = CountAmount(
-                    to_count(count_raw),
-                    amount,
-                )
+                count = to_count(count_raw)
+                if status != "合计":
+                    upload_counts[current_category][status] = count
             if current_category == "数码":
                 if status == "已上传":
                     digital_uploaded += amount
@@ -875,7 +899,7 @@ def load_upload_data(
         missing_statuses = {
             status
             for status in ("已上传", "未上传")
-            if status not in project_metrics[project]
+            if status not in upload_counts[project]
         }
         if missing_statuses:
             raise ValueError(
@@ -883,7 +907,7 @@ def load_upload_data(
                 f"{'、'.join(sorted(missing_statuses))}"
             )
 
-    return amounts, digital_totals, project_metrics, corrections, reviews
+    return amounts, digital_totals, upload_counts, corrections, reviews
 
 
 def load_payment_data(
@@ -891,7 +915,7 @@ def load_payment_data(
 ) -> tuple[
     dict[tuple[str, str], Decimal],
     Decimal,
-    dict[str, CountAmount],
+    dict[str, int],
     dict[str, PaymentDetailRecord],
     dict[str, tuple[PaymentDetailRecord, ...]],
 ]:
@@ -909,9 +933,9 @@ def load_payment_data(
         amounts: dict[tuple[str, str], Decimal] = {}
         current_category = ""
         digital_amount = Decimal("0")
-        project_metrics = {
-            "家电": CountAmount(0, Decimal("0")),
-            "数码": CountAmount(0, Decimal("0")),
+        payment_counts: dict[str, int] = {
+            "家电": 0,
+            "数码": 0,
         }
 
         for row in (r[:header_width] for r in rows[1:]):
@@ -932,18 +956,10 @@ def load_payment_data(
             if category in HOUSEHOLD_PAYMENT_CATEGORIES:
                 key = (category, brand)
                 amounts[key] = amounts.get(key, Decimal("0")) + amount
-                current = project_metrics["家电"]
-                project_metrics["家电"] = CountAmount(
-                    current.count + count,
-                    current.amount + amount,
-                )
+                payment_counts["家电"] += count
             elif category in DIGITAL_PAYMENT_CATEGORIES:
                 digital_amount += amount
-                current = project_metrics["数码"]
-                project_metrics["数码"] = CountAmount(
-                    current.count + count,
-                    current.amount + amount,
-                )
+                payment_counts["数码"] += count
             else:
                 raise ValueError(
                     f"门店报表尚未配置回款品类：{category!r}（品牌 {brand!r}）；"
@@ -968,7 +984,7 @@ def load_payment_data(
     finally:
         workbook.close()
 
-    return amounts, digital_amount, project_metrics, payment_index, ambiguous_refs
+    return amounts, digital_amount, payment_counts, payment_index, ambiguous_refs
 
 
 def sum_upload_amount(
@@ -1038,14 +1054,6 @@ def _rule_claims(
     return claims
 
 
-def _upload_rule_claims() -> dict[tuple[str, str], int]:
-    return _rule_claims("upload_category", "upload_brands", "审核明细")
-
-
-def _payment_rule_claims() -> dict[tuple[str, str], int]:
-    return _rule_claims("payment_category", "payment_brands", "回款明细")
-
-
 def validate_rule_coverage(
     upload_data: dict[tuple[str, str], dict[str, Decimal]],
     payment_data: dict[tuple[str, str], Decimal],
@@ -1058,8 +1066,8 @@ def validate_rule_coverage(
     still balances, because both sides of that check are already missing the
     same money.
     """
-    upload_claims = _upload_rule_claims()
-    payment_claims = _payment_rule_claims()
+    upload_claims = _rule_claims("upload_category", "upload_brands", "审核明细")
+    payment_claims = _rule_claims("payment_category", "payment_brands", "回款明细")
 
     unmatched: list[str] = [
         f"审核明细未配置规则：{category}/{brand}，发生额 {occurred}"
@@ -1082,61 +1090,41 @@ def validate_rule_coverage(
 def write_metrics_row(
     sheet,
     row: int,
-    occurred_col: str,
-    uploaded_col: str,
-    paid_col: str,
-    upload_ratio_col: str,
-    payment_ratio_col: str,
-    blank_cols: tuple[str, ...],
     occurred: Decimal,
     uploaded: Decimal,
     paid: Decimal,
     font: Font,
     expected_cells: dict[str, object],
 ) -> None:
-    for col in blank_cols:
-        sheet[f"{col}{row}"] = None
-        expected_cells[f"{col}{row}"] = None
-
     occurred_value = decimal_to_cell_value(occurred)
     uploaded_value = decimal_to_cell_value(uploaded)
     paid_value = decimal_to_cell_value(paid)
     upload_ratio_value = safe_ratio(uploaded, occurred)
     payment_ratio_value = safe_ratio(paid, occurred)
 
-    sheet[f"{occurred_col}{row}"] = occurred_value
-    sheet[f"{uploaded_col}{row}"] = uploaded_value
-    sheet[f"{paid_col}{row}"] = paid_value
-    sheet[f"{upload_ratio_col}{row}"] = upload_ratio_value
-    sheet[f"{payment_ratio_col}{row}"] = payment_ratio_value
+    values = {
+        f"D{row}": occurred_value,
+        f"E{row}": uploaded_value,
+        f"F{row}": upload_ratio_value,
+        f"G{row}": paid_value,
+        f"H{row}": payment_ratio_value,
+    }
 
-    expected_cells[f"{occurred_col}{row}"] = occurred_value
-    expected_cells[f"{uploaded_col}{row}"] = uploaded_value
-    expected_cells[f"{paid_col}{row}"] = paid_value
-    expected_cells[f"{upload_ratio_col}{row}"] = upload_ratio_value
-    expected_cells[f"{payment_ratio_col}{row}"] = payment_ratio_value
+    for coordinate, value in values.items():
+        sheet[coordinate] = value
+        expected_cells[coordinate] = value
 
     apply_filled_style(
         sheet,
-        (
-            f"{occurred_col}{row}",
-            f"{uploaded_col}{row}",
-            f"{upload_ratio_col}{row}",
-            f"{paid_col}{row}",
-            f"{payment_ratio_col}{row}",
-        ),
+        (f"D{row}", f"E{row}", f"F{row}", f"G{row}", f"H{row}"),
         font,
     )
     apply_data_number_format(
         sheet,
-        (
-            f"{occurred_col}{row}",
-            f"{uploaded_col}{row}",
-            f"{paid_col}{row}",
-        ),
+        (f"D{row}", f"E{row}", f"G{row}"),
     )
-    sheet[f"{upload_ratio_col}{row}"].number_format = PERCENT_NUMBER_FORMAT
-    sheet[f"{payment_ratio_col}{row}"].number_format = PERCENT_NUMBER_FORMAT
+    sheet[f"F{row}"].number_format = PERCENT_NUMBER_FORMAT
+    sheet[f"H{row}"].number_format = PERCENT_NUMBER_FORMAT
 
 
 def update_totals_row(
@@ -1193,25 +1181,33 @@ def write_row(
         occurred = digital_upload["发生额"]
         uploaded = digital_upload["上传额"]
         paid = digital_payment
-        write_metrics_row(
-            sheet, row_rule.row, "E", "G", "K", "I", "M", ("D", "F", "H", "J", "L"),
-            occurred, uploaded, paid, font, expected_cells,
+    else:
+        occurred, uploaded = sum_upload_amount(
+            upload_data, row_rule.upload_category, row_rule.upload_brands
         )
-        return
+        paid = sum_payment_amount(
+            payment_data, row_rule.payment_category, row_rule.payment_brands
+        )
 
-    occurred, uploaded = sum_upload_amount(upload_data, row_rule.upload_category, row_rule.upload_brands)
-    paid = sum_payment_amount(payment_data, row_rule.payment_category, row_rule.payment_brands)
     write_metrics_row(
-        sheet, row_rule.row, "D", "F", "J", "H", "L", ("E", "G", "I", "K", "M"),
-        occurred, uploaded, paid, font, expected_cells,
+        sheet,
+        row_rule.row,
+        occurred,
+        uploaded,
+        paid,
+        font,
+        expected_cells,
     )
 
 
 def update_totals(sheet, font: Font, expected_cells: dict[str, object]) -> None:
     update_totals_row(
         sheet,
-        amount_columns=("D", "E", "F", "G", "J", "K"),
-        ratio_columns={"H": ("F", "D"), "I": ("G", "E"), "L": ("J", "D"), "M": ("K", "E")},
+        amount_columns=("D", "E", "G"),
+        ratio_columns={
+            "F": ("E", "D"),
+            "H": ("G", "D"),
+        },
         source_rows=DETAIL_ROWS,
         total_row=TOTAL_ROW,
         font=font,
@@ -1223,20 +1219,18 @@ def sum_brand_group(
     upload_data: dict[tuple[str, str], dict[str, Decimal]],
     payment_data: dict[tuple[str, str], Decimal],
     categories: tuple[BrandGroupCategory, ...],
-) -> tuple[Decimal, Decimal, Decimal]:
+) -> tuple[Decimal, Decimal]:
     occurred = Decimal("0")
-    uploaded = Decimal("0")
     paid = Decimal("0")
 
     for category in categories:
-        category_occurred, category_uploaded = sum_upload_amount(
+        category_occurred, _ = sum_upload_amount(
             upload_data, category.upload_category, category.brands
         )
         occurred += category_occurred
-        uploaded += category_uploaded
         paid += sum_payment_amount(payment_data, category.payment_category, category.brands)
 
-    return occurred, uploaded, paid
+    return occurred, paid
 
 
 def write_brand_group_row(
@@ -1247,18 +1241,36 @@ def write_brand_group_row(
     font: Font,
     expected_cells: dict[str, object],
 ) -> None:
-    occurred, uploaded, paid = sum_brand_group(upload_data, payment_data, brand_group_rule.categories)
-    write_metrics_row(
-        sheet, brand_group_rule.row, "D", "E", "F", "G", "H", (),
-        occurred, uploaded, paid, font, expected_cells,
+    occurred, paid = sum_brand_group(
+        upload_data, payment_data, brand_group_rule.categories
     )
+    row = brand_group_rule.row
+    values = {
+        f"D{row}": decimal_to_cell_value(occurred),
+        f"E{row}": decimal_to_cell_value(paid),
+        f"F{row}": safe_ratio(paid, occurred),
+    }
+    for coordinate, value in values.items():
+        sheet[coordinate] = value
+        expected_cells[coordinate] = value
+
+    apply_filled_style(
+        sheet,
+        (f"D{row}", f"E{row}", f"F{row}"),
+        font,
+    )
+    apply_data_number_format(
+        sheet,
+        (f"D{row}", f"E{row}"),
+    )
+    sheet[f"F{row}"].number_format = PERCENT_NUMBER_FORMAT
 
 
 def update_brand_group_totals(sheet, font: Font, expected_cells: dict[str, object]) -> None:
     update_totals_row(
         sheet,
-        amount_columns=("D", "E", "F"),
-        ratio_columns={"G": ("E", "D"), "H": ("F", "D")},
+        amount_columns=("D", "E"),
+        ratio_columns={"F": ("E", "D")},
         source_rows=BRAND_GROUP_DETAIL_ROWS,
         total_row=BRAND_GROUP_TOTAL_ROW,
         font=font,
@@ -1268,52 +1280,40 @@ def update_brand_group_totals(sheet, font: Font, expected_cells: dict[str, objec
 
 def write_table3(
     sheet,
-    upload_metrics: dict[str, dict[str, CountAmount]],
-    payment_metrics: dict[str, CountAmount],
+    upload_counts: dict[str, dict[str, int]],
+    payment_counts: dict[str, int],
     font: Font,
     expected_cells: dict[str, object],
 ) -> None:
-    pending_total = CountAmount(0, Decimal("0"))
-    not_uploaded_total = CountAmount(0, Decimal("0"))
+    pending_total = 0
+    not_uploaded_total = 0
     for project, row in TABLE3_PROJECT_ROWS.items():
-        uploaded = upload_metrics[project]["已上传"]
-        not_uploaded = upload_metrics[project]["未上传"]
-        paid = payment_metrics[project]
-        pending = CountAmount(
-            uploaded.count - paid.count,
-            uploaded.amount - paid.amount,
+        pending_count = (
+            upload_counts[project]["已上传"]
+            - payment_counts[project]
         )
-        pending_total = CountAmount(
-            pending_total.count + pending.count,
-            pending_total.amount + pending.amount,
-        )
-        not_uploaded_total = CountAmount(
-            not_uploaded_total.count + not_uploaded.count,
-            not_uploaded_total.amount + not_uploaded.amount,
-        )
-        values = {
-            f"D{row}": pending.count or None,
-            f"E{row}": decimal_to_cell_value(pending.amount),
-            f"F{row}": not_uploaded.count or None,
-            f"G{row}": decimal_to_cell_value(not_uploaded.amount),
-        }
-        for coordinate, value in values.items():
-            sheet[coordinate] = value
-            sheet[coordinate].font = font
-            expected_cells[coordinate] = value
-        apply_data_number_format(sheet, tuple(values))
+        not_uploaded_count = upload_counts[project]["未上传"]
 
-    total_values = {
-        f"D{TABLE3_TOTAL_ROW}": pending_total.count or None,
-        f"E{TABLE3_TOTAL_ROW}": decimal_to_cell_value(pending_total.amount),
-        f"F{TABLE3_TOTAL_ROW}": not_uploaded_total.count or None,
-        f"G{TABLE3_TOTAL_ROW}": decimal_to_cell_value(not_uploaded_total.amount),
-    }
-    for coordinate, value in total_values.items():
-        sheet[coordinate] = value
-        sheet[coordinate].font = font
-        expected_cells[coordinate] = value
-    apply_data_number_format(sheet, tuple(total_values))
+        sheet[f"D{row}"] = pending_count or None
+        sheet[f"E{row}"] = not_uploaded_count or None
+        expected_cells[f"D{row}"] = pending_count or None
+        expected_cells[f"E{row}"] = not_uploaded_count or None
+
+        sheet[f"D{row}"].font = font
+        sheet[f"E{row}"].font = font
+        apply_data_number_format(sheet, (f"D{row}", f"E{row}"))
+
+        pending_total += pending_count
+        not_uploaded_total += not_uploaded_count
+
+    sheet[f"D{TABLE3_TOTAL_ROW}"] = pending_total or None
+    sheet[f"E{TABLE3_TOTAL_ROW}"] = not_uploaded_total or None
+    expected_cells[f"D{TABLE3_TOTAL_ROW}"] = pending_total or None
+    expected_cells[f"E{TABLE3_TOTAL_ROW}"] = not_uploaded_total or None
+
+    sheet[f"D{TABLE3_TOTAL_ROW}"].font = font
+    sheet[f"E{TABLE3_TOTAL_ROW}"].font = font
+    apply_data_number_format(sheet, (f"D{TABLE3_TOTAL_ROW}", f"E{TABLE3_TOTAL_ROW}"))
 
 
 def current_timestamp() -> datetime:
@@ -1322,10 +1322,9 @@ def current_timestamp() -> datetime:
 
 def update_header(sheet, timestamp: datetime, expected_cells: dict[str, object]) -> None:
     formatted_timestamp = timestamp.strftime("%Y-%m-%d %H:%M:%S")
-    value = (
-        f"        {SUBSIDY_YEAR}年（益庄店 ）门店国补上传及回款情况表"
-        f"        更新时间：{formatted_timestamp}"
-    )
+    original = str(sheet["A1"].value or "")
+    prefix, marker, _ = original.rpartition("更新时间：")
+    value = f"{prefix}{marker}{formatted_timestamp}"
     sheet["A1"] = value
     expected_cells["A1"] = value
 
@@ -1342,7 +1341,8 @@ def _values_match(expected: object, actual: object) -> bool:
 
 
 def _validate_totals_match_details(sheet, path_name: str) -> None:
-    for column in ("D", "E", "F", "G", "J", "K"):
+    # 表1
+    for column in ("D", "E", "G"):
         recomputed = sum(
             (to_decimal(sheet[f"{column}{row}"].value) for row in DETAIL_ROWS),
             Decimal("0"),
@@ -1353,7 +1353,9 @@ def _validate_totals_match_details(sheet, path_name: str) -> None:
                 f"{path_name} 第 {TOTAL_ROW} 行合计校验失败："
                 f"{column}{TOTAL_ROW} 应为 {recomputed}，实际为 {actual}"
             )
-    for column in ("D", "E", "F"):
+
+    # 表2
+    for column in ("D", "E"):
         recomputed = sum(
             (to_decimal(sheet[f"{column}{row}"].value) for row in BRAND_GROUP_DETAIL_ROWS),
             Decimal("0"),
@@ -1365,6 +1367,25 @@ def _validate_totals_match_details(sheet, path_name: str) -> None:
                 f"{column}{BRAND_GROUP_TOTAL_ROW} 应为 {recomputed}，实际为 {actual}"
             )
 
+    # 表3 独立守恒校验
+    d52 = to_count(sheet[f"D{TABLE3_PROJECT_ROWS['家电']}"].value)
+    d53 = to_count(sheet[f"D{TABLE3_PROJECT_ROWS['数码']}"].value)
+    d54 = to_count(sheet[f"D{TABLE3_TOTAL_ROW}"].value)
+    if d54 != d52 + d53:
+        raise ValueError(
+            f"{path_name} 第 {TABLE3_TOTAL_ROW} 行审核中数量合计校验失败："
+            f"D{TABLE3_TOTAL_ROW} 应为 {d52 + d53}，实际为 {d54}"
+        )
+
+    e52 = to_count(sheet[f"E{TABLE3_PROJECT_ROWS['家电']}"].value)
+    e53 = to_count(sheet[f"E{TABLE3_PROJECT_ROWS['数码']}"].value)
+    e54 = to_count(sheet[f"E{TABLE3_TOTAL_ROW}"].value)
+    if e54 != e52 + e53:
+        raise ValueError(
+            f"{path_name} 第 {TABLE3_TOTAL_ROW} 行未上传数量合计校验失败："
+            f"E{TABLE3_TOTAL_ROW} 应为 {e52 + e53}，实际为 {e54}"
+        )
+
 
 def _validate_ratios_match_totals(sheet, path_name: str) -> None:
     """Independently recompute each ratio cell from the totals actually saved in
@@ -1372,8 +1393,8 @@ def _validate_ratios_match_totals(sheet, path_name: str) -> None:
     denominator mixup that expected-cell comparison alone would miss, since
     that comparison reuses the same safe_ratio() call that wrote the cell."""
     checks = (
-        (TOTAL_ROW, {"H": ("F", "D"), "I": ("G", "E"), "L": ("J", "D"), "M": ("K", "E")}),
-        (BRAND_GROUP_TOTAL_ROW, {"G": ("E", "D"), "H": ("F", "D")}),
+        (TOTAL_ROW, {"F": ("E", "D"), "H": ("G", "D")}),
+        (BRAND_GROUP_TOTAL_ROW, {"F": ("E", "D")}),
     )
     for total_row, ratio_columns in checks:
         for ratio_column, (numerator_column, denominator_column) in ratio_columns.items():
@@ -1451,13 +1472,13 @@ def report_category_corrections(
 def process_store_report(reporter: ConsoleReporter) -> None:
     timestamp = current_timestamp()
     font_name, _ = resolve_font()
-    payment_data, digital_payment, payment_metrics, payment_index, ambiguous_refs = (
+    payment_data, digital_payment, payment_counts, payment_index, ambiguous_refs = (
         load_payment_data(PAYMENT_FILE)
     )
     (
         upload_data,
         digital_upload,
-        upload_metrics,
+        upload_counts,
         category_corrections,
         review_items,
     ) = load_upload_data(UPLOAD_FILE, payment_index, ambiguous_refs)
@@ -1488,12 +1509,11 @@ def process_store_report(reporter: ConsoleReporter) -> None:
         update_brand_group_totals(sheet, font, expected_cells)
         write_table3(
             sheet,
-            upload_metrics,
-            payment_metrics,
+            upload_counts,
+            payment_counts,
             font,
             expected_cells,
         )
-        widen_currency_columns(sheet)
         update_header(sheet, timestamp, expected_cells)
         apply_report_font(sheet, font_name)
     except BaseException:

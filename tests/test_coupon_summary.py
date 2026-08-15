@@ -23,11 +23,13 @@ def summary_row(
     remark: str,
     detail: str,
     subsidy: object,
+    reference: str = "",
 ) -> list[object]:
     header = module.COUPON_OUTPUT_HEADER
     values = {
         "财务大类": category,
         "品牌": brand,
+        "明细摘要": reference,
         "备注": remark,
         "详细情况": detail,
         module.COUPON_OUTPUT_HEADER[6]: subsidy,
@@ -36,6 +38,15 @@ def summary_row(
 
 
 class CouponSummaryTest(unittest.TestCase):
+    def test_is_returned_detail(self) -> None:
+        self.assertTrue(sources.is_returned_detail("审核失败：SN错误"))
+        self.assertTrue(sources.is_returned_detail("核销失败：重复核销"))
+        self.assertTrue(sources.is_returned_detail("审核失败"))
+        self.assertFalse(sources.is_returned_detail("审核通过：说明中写审核失败"))
+        self.assertFalse(sources.is_returned_detail("核销成功：成功"))
+        self.assertFalse(sources.is_returned_detail(""))
+        self.assertFalse(sources.is_returned_detail(None))
+
     def test_digital_uploaded_subsidy_stats_come_from_uploaded_summary(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             source = Path(directory) / "已上传.xlsx"
@@ -102,9 +113,59 @@ class CouponSummaryTest(unittest.TestCase):
         self.assertEqual(
             result,
             [
-                ("已上传", 1, 20.1),
-                ("未上传", 0, 5.0),
-                ("合计", 1, 25.1),
+                ("已上传", 1, 20.1, None),
+                ("未上传", 0, 5.0, None),
+                ("合计", 1, 25.1, None),
+            ],
+        )
+
+    def test_digital_summary_returned_counts(self) -> None:
+        rows = [
+            list(coupons_digital.COUPON_OUTPUT_HEADER),
+            summary_row(
+                coupons_digital,
+                category="数码",
+                brand="A",
+                remark="已上传",
+                detail="审核失败：SN错误",
+                subsidy=100,
+            ),
+            summary_row(
+                coupons_digital,
+                category="数码",
+                brand="B",
+                remark="已上传",
+                detail="核销失败：重复核销",
+                subsidy=200,
+            ),
+            summary_row(
+                coupons_digital,
+                category="数码",
+                brand="C",
+                remark="已上传",
+                detail="审核通过",
+                subsidy=300,
+            ),
+            summary_row(
+                coupons_digital,
+                category="数码",
+                brand="D",
+                remark="未上传",
+                detail="",
+                subsidy=400,
+            ),
+        ]
+        summary = coupons_digital.build_coupon_summary(
+            rows,
+            uploaded_count=3,
+            uploaded_subsidy_total=Decimal("600.00"),
+        )
+        self.assertEqual(
+            summary,
+            [
+                ("已上传", 3, 600.0, 2),
+                ("未上传", 1, 400.0, None),
+                ("合计", 4, 1000.0, 2),
             ],
         )
 
@@ -157,18 +218,79 @@ class CouponSummaryTest(unittest.TestCase):
         self.assertEqual(
             summary,
             [
-                ("冰箱", "海尔", "已上传", 2, 30.31),
-                ("空调", "格力", "未上传", 1, 0.0),
+                ("冰箱", "海尔", "已上传", 2, 30.31, None),
+                ("空调", "格力", "未上传", 1, 0.0, None),
                 # 已上传 is measured from the 已上传 workbook, 合计 from this
                 # coupon file's own 国补 column, and 未上传 is the difference.
                 # 财务大类=家电 with no 品牌 so the block matches the 数码 one
                 # appended after it in 审核明细.
-                ("家电", None, "已上传", 1, 20.20),
-                ("家电", None, "未上传", 1, 10.11),
-                ("家电", None, "合计", 2, 30.31),
+                ("家电", None, "已上传", 1, 20.20, None),
+                ("家电", None, "未上传", 1, 10.11, None),
+                ("家电", None, "合计", 2, 30.31, None),
             ],
         )
         self.assertEqual(zero_subsidy_count, 0)
+
+    def test_appliance_summary_returned_counts(self) -> None:
+        rows = [
+            list(appliance.COUPON_OUTPUT_HEADER),
+            summary_row(
+                appliance,
+                category="冰箱",
+                brand="海尔",
+                remark="已上传",
+                detail="审核失败：SN错误",
+                subsidy=10,
+            ),
+            summary_row(
+                appliance,
+                category="冰箱",
+                brand="海尔",
+                remark="已上传",
+                detail="核销失败：重复",
+                subsidy=10,
+            ),
+            summary_row(
+                appliance,
+                category="冰箱",
+                brand="海尔",
+                remark="已上传",
+                detail="审核通过",
+                subsidy=10,
+            ),
+            summary_row(
+                appliance,
+                category="冰箱",
+                brand="海尔",
+                remark="未上传",
+                detail="",
+                subsidy=10,
+            ),
+            summary_row(
+                appliance,
+                category="空调",
+                brand="美的",
+                remark="已上传",
+                detail="审核失败",
+                subsidy=10,
+            ),
+        ]
+        summary, zero_subsidy = appliance.build_coupon_summary(
+            rows,
+            excluded_bottom_rows=0,
+            uploaded_subsidy_count=4,
+            uploaded_subsidy_total=Decimal("40.00"),
+        )
+        self.assertEqual(zero_subsidy, 0)
+        summary_dict = {
+            (r[0], r[1], r[2]): (r[3], r[4], r[5]) for r in summary
+        }
+        self.assertEqual(summary_dict[("冰箱", "海尔", "已上传")], (3, 30.0, 2))
+        self.assertEqual(summary_dict[("冰箱", "海尔", "未上传")], (1, 10.0, None))
+        self.assertEqual(summary_dict[("空调", "美的", "已上传")], (1, 10.0, 1))
+        self.assertEqual(summary_dict[("家电", None, "已上传")], (4, 40.0, 3))
+        self.assertEqual(summary_dict[("家电", None, "未上传")], (1, 10.0, None))
+        self.assertEqual(summary_dict[("家电", None, "合计")], (5, 50.0, 3))
 
     def test_reversal_counts_as_minus_one_and_zero_is_flagged(self) -> None:
         """A return cancels its original, so it counts -1, not +1.
@@ -214,7 +336,7 @@ class CouponSummaryTest(unittest.TestCase):
         )
 
         self.assertEqual(zero_subsidy_count, 1)
-        self.assertEqual(summary[-1], ("家电", None, "合计", 0, 0.0))
+        self.assertEqual(summary[-1], ("家电", None, "合计", 0, 0.0, None))
 
     def test_invalid_subsidy_is_rejected(self) -> None:
         for module in (coupons_digital, appliance):
@@ -261,7 +383,7 @@ class CouponSummaryTest(unittest.TestCase):
             excluded_bottom_rows=0,
         )
 
-        grouped_row = appliance.select_coupon_group_columns(groups[0][3][0][0])
+        grouped_row = appliance.select_coupon_group_columns(groups[0][1][0][0])
         payment_index = appliance.COUPON_GROUP_HEADER.index("回款情况")
         self.assertEqual(grouped_row[payment_index], "已回款")
 
@@ -284,6 +406,7 @@ class SummarySheetLayoutTest(unittest.TestCase):
                 remark="已上传",
                 detail="状态：审核通过",
                 subsidy="10.11",
+                reference="REF1",
             ),
         ]
         summary, zero = appliance.build_coupon_summary(
@@ -298,8 +421,8 @@ class SummarySheetLayoutTest(unittest.TestCase):
             matched_count=0,
             matched_subsidy_total=Decimal("0"),
             remark_lookup={},
-            detail_lookup={},
-            reference_universe=set(),
+            detail_lookup={"REF1": "状态：审核通过"},
+            reference_universe={"REF1"},
             payment_references=frozenset(),
             payment_match_count=0,
             reference_supplement_matches=Counter(),
@@ -307,7 +430,7 @@ class SummarySheetLayoutTest(unittest.TestCase):
             reference_supplement_missing=False,
             reference_decisions=[],
             final_unresolved_reference_count=0,
-            uploaded_count=0,
+            uploaded_count=1,
             unmatched_count=0,
             excluded_category_row_count=0,
             uploaded_subsidy_count=1,
@@ -392,7 +515,7 @@ class SummarySheetLayoutTest(unittest.TestCase):
         """
         self.assertEqual(
             appliance.COUPON_SUMMARY_HEADER,
-            ("财务大类", "品牌", "上传状态", "数量", "2026国补金额"),
+            ("财务大类", "品牌", "上传状态", "数量", "2026国补金额", "退回"),
         )
         workbook, computation = self.build_sheet()
         try:
@@ -435,6 +558,394 @@ class SummarySheetLayoutTest(unittest.TestCase):
             )
         finally:
             workbook.close()
+
+    def test_validate_computation_rejects_zero_in_empty_returned_brand_row(self) -> None:
+        computation = self.build_computation()
+        brand_row = list(computation.summary_rows[0])
+        brand_row[5] = 0
+        computation.summary_rows[0] = tuple(brand_row)
+        with self.assertRaisesRegex(RuntimeError, "销售用券汇总品牌行退回数量应为正整数或空"):
+            appliance.validate_computation(computation)
+
+    def test_validate_computation_rejects_zero_in_unuploaded_row(self) -> None:
+        computation = self.build_computation()
+        unuploaded_row = list(computation.summary_rows[-2])
+        unuploaded_row[5] = 0
+        computation.summary_rows[-2] = tuple(unuploaded_row)
+        with self.assertRaisesRegex(RuntimeError, "销售用券汇总未上传退回数量校验失败"):
+            appliance.validate_computation(computation)
+
+    def test_validate_computation_rejects_bool_or_float_in_tail_row(self) -> None:
+        """已上传/合计尾行的退回数必须为严格 int，True/1.0 必须被拒绝。"""
+        for invalid_val in (True, 1.0):
+            with self.subTest(invalid_val=invalid_val):
+                rows = [
+                    list(appliance.COUPON_OUTPUT_HEADER),
+                    summary_row(
+                        appliance,
+                        category="冰箱",
+                        brand="海尔",
+                        remark="已上传",
+                        detail="审核失败：SN错误",
+                        subsidy="10.00",
+                        reference="REF1",
+                    ),
+                ]
+                summary, zero = appliance.build_coupon_summary(
+                    rows,
+                    excluded_bottom_rows=0,
+                    uploaded_subsidy_count=1,
+                    uploaded_subsidy_total=Decimal("10.00"),
+                )
+                computation = appliance.CouponComputation(
+                    rows=rows,
+                    data_row_count=1,
+                    matched_count=0,
+                    matched_subsidy_total=Decimal("0"),
+                    remark_lookup={},
+                    detail_lookup={"REF1": "审核失败：SN错误"},
+                    reference_universe={"REF1"},
+                    payment_references=frozenset(),
+                    payment_match_count=0,
+                    reference_supplement_matches=Counter(),
+                    supplement_conflicts=(),
+                    reference_supplement_missing=False,
+                    reference_decisions=[],
+                    final_unresolved_reference_count=0,
+                    uploaded_count=1,
+                    unmatched_count=0,
+                    excluded_category_row_count=0,
+                    uploaded_subsidy_count=1,
+                    uploaded_subsidy_total=Decimal("10.00"),
+                    zero_subsidy_count=zero,
+                    source_total=None,
+                    computed_total=Decimal("10.00"),
+                    summary_rows=summary,
+                    group_sheets=[],
+                )
+                uploaded_row = list(computation.summary_rows[-3])
+                uploaded_row[5] = invalid_val
+                computation.summary_rows[-3] = tuple(uploaded_row)
+                with self.assertRaisesRegex(
+                    RuntimeError, "销售用券汇总已上传/合计退回数量校验失败"
+                ):
+                    appliance.validate_computation(computation)
+
+    def test_validate_computation_rejects_swapped_brand_returns(self) -> None:
+        """两品牌间互换退回数量（总数守恒但归属错误）时，校验必须拒绝。"""
+        rows = [
+            list(appliance.COUPON_OUTPUT_HEADER),
+            summary_row(
+                appliance,
+                category="冰箱",
+                brand="海尔",
+                remark="已上传",
+                detail="审核失败：SN错误",
+                subsidy="10.00",
+                reference="REF1",
+            ),
+            summary_row(
+                appliance,
+                category="空调",
+                brand="格力",
+                remark="已上传",
+                detail="审核通过",
+                subsidy="20.00",
+                reference="REF2",
+            ),
+        ]
+        summary, zero = appliance.build_coupon_summary(
+            rows,
+            excluded_bottom_rows=0,
+            uploaded_subsidy_count=2,
+            uploaded_subsidy_total=Decimal("30.00"),
+        )
+        computation = appliance.CouponComputation(
+            rows=rows,
+            data_row_count=2,
+            matched_count=0,
+            matched_subsidy_total=Decimal("0"),
+            remark_lookup={},
+            detail_lookup={
+                "REF1": "审核失败：SN错误",
+                "REF2": "审核通过",
+            },
+            reference_universe={"REF1", "REF2"},
+            payment_references=frozenset(),
+            payment_match_count=0,
+            reference_supplement_matches=Counter(),
+            supplement_conflicts=(),
+            reference_supplement_missing=False,
+            reference_decisions=[],
+            final_unresolved_reference_count=0,
+            uploaded_count=2,
+            unmatched_count=0,
+            excluded_category_row_count=0,
+            uploaded_subsidy_count=2,
+            uploaded_subsidy_total=Decimal("30.00"),
+            zero_subsidy_count=zero,
+            source_total=None,
+            computed_total=Decimal("30.00"),
+            summary_rows=summary,
+            group_sheets=[],
+        )
+        # Swap returned counts between 冰箱/海尔 (has 1) and 空调/格力 (has None)
+        r0 = list(computation.summary_rows[0])
+        r1 = list(computation.summary_rows[1])
+        r0[5], r1[5] = r1[5], r0[5]
+        computation.summary_rows[0] = tuple(r0)
+        computation.summary_rows[1] = tuple(r1)
+        with self.assertRaisesRegex(
+            RuntimeError, "销售用券汇总品牌行退回数量校验失败"
+        ):
+            appliance.validate_computation(computation)
+
+    def test_digital_validate_computation_rejects_zero_in_unuploaded_row(self) -> None:
+        rows = [
+            list(coupons_digital.COUPON_OUTPUT_HEADER),
+            summary_row(
+                coupons_digital,
+                category="数码",
+                brand="A",
+                remark="已上传",
+                detail="审核通过",
+                subsidy="10.00",
+                reference="REF1",
+            ),
+        ]
+        computation = coupons_digital.CouponComputation(
+            rows=rows,
+            data_row_count=1,
+            matched_count=0,
+            matched_subsidy_total=Decimal("0"),
+            remark_lookup={},
+            detail_lookup={"REF1": "审核通过"},
+            reference_universe=set(),
+            payment_references=frozenset(),
+            payment_match_count=0,
+            uploaded_match_count=1,
+            unmatched_count=0,
+            reference_decisions=[],
+            summary_rows=[
+                ("已上传", 1, 10.0, None),
+                ("未上传", 0, 0.0, 0),
+                ("合计", 1, 10.0, None),
+            ],
+        )
+        with self.assertRaisesRegex(RuntimeError, "数码销售用券汇总未上传退回数量校验失败"):
+            coupons_digital.validate_computation(computation)
+
+    def test_digital_validate_computation_rejects_bool_or_float_in_tail_row(self) -> None:
+        """数码尾行退回数必须为严格 int，True/1.0 必须被拒绝。"""
+        for invalid_val in (True, 1.0):
+            with self.subTest(invalid_val=invalid_val):
+                rows = [
+                    list(coupons_digital.COUPON_OUTPUT_HEADER),
+                    summary_row(
+                        coupons_digital,
+                        category="数码",
+                        brand="A",
+                        remark="已上传",
+                        detail="审核失败：SN错误",
+                        subsidy="10.00",
+                        reference="REF1",
+                    ),
+                ]
+                computation = coupons_digital.CouponComputation(
+                    rows=rows,
+                    data_row_count=1,
+                    matched_count=0,
+                    matched_subsidy_total=Decimal("0"),
+                    remark_lookup={},
+                    detail_lookup={"REF1": "审核失败：SN错误"},
+                    reference_universe=set(),
+                    payment_references=frozenset(),
+                    payment_match_count=0,
+                    uploaded_match_count=1,
+                    unmatched_count=0,
+                    reference_decisions=[],
+                    summary_rows=[
+                        ("已上传", 1, 10.0, invalid_val),
+                        ("未上传", 0, 0.0, None),
+                        ("合计", 1, 10.0, 1),
+                    ],
+                )
+                with self.assertRaisesRegex(
+                    RuntimeError, "数码销售用券汇总已上传/合计退回数量校验失败"
+                ):
+                    coupons_digital.validate_computation(computation)
+
+    def test_validate_computation_rejects_missing_returned_brand_row(self) -> None:
+        """明细中有退回的品牌行若在汇总中被遗漏，校验必须拒绝。"""
+        rows = [
+            list(appliance.COUPON_OUTPUT_HEADER),
+            summary_row(
+                appliance,
+                category="冰箱",
+                brand="海尔",
+                remark="已上传",
+                detail="审核失败：SN错误",
+                subsidy="10.00",
+                reference="REF1",
+            ),
+            summary_row(
+                appliance,
+                category="空调",
+                brand="美的",
+                remark="已上传",
+                detail="审核失败：SN错误",
+                subsidy="10.00",
+                reference="REF2",
+            ),
+        ]
+        summary, zero = appliance.build_coupon_summary(
+            rows,
+            excluded_bottom_rows=0,
+            uploaded_subsidy_count=2,
+            uploaded_subsidy_total=Decimal("20.00"),
+        )
+        # Omit 美的 brand row from summary_rows, keeping only 海尔 (with total=2 to balance tail)
+        computation = appliance.CouponComputation(
+            rows=rows,
+            data_row_count=2,
+            matched_count=0,
+            matched_subsidy_total=Decimal("0"),
+            remark_lookup={},
+            detail_lookup={
+                "REF1": "审核失败：SN错误",
+                "REF2": "审核失败：SN错误",
+            },
+            reference_universe={"REF1", "REF2"},
+            payment_references=frozenset(),
+            payment_match_count=0,
+            reference_supplement_matches=Counter(),
+            supplement_conflicts=(),
+            reference_supplement_missing=False,
+            reference_decisions=[],
+            final_unresolved_reference_count=0,
+            uploaded_count=2,
+            unmatched_count=0,
+            excluded_category_row_count=0,
+            uploaded_subsidy_count=2,
+            uploaded_subsidy_total=Decimal("20.00"),
+            zero_subsidy_count=zero,
+            source_total=None,
+            computed_total=Decimal("20.00"),
+            summary_rows=[
+                ("冰箱", "海尔", "已上传", 2, 20.0, 2),
+                ("家电", None, "已上传", 2, 20.0, 2),
+                ("家电", None, "未上传", 0, 0.0, None),
+                ("家电", None, "合计", 2, 20.0, 2),
+            ],
+            group_sheets=[],
+        )
+        with self.assertRaisesRegex(
+            RuntimeError, "销售用券汇总品牌行退回数量校验失败"
+        ):
+            appliance.validate_computation(computation)
+
+    def test_validate_computation_rejects_invalid_brand_status(self) -> None:
+        computation = self.build_computation()
+        brand_row = list(computation.summary_rows[0])
+        brand_row[2] = "未知状态"
+        computation.summary_rows[0] = tuple(brand_row)
+        with self.assertRaisesRegex(RuntimeError, "销售用券汇总品牌行状态无效"):
+            appliance.validate_computation(computation)
+
+    def test_validate_computation_rejects_duplicate_brand_row(self) -> None:
+        rows = [
+            list(appliance.COUPON_OUTPUT_HEADER),
+            summary_row(
+                appliance,
+                category="冰箱",
+                brand="海尔",
+                remark="已上传",
+                detail="审核通过",
+                subsidy="10.00",
+                reference="REF1",
+            ),
+            summary_row(
+                appliance,
+                category="冰箱",
+                brand="海尔",
+                remark="已上传",
+                detail="审核通过",
+                subsidy="10.00",
+                reference="REF2",
+            ),
+        ]
+        computation = appliance.CouponComputation(
+            rows=rows,
+            data_row_count=2,
+            matched_count=0,
+            matched_subsidy_total=Decimal("0"),
+            remark_lookup={},
+            detail_lookup={
+                "REF1": "审核通过",
+                "REF2": "审核通过",
+            },
+            reference_universe={"REF1", "REF2"},
+            payment_references=frozenset(),
+            payment_match_count=0,
+            reference_supplement_matches=Counter(),
+            supplement_conflicts=(),
+            reference_supplement_missing=False,
+            reference_decisions=[],
+            final_unresolved_reference_count=0,
+            uploaded_count=2,
+            unmatched_count=0,
+            excluded_category_row_count=0,
+            uploaded_subsidy_count=2,
+            uploaded_subsidy_total=Decimal("20.00"),
+            zero_subsidy_count=0,
+            source_total=None,
+            computed_total=Decimal("20.00"),
+            summary_rows=[
+                ("冰箱", "海尔", "已上传", 1, 10.0, None),
+                ("冰箱", "海尔", "已上传", 1, 10.0, None),
+                ("家电", None, "已上传", 2, 20.0, None),
+                ("家电", None, "未上传", 0, 0.0, None),
+                ("家电", None, "合计", 2, 20.0, None),
+            ],
+            group_sheets=[],
+        )
+        with self.assertRaisesRegex(RuntimeError, "销售用券汇总品牌行重复"):
+            appliance.validate_computation(computation)
+
+    def test_digital_validate_computation_rejects_wrong_status_order(self) -> None:
+        rows = [
+            list(coupons_digital.COUPON_OUTPUT_HEADER),
+            summary_row(
+                coupons_digital,
+                category="数码",
+                brand="A",
+                remark="已上传",
+                detail="审核通过",
+                subsidy="10.00",
+                reference="REF1",
+            ),
+        ]
+        computation = coupons_digital.CouponComputation(
+            rows=rows,
+            data_row_count=1,
+            matched_count=0,
+            matched_subsidy_total=Decimal("0"),
+            remark_lookup={},
+            detail_lookup={"REF1": "审核通过"},
+            reference_universe=set(),
+            payment_references=frozenset(),
+            payment_match_count=0,
+            uploaded_match_count=1,
+            unmatched_count=0,
+            reference_decisions=[],
+            summary_rows=[
+                ("未上传", 0, 0.0, None),
+                ("已上传", 1, 10.0, None),
+                ("合计", 1, 10.0, None),
+            ],
+        )
+        with self.assertRaisesRegex(RuntimeError, "数码销售用券汇总缺少已上传/未上传/合计三行"):
+            coupons_digital.validate_computation(computation)
 
 
 class ProjectSummaryBlocksTest(unittest.TestCase):
@@ -717,7 +1228,7 @@ class SupplementConflictWarningTests(unittest.TestCase):
                 patch.object(
                     appliance,
                     "fill_coupon_reference_supplement",
-                    return_value=(0, 1, set(), Counter(), (conflict,)),
+                    return_value=(set(), Counter(), (conflict,)),
                 )
             )
             stack.enter_context(
