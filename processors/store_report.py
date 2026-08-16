@@ -15,7 +15,6 @@ this is deferred until a second store is actually needed.
 from __future__ import annotations
 
 import math
-import re
 from copy import copy
 from dataclasses import dataclass
 from datetime import datetime
@@ -58,7 +57,9 @@ TEMPLATE_FILE_KEYWORD = "门店国补上传及回款情况表"
 DATA_DIR: Path
 
 SHANGHAI_TZ = ZoneInfo("Asia/Shanghai")
-HEADER_TIMESTAMP_RE = re.compile(r"^(.*_)(\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2})\s*$")
+TEMPLATE_HEADER_PREFIX = (
+    f"表1                  {SUBSIDY_YEAR}年（益庄店 ）门店国补上传及回款情况表_"
+)
 FILLED_ALIGNMENT = Alignment(horizontal="left", vertical="center")
 DATA_NUMBER_FORMAT = "General"
 PERCENT_NUMBER_FORMAT = "0.00%"
@@ -195,6 +196,21 @@ def resolve_template_file() -> Path:
     return template_file
 
 
+def _validate_header_title(value: object, source_description: str) -> None:
+    text = str(value or "").strip()
+    if not text.startswith(TEMPLATE_HEADER_PREFIX):
+        raise ValueError(
+            f"{source_description} A1 标题前缀不符合预期，预期以 {TEMPLATE_HEADER_PREFIX!r} 开头，实际为 {text!r}"
+        )
+    timestamp_str = text[len(TEMPLATE_HEADER_PREFIX):].strip()
+    try:
+        datetime.strptime(timestamp_str, "%Y-%m-%d %H:%M:%S")
+    except ValueError:
+        raise ValueError(
+            f"{source_description} A1 标题时间戳无效，应为合法的 'YYYY-MM-DD HH:MM:SS' 格式，实际为 {timestamp_str!r}"
+        ) from None
+
+
 def validate_template(workbook: Workbook) -> None:
     """Reject a template that doesn't match the expected layout by content, not just filename.
 
@@ -214,9 +230,10 @@ def validate_template(workbook: Workbook) -> None:
     if sheet.max_row < MIN_TEMPLATE_ROW_COUNT:
         raise ValueError(f"空白模板行数至少应为 {MIN_TEMPLATE_ROW_COUNT}，实际为 {sheet.max_row}")
 
-    a1_value = str(sheet["A1"].value or "").strip()
-    if not HEADER_TIMESTAMP_RE.match(a1_value):
-        raise ValueError(f"空白模板 A1 标题格式无效（缺少有效时间戳）：{sheet['A1'].value!r}；请更换为新版模板")
+    try:
+        _validate_header_title(sheet["A1"].value, "空白模板")
+    except ValueError as exc:
+        raise ValueError(f"{exc}；请更换为新版模板") from None
 
     # 版本标记先行检查：旧模板（含无标记的手工修改版）在这里被明确拒绝，
     # 而不是混入下面的通用结构错误里让人猜。
@@ -1347,13 +1364,9 @@ def current_timestamp() -> datetime:
 
 
 def update_header(sheet, timestamp: datetime, expected_cells: dict[str, object]) -> None:
+    _validate_header_title(sheet["A1"].value, "空白模板")
     formatted_timestamp = timestamp.strftime("%Y-%m-%d %H:%M:%S")
-    original = str(sheet["A1"].value or "").strip()
-    match = HEADER_TIMESTAMP_RE.match(original)
-    if not match:
-        raise ValueError(f"空白模板 A1 标题格式无效（缺少有效时间戳）：{sheet['A1'].value!r}")
-    prefix = match.group(1)
-    value = f"{prefix}{formatted_timestamp}"
+    value = f"{TEMPLATE_HEADER_PREFIX}{formatted_timestamp}"
     sheet["A1"] = value
     expected_cells["A1"] = value
 
@@ -1458,9 +1471,7 @@ def validate_output(
             raise ValueError(
                 f"{path.name} 列数应为 {EXPECTED_COLUMN_COUNT}，实际为 {sheet.max_column}"
             )
-        a1_value = str(sheet["A1"].value or "").strip()
-        if not HEADER_TIMESTAMP_RE.match(a1_value):
-            raise ValueError(f"{path.name} A1 标题格式无效（缺少有效时间戳）：{sheet['A1'].value!r}")
+        _validate_header_title(sheet["A1"].value, path.name)
 
         mismatches = [
             f"{coordinate}（应为 {expected!r}，实际为 {sheet[coordinate].value!r}）"

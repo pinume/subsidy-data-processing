@@ -190,6 +190,11 @@ LITERAL_BRAND_GROUP_RULES: tuple[store_report.BrandGroupRule, ...] = (
 )
 
 
+LITERAL_TEMPLATE_HEADER_PREFIX = (
+    "表1                  2026年（益庄店 ）门店国补上传及回款情况表_"
+)
+
+
 def _fill_columns(sheet) -> None:
     for column_index in range(1, store_report.EXPECTED_COLUMN_COUNT + 1):
         sheet.cell(row=1, column=column_index, value="")
@@ -204,7 +209,7 @@ def _build_minimal_template() -> Workbook:
         sheet.cell(
             row=1,
             column=column_index,
-            value="表1                  2026年（益庄店 ）门店国补上传及回款情况表_2026-08-15 18:06:27"
+            value=f"{LITERAL_TEMPLATE_HEADER_PREFIX}2026-08-15 18:06:27"
             if column_index == 1
             else "",
         )
@@ -713,7 +718,7 @@ class RuleCoverageTests(unittest.TestCase):
         store_report.validate_rule_coverage(upload_data, payment_data)
 
     def test_accepts_both_fotile_keys(self) -> None:
-        """审核侧纠正后的 (冰箱, 方太) 与真正的 (厨卫, 方太) 各有独立行规则。"""
+        """方太冰箱和厨卫统一归入第 27 行规则覆盖。"""
         store_report.validate_rule_coverage(
             {
                 ("冰箱", "方太"): {"已上传": Decimal("1500")},
@@ -757,7 +762,7 @@ class UploadCategoryCorrectionTests(unittest.TestCase):
     """审核侧品类纠正：以回款明细编码品类为权威，按交易参考号匹配。
 
     方案要点：A02-电冰箱 的方太 BCD 在审核侧被标成厨卫，经参考号关联到
-    回款侧后纠正为冰箱，进入方太冰箱行；真正的厨卫方太与未回款的记录
+    回款侧后纠正为冰箱，并入厨卫/方太汇总行（第 27 行）；真正的厨卫方太与未回款的记录
     保留原品类；参考号重复、品牌/金额不符、编码品类未配置时不自动纠正。
     """
 
@@ -1263,7 +1268,7 @@ class BrandGroupTests(unittest.TestCase):
         self.assertEqual(paid, Decimal("50"))
 
     def test_brand_group_writing_and_totals_with_distinct_amounts(self) -> None:
-        """使用互不相等的发生额、上传额、回款额验证表 2 的 D/E/F 写入和第 48 行合计。"""
+        """使用互不相等的发生额、上传额、回款额验证表 2 的 D/E/F 写入和第 47 行合计。"""
         sheet = Workbook().active
         upload_data = {
             ("冰箱", "海尔"): {"已上传": Decimal("100"), "未上传": Decimal("20")},
@@ -1345,6 +1350,13 @@ class TemplateValidationTests(unittest.TestCase):
             LITERAL_STRUCTURE_CELLS,
         )
 
+    def test_literal_header_prefix_matches_production(self) -> None:
+        """A1 标题前缀独立契约必须与生产代码的 TEMPLATE_HEADER_PREFIX 完全一致。"""
+        self.assertEqual(
+            store_report.TEMPLATE_HEADER_PREFIX,
+            LITERAL_TEMPLATE_HEADER_PREFIX,
+        )
+
     def test_literal_row_rules_contract_matches_production(self) -> None:
         """明细行与品牌组完整规则契约必须与独立字面量契约完全全等。"""
         self.assertEqual(store_report.ROW_RULES, LITERAL_ROW_RULES)
@@ -1353,6 +1365,34 @@ class TemplateValidationTests(unittest.TestCase):
             store_report.EXPECTED_MERGED_RANGES,
             LITERAL_EXPECTED_MERGED_RANGES,
         )
+
+    def test_rejects_template_with_wrong_store_name(self) -> None:
+        """A1 标题中门店名称错误（非益庄店）必须被拒绝。"""
+        workbook = _build_minimal_template()
+        workbook.active["A1"] = "表1                  2026年（其他店 ）门店国补上传及回款情况表_2026-08-15 18:06:27"
+        with self.assertRaisesRegex(ValueError, "A1 标题前缀不符合预期"):
+            store_report.validate_template(workbook)
+
+    def test_rejects_template_with_wrong_header_prefix(self) -> None:
+        """A1 标题前缀任意缺失或错误必须被拒绝。"""
+        workbook = _build_minimal_template()
+        workbook.active["A1"] = "2026年门店国补上传及回款情况表_2026-08-15 18:06:27"
+        with self.assertRaisesRegex(ValueError, "A1 标题前缀不符合预期"):
+            store_report.validate_template(workbook)
+
+    def test_rejects_template_with_invalid_timestamp(self) -> None:
+        """A1 标题时间戳为非法日期（如 2026-99-99 99:99:99）必须被拒绝。"""
+        workbook = _build_minimal_template()
+        workbook.active["A1"] = f"{store_report.TEMPLATE_HEADER_PREFIX}2026-99-99 99:99:99"
+        with self.assertRaisesRegex(ValueError, "A1 标题时间戳无效"):
+            store_report.validate_template(workbook)
+
+    def test_rejects_template_with_missing_timestamp(self) -> None:
+        """A1 标题缺少时间戳必须被拒绝。"""
+        workbook = _build_minimal_template()
+        workbook.active["A1"] = store_report.TEMPLATE_HEADER_PREFIX
+        with self.assertRaisesRegex(ValueError, "A1 标题时间戳无效"):
+            store_report.validate_template(workbook)
 
     def test_all_brand_cells_mutation_rejected_by_template_validation(self) -> None:
         """参数化测试：C3:C32 与 C40:C46 中任何一个品牌标签被篡改都会被拒绝。"""
@@ -1587,7 +1627,20 @@ class ValidateOutputTests(unittest.TestCase):
         with TemporaryDirectory() as directory:
             path = Path(directory) / "report.xlsx"
             workbook.save(path)
-            with self.assertRaisesRegex(ValueError, "有效时间戳"):
+            with self.assertRaisesRegex(ValueError, "A1 标题前缀不符合预期"):
+                store_report.validate_output(path, {}, "益庄")
+
+    def test_rejects_a_workbook_with_invalid_timestamp(self) -> None:
+        workbook = Workbook()
+        sheet = workbook.active
+        sheet.title = "益庄"
+        _fill_columns(sheet)
+        sheet["A1"] = f"{store_report.TEMPLATE_HEADER_PREFIX}2026-99-99 99:99:99"
+
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "report.xlsx"
+            workbook.save(path)
+            with self.assertRaisesRegex(ValueError, "A1 标题时间戳无效"):
                 store_report.validate_output(path, {}, "益庄")
 
     def test_rejects_a_workbook_with_the_wrong_sheet_title(self) -> None:
@@ -1747,7 +1800,9 @@ class ProcessStoreReportIntegrationTests(unittest.TestCase):
             self.assertEqual(sheet["E51"].value, 1)
             self.assertIsNone(sheet["D52"].value)
             self.assertEqual(sheet["E52"].value, 2)
-            self.assertRegex(sheet["A1"].value, store_report.HEADER_TIMESTAMP_RE)
+            self.assertTrue(
+                sheet["A1"].value.startswith(store_report.TEMPLATE_HEADER_PREFIX)
+            )
             self.assertIn("审核明细品类纠正：1 条", reporter_text)
             # 合并区域内部的 MergedCell 不参与渲染，openpyxl 保存时会丢弃
             # 对其样式的写入（保持模板原样），所以只断言普通单元格的字体。
