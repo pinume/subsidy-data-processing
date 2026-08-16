@@ -7,8 +7,16 @@ processors.coupons.appliance directly, so a change to appliance.py's
 internals can't silently break store_report.py.
 """
 
-# 补贴年度。跨年度运行（如进入 2027 年）时改这一处，并核对
-# 外部导出表头与列号、门店空白模板等（不从这里派生，仍需人工同步）。
+# 补贴年度。跨年度运行（如进入 2027 年）时改这一处，并逐项核对：
+# 1. 外部用券导出表头与列号：processors/coupons/sources.py 的
+#    COUPON_FAMILY_SUBSIDY_HEADER / COUPON_DIGITAL_SUBSIDY_HEADER 与
+#    COUPON_FAMILY_SUBSIDY_COLUMN / COUPON_DIGITAL_SUBSIDY_COLUMN。
+# 2. 审核明细汇总表头：由 SUBSIDY_YEAR 派生（SUMMARY_SUBSIDY_HEADER），核对生成表头。
+# 3. 门店报表：data/ 目录中的空白模板文件名、processors/store_report.py 的
+#    结构校验常量（TEMPLATE_STRUCTURE_CELLS 年度标签）、输出文件名由 SUBSIDY_YEAR 派生。
+# 4. 金额错误文案：家电/数码明细的补贴金额校验文案引用补贴列名常量，随列名自动更新。
+# 5. 测试夹具与预期表头：tests/ 中硬编码的年度字段与表头断言。
+# 6. 完整回归：用真实新年度文件运行 uv run python main.py --all，核对各输出与门店报表。
 SUBSIDY_YEAR = 2026
 
 SUMMARY_SHEET_NAME = "数据汇总"
