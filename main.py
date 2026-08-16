@@ -7,7 +7,7 @@ import traceback
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import IO
+from typing import IO, NamedTuple
 
 from processors import (
     coupon_report,
@@ -31,6 +31,14 @@ _instance_lock_file: IO[str] | None = None
 LOCK_PATH = Path("/tmp/subsidy-data-processing.lock")
 
 
+class ProcessorEntry(NamedTuple):
+    """One processing mode: label for menu, label for progress, and runner."""
+
+    menu_label: str
+    step_label: str
+    processor: Callable[[ConsoleReporter], None]
+
+
 def all_output_files() -> tuple[Path, ...]:
     return (
         *submitted.OUTPUT_FILES,
@@ -41,10 +49,7 @@ def all_output_files() -> tuple[Path, ...]:
     )
 
 
-def build_processors() -> tuple[
-    tuple[str, str, Callable[[ConsoleReporter], None]],
-    ...,
-]:
+def build_processors() -> tuple[ProcessorEntry, ...]:
     """List every processing mode across both projects.
 
     Each entry is (menu label, step label, processor). The step label is the
@@ -52,27 +57,27 @@ def build_processors() -> tuple[
     descriptive text.
     """
     return (
-        (
+        ProcessorEntry(
             "已上传数据（家电+数码）",
             "已上传数据",
             submitted.process_all,
         ),
-        (
+        ProcessorEntry(
             "收款单统计",
             "收款单统计",
             receipts.process_receipts,
         ),
-        (
+        ProcessorEntry(
             "回款明细（家电+数码）",
             "回款明细",
             payment.process_payment_files,
         ),
-        (
+        ProcessorEntry(
             "审核明细（销售用券情况统计）",
             "审核明细",
             coupon_report.process_coupon_sales,
         ),
-        (
+        ProcessorEntry(
             "门店国补上传及回款情况表",
             "门店报表",
             store_report.process_store_report,
@@ -90,7 +95,7 @@ class ProcessorSelection:
 
 
 def process_all(
-    processors: tuple[tuple[str, str, Callable[[ConsoleReporter], None]], ...],
+    processors: tuple[ProcessorEntry, ...],
     reporter: ConsoleReporter,
 ) -> None:
     total = len(processors)
@@ -162,7 +167,7 @@ def process_all(
 
 
 def selection_for_all(
-    processors: tuple[tuple[str, str, Callable[[ConsoleReporter], None]], ...],
+    processors: tuple[ProcessorEntry, ...],
 ) -> ProcessorSelection:
     return ProcessorSelection(
         run=lambda reporter: process_all(processors, reporter),
@@ -172,7 +177,7 @@ def selection_for_all(
 
 
 def selection_for_mode(
-    processors: tuple[tuple[str, str, Callable[[ConsoleReporter], None]], ...],
+    processors: tuple[ProcessorEntry, ...],
     mode: int,
 ) -> ProcessorSelection:
     if mode < 1 or mode > len(processors):
