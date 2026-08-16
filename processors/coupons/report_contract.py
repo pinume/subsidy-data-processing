@@ -7,9 +7,8 @@ processors.coupons.appliance directly, so a change to appliance.py's
 internals can't silently break store_report.py.
 """
 
-# 补贴年度。跨年度运行（如进入 2027 年）时改这一处，并按 README
-# 「年度迁移清单」逐项核对——外部导出表头与列号、门店空白模板等不
-# 从这里派生，仍需人工同步。
+# 补贴年度。跨年度运行（如进入 2027 年）时改这一处，并核对
+# 外部导出表头与列号、门店空白模板等（不从这里派生，仍需人工同步）。
 SUBSIDY_YEAR = 2026
 
 SUMMARY_SHEET_NAME = "数据汇总"
