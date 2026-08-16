@@ -70,8 +70,8 @@ EXPECTED_SHEET_COUNT = 1
 EXPECTED_COLUMN_COUNT = 8  # A..H
 EXPECTED_SHEET_TITLE = "益庄"
 
-# 正式模板的版本标识，写在表 3 下方一行。data/ 不进 Git，模板由操作员按
-# README 手工放入各环境，因此这个标记是防止误用旧模板的唯一防线：旧模板
+# 正式模板的版本标识，写在表 3 下方一行。data/ 不进 Git，模板由操作员
+# 手工放入各环境，因此这个标记是防止误用旧模板的唯一防线：旧模板
 # （含手工修改版）没有它，validate_template 直接给出更换提示。
 # 版本标记行必须隐藏，否则会出现在最终报表的打印结果里。
 TEMPLATE_VERSION_CELL = "A55"
@@ -98,7 +98,9 @@ EXPECTED_MERGED_RANGES = frozenset(
 # A handful of fixed labels that only exist in the right blank template.
 # Checked before writing (wrong/stale template must not silently produce a
 # wrong report) and again after saving (writing must not have corrupted them).
-TEMPLATE_STRUCTURE_CELLS: dict[str, str] = {
+
+# 表 1：明细与总计（第 2–34 行）
+_TABLE1_CELLS: dict[str, str] = {
     "A2": "品类",
     "B2": "序号",
     "C2": "品牌",
@@ -140,7 +142,10 @@ TEMPLATE_STRUCTURE_CELLS: dict[str, str] = {
     "C32": "万家乐",
     "C33": "数码",
     "A34": "费用总计",
+}
 
+# 表 2：主要品牌汇总（第 39–48 行）
+_TABLE2_CELLS: dict[str, str] = {
     "C39": "主要品牌国补上传及回款情况",
     "C40": "品牌",
     "D40": "26年国补发生额",
@@ -154,14 +159,22 @@ TEMPLATE_STRUCTURE_CELLS: dict[str, str] = {
     "C46": "创维",
     "C47": "TCL",
     "C48": "合计",
+}
 
+# 表 3：数量统计（第 50–54 行）
+_TABLE3_CELLS: dict[str, str] = {
     "C50": "表3",
     "D50": "审核中",
     "E50": "未上传",
     "C52": "家电",
     "C53": "数码",
     "C54": "合计",
+}
 
+TEMPLATE_STRUCTURE_CELLS: dict[str, str] = {
+    **_TABLE1_CELLS,
+    **_TABLE2_CELLS,
+    **_TABLE3_CELLS,
     TEMPLATE_VERSION_CELL: TEMPLATE_VERSION_MARKER,
 }
 
@@ -209,7 +222,7 @@ def validate_template(workbook: Workbook) -> None:
         raise ValueError(
             f"空白模板版本校验失败：{TEMPLATE_VERSION_CELL} 应为"
             f" {TEMPLATE_VERSION_MARKER!r}，实际为 {sheet[TEMPLATE_VERSION_CELL].value!r}。"
-            "请更换为新版模板（含版本标记的正式模板，见 README「门店报表模板」）"
+            "请更换为新版模板（含版本标记的正式模板）"
         )
     if not sheet.row_dimensions[TEMPLATE_VERSION_ROW].hidden:
         raise ValueError(
