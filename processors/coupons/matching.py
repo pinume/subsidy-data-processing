@@ -356,35 +356,13 @@ def reference_decision(
     )
 
 
-def correct_coupon_references(
-    rows: list[list[object]],
+def _propose_corrections(
+    included_rows: list[list[object]],
+    correction_index: dict,
     reference_universe: set[str],
-    excluded_bottom_rows: int = 0,
-    protected_row_ids: set[int] | None = None,
-) -> list[ReferenceDecision]:
-    """Rewrite dirty 明细摘要 values to uploaded references; return audit trail.
-
-    Two phases:
-      propose — unique candidate per row (skip protected / already in universe)
-      apply   — write only if the target is not already used by another row
-
-    Report policy for non-unique candidates:
-      - multiple candidates, or zero with a non-legal raw string → 无唯一候选
-      - zero candidates but raw is already legal \\d{11}N → unsubmitted only
-        (omitted from the report sheet)
-    """
-    included_end = len(rows) - excluded_bottom_rows
-    included_rows = rows[1:included_end]
-    # Occupancy before this pass (a target already present must not be stolen).
-    existing_counts = Counter(
-        normalize_receipt_identifier(row[SUMMARY_INDEX]).upper()
-        for row in included_rows
-        if normalize_receipt_identifier(row[SUMMARY_INDEX])
-    )
-    correction_index = build_reference_correction_index(reference_universe)
-    protected = protected_row_ids or set()
-
-    # --- phase 1: propose ---
+    protected: set[int],
+) -> tuple[dict[int, str], Counter[str], list[ReferenceDecision]]:
+    """Phase 1: propose a unique correction candidate per dirty row."""
     proposed: dict[int, str] = {}
     target_counts: Counter[str] = Counter()
     decisions: list[ReferenceDecision] = []
@@ -417,7 +395,17 @@ def correct_coupon_references(
         proposed[row_index] = target
         target_counts[target] += 1
 
-    # --- phase 2: apply (or record collision) ---
+    return proposed, target_counts, decisions
+
+
+def _apply_corrections(
+    rows: list[list[object]],
+    proposed: dict[int, str],
+    target_counts: Counter[str],
+    existing_counts: Counter[str],
+) -> list[ReferenceDecision]:
+    """Phase 2: apply collision-free proposals, record collisions."""
+    decisions: list[ReferenceDecision] = []
     for row_index, target in proposed.items():
         row = rows[row_index]
         raw_reference = normalize_receipt_identifier(row[SUMMARY_INDEX]).upper()
@@ -440,8 +428,45 @@ def correct_coupon_references(
                 f"已自动纠正为 {target}，请人工复核",
             )
         )
+    return decisions
 
-    decisions.sort(key=lambda decision: REFERENCE_REPORT_ORDER[decision.outcome])
+
+def correct_coupon_references(
+    rows: list[list[object]],
+    reference_universe: set[str],
+    excluded_bottom_rows: int = 0,
+    protected_row_ids: set[int] | None = None,
+) -> list[ReferenceDecision]:
+    """Rewrite dirty 明细摘要 values to uploaded references; return audit trail.
+
+    Two phases:
+      propose — unique candidate per row (skip protected / already in universe)
+      apply   — write only if the target is not already used by another row
+
+    Report policy for non-unique candidates:
+      - multiple candidates, or zero with a non-legal raw string → 无唯一候选
+      - zero candidates but raw is already legal \\d{11}N → unsubmitted only
+        (omitted from the report sheet)
+    """
+    included_end = len(rows) - excluded_bottom_rows
+    included_rows = rows[1:included_end]
+    existing_counts = Counter(
+        normalize_receipt_identifier(row[SUMMARY_INDEX]).upper()
+        for row in included_rows
+        if normalize_receipt_identifier(row[SUMMARY_INDEX])
+    )
+    correction_index = build_reference_correction_index(reference_universe)
+    protected = protected_row_ids or set()
+
+    proposed, target_counts, propose_decisions = _propose_corrections(
+        included_rows, correction_index, reference_universe, protected
+    )
+    apply_decisions = _apply_corrections(
+        rows, proposed, target_counts, existing_counts
+    )
+
+    decisions = propose_decisions + apply_decisions
+    decisions.sort(key=lambda d: REFERENCE_REPORT_ORDER[d.outcome])
     return decisions
 
 
