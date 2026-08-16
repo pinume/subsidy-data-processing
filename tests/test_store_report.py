@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import io
 import unittest
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -1387,6 +1387,23 @@ class TemplateValidationTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "A1 标题时间戳无效"):
             store_report.validate_template(workbook)
 
+    def test_rejects_template_with_non_standard_timestamp_formats(self) -> None:
+        """非标准格式的时间戳（如单数月份/时间、多余空格、制表符、首尾空格、非法闰月日期）必须被严格拒绝。"""
+        invalid_suffixes = [
+            "2026-8-5 1:2:3",
+            "2026-08-05  01:02:03",
+            "2026-08-05\t01:02:03",
+            " 2026-08-05 01:02:03",
+            "2026-08-05 01:02:03 ",
+            "2026-02-30 01:02:03",
+        ]
+        for suffix in invalid_suffixes:
+            with self.subTest(suffix=suffix):
+                workbook = _build_minimal_template()
+                workbook.active["A1"] = f"{store_report.TEMPLATE_HEADER_PREFIX}{suffix}"
+                with self.assertRaisesRegex(ValueError, "A1 标题时间戳无效"):
+                    store_report.validate_template(workbook)
+
     def test_rejects_template_with_missing_timestamp(self) -> None:
         """A1 标题缺少时间戳必须被拒绝。"""
         workbook = _build_minimal_template()
@@ -1631,17 +1648,28 @@ class ValidateOutputTests(unittest.TestCase):
                 store_report.validate_output(path, {}, "益庄")
 
     def test_rejects_a_workbook_with_invalid_timestamp(self) -> None:
-        workbook = Workbook()
-        sheet = workbook.active
-        sheet.title = "益庄"
-        _fill_columns(sheet)
-        sheet["A1"] = f"{store_report.TEMPLATE_HEADER_PREFIX}2026-99-99 99:99:99"
+        invalid_suffixes = [
+            "2026-99-99 99:99:99",
+            "2026-8-5 1:2:3",
+            "2026-08-05  01:02:03",
+            "2026-08-05\t01:02:03",
+            " 2026-08-05 01:02:03",
+            "2026-08-05 01:02:03 ",
+            "2026-02-30 01:02:03",
+        ]
+        for suffix in invalid_suffixes:
+            with self.subTest(suffix=suffix):
+                workbook = Workbook()
+                sheet = workbook.active
+                sheet.title = "益庄"
+                _fill_columns(sheet)
+                sheet["A1"] = f"{store_report.TEMPLATE_HEADER_PREFIX}{suffix}"
 
-        with TemporaryDirectory() as directory:
-            path = Path(directory) / "report.xlsx"
-            workbook.save(path)
-            with self.assertRaisesRegex(ValueError, "A1 标题时间戳无效"):
-                store_report.validate_output(path, {}, "益庄")
+                with TemporaryDirectory() as directory:
+                    path = Path(directory) / "report.xlsx"
+                    workbook.save(path)
+                    with self.assertRaisesRegex(ValueError, "A1 标题时间戳无效"):
+                        store_report.validate_output(path, {}, "益庄")
 
     def test_rejects_a_workbook_with_the_wrong_sheet_title(self) -> None:
         workbook = Workbook()
@@ -1655,6 +1683,21 @@ class ValidateOutputTests(unittest.TestCase):
             workbook.save(path)
             with self.assertRaisesRegex(ValueError, "工作表名称"):
                 store_report.validate_output(path, {}, "益庄")
+
+
+class UpdateHeaderTests(unittest.TestCase):
+    def test_update_header_writes_exact_title_and_updates_expected_cells(self) -> None:
+        """update_header 传入固定 datetime，精确断言 A1 严格等于 TEMPLATE_HEADER_PREFIX + 格式化时间戳。"""
+        workbook = _build_minimal_template()
+        sheet = workbook.active
+        fixed_time = datetime(2026, 8, 16, 10, 20, 30, tzinfo=store_report.SHANGHAI_TZ)
+        expected_cells: dict[str, object] = {}
+
+        store_report.update_header(sheet, fixed_time, expected_cells)
+
+        expected_title = f"{store_report.TEMPLATE_HEADER_PREFIX}2026-08-16 10:20:30"
+        self.assertEqual(sheet["A1"].value, expected_title)
+        self.assertEqual(expected_cells["A1"], expected_title)
 
 
 class ProcessStoreReportIntegrationTests(unittest.TestCase):
@@ -1800,8 +1843,11 @@ class ProcessStoreReportIntegrationTests(unittest.TestCase):
             self.assertEqual(sheet["E51"].value, 1)
             self.assertIsNone(sheet["D52"].value)
             self.assertEqual(sheet["E52"].value, 2)
-            self.assertTrue(
-                sheet["A1"].value.startswith(store_report.TEMPLATE_HEADER_PREFIX)
+            ts_str = str(sheet["A1"].value)[len(store_report.TEMPLATE_HEADER_PREFIX):]
+            parsed = datetime.strptime(ts_str, "%Y-%m-%d %H:%M:%S")
+            self.assertEqual(
+                sheet["A1"].value,
+                f"{store_report.TEMPLATE_HEADER_PREFIX}{parsed.strftime('%Y-%m-%d %H:%M:%S')}",
             )
             self.assertIn("审核明细品类纠正：1 条", reporter_text)
             # 合并区域内部的 MergedCell 不参与渲染，openpyxl 保存时会丢弃

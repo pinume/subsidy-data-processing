@@ -197,18 +197,22 @@ def resolve_template_file() -> Path:
 
 
 def _validate_header_title(value: object, source_description: str) -> None:
-    text = str(value or "").strip()
+    text = "" if value is None else str(value)
     if not text.startswith(TEMPLATE_HEADER_PREFIX):
         raise ValueError(
             f"{source_description} A1 标题前缀不符合预期，预期以 {TEMPLATE_HEADER_PREFIX!r} 开头，实际为 {text!r}"
         )
-    timestamp_str = text[len(TEMPLATE_HEADER_PREFIX):].strip()
+    timestamp_str = text[len(TEMPLATE_HEADER_PREFIX):]
     try:
-        datetime.strptime(timestamp_str, "%Y-%m-%d %H:%M:%S")
+        parsed = datetime.strptime(timestamp_str, "%Y-%m-%d %H:%M:%S")
     except ValueError:
         raise ValueError(
             f"{source_description} A1 标题时间戳无效，应为合法的 'YYYY-MM-DD HH:MM:SS' 格式，实际为 {timestamp_str!r}"
         ) from None
+    if parsed.strftime("%Y-%m-%d %H:%M:%S") != timestamp_str:
+        raise ValueError(
+            f"{source_description} A1 标题时间戳无效，应为合法的 'YYYY-MM-DD HH:MM:SS' 格式，实际为 {timestamp_str!r}"
+        )
 
 
 def validate_template(workbook: Workbook) -> None:
