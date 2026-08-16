@@ -30,36 +30,35 @@ LITERAL_DETAIL_ROW_LABELS = {
     11: "美菱冰箱",
     12: "美菱洗衣机",
     13: "小鸭洗衣机",
-    14: "方太冰箱",
-    15: "海信电视",
-    16: "创维电视",
-    17: "TCL电视",
-    18: "海尔电视",
-    19: "华为电视",
-    20: "格力",
-    21: "美的",
-    22: "海尔",
-    23: "海信",
-    24: "奥克斯",
-    25: "科龙",
-    26: "TCL",
-    27: "老板",
-    28: "方太",
-    29: "AO史密斯",
-    30: "海尔",
-    31: "美的",
-    32: "万家乐",
-    33: "数码",
+    14: "海信",
+    15: "创维",
+    16: "TCL",
+    17: "海尔",
+    18: "华为",
+    19: "格力",
+    20: "美的",
+    21: "海尔",
+    22: "海信",
+    23: "奥克斯",
+    24: "科龙",
+    25: "TCL",
+    26: "老板",
+    27: "方太",
+    28: "AO史密斯",
+    29: "海尔",
+    30: "美的",
+    31: "万家乐",
+    32: "数码",
 }
 
 LITERAL_BRAND_GROUP_ROW_LABELS = {
-    41: "海尔系",
-    42: "美的系",
-    43: "格力",
-    44: "博西",
-    45: "海信系",
-    46: "创维",
-    47: "TCL",
+    40: "海尔系",
+    41: "美的系",
+    42: "格力",
+    43: "博西",
+    44: "海信系",
+    45: "创维",
+    46: "TCL",
 }
 
 LITERAL_STRUCTURE_CELLS: dict[str, str] = {
@@ -72,70 +71,69 @@ LITERAL_STRUCTURE_CELLS: dict[str, str] = {
     "G2": "回款额",
     "H2": "回款率",
     **{f"C{row}": label for row, label in LITERAL_DETAIL_ROW_LABELS.items()},
-    "A34": "费用总计",
-    "C39": "主要品牌国补上传及回款情况",
-    "C40": "品牌",
-    "D40": "26年国补发生额",
-    "E40": "26年国补回款额",
-    "F40": "回款率",
+    "A33": "费用总计",
+    "C38": "表2                主要品牌国补上传及回款情况",
+    "C39": "品牌",
+    "D39": "26年国补发生额",
+    "E39": "26年国补回款额",
+    "F39": "回款率",
     **{f"C{row}": label for row, label in LITERAL_BRAND_GROUP_ROW_LABELS.items()},
-    "C48": "合计",
-    "C50": "表3",
-    "D50": "审核中",
-    "E50": "未上传",
-    "C52": "家电",
-    "C53": "数码",
-    "C54": "合计",
-    "A55": "模板版本：2026-V3",
+    "C47": "合计",
+    "C49": "表3",
+    "D49": "审核中",
+    "E49": "未上传",
+    "C50": "家电",
+    "C51": "数码",
+    "C52": "合计",
+    "A53": "模板版本：2026-V4",
 }
 
 LITERAL_EXPECTED_MERGED_RANGES: frozenset[str] = frozenset({
     "A1:H1",
-    "A3:A14",
-    "A15:A19",
-    "A20:A26",
-    "A27:A32",
-    "A34:C34",
-    "C39:F39",
+    "A3:A13",
+    "A14:A18",
+    "A19:A25",
+    "A26:A31",
+    "A33:C33",
+    "C38:F38",
 })
 
 LITERAL_ROW_RULES: tuple[store_report.RowRule, ...] = (
-    store_report.RowRule(3, "冰箱", ("海尔", "卡萨帝"), "冰箱", ("海尔", "卡萨帝"), fill_digital=False),
-    store_report.RowRule(4, "洗衣机", ("海尔", "卡萨帝"), "洗衣机", ("海尔", "卡萨帝"), fill_digital=False),
-    store_report.RowRule(5, "冰箱", ("美的", "COLMO", "东芝"), "冰箱", ("美的系", "COLMO", "东芝JX"), fill_digital=False),
-    store_report.RowRule(6, "洗衣机", ("美的", "小天鹅", "COLMO"), "洗衣机", ("美的系", "小天鹅", "COLMO"), fill_digital=False),
-    store_report.RowRule(7, "冰箱", ("西门子",), "冰箱", ("西门子",), fill_digital=False),
-    store_report.RowRule(8, "洗衣机", ("西门子",), "洗衣机", ("西门子",), fill_digital=False),
-    store_report.RowRule(9, "冰箱", ("博世",), "冰箱", ("博世",), fill_digital=False),
-    store_report.RowRule(10, "洗衣机", ("博世",), "洗衣机", ("博世",), fill_digital=False),
-    store_report.RowRule(11, "冰箱", ("美菱",), "冰箱", ("美菱",), fill_digital=False),
-    store_report.RowRule(12, "洗衣机", ("美菱",), "洗衣机", ("美菱",), fill_digital=False),
-    store_report.RowRule(13, "洗衣机", ("小鸭",), "洗衣机", ("小鸭",), fill_digital=False),
-    store_report.RowRule(14, "冰箱", ("方太",), "冰箱", ("方太",), fill_digital=False),
-    store_report.RowRule(15, "国产彩电", ("海信",), "电视", ("海信",), fill_digital=False),
-    store_report.RowRule(16, "国产彩电", ("创维",), "电视", ("创维",), fill_digital=False),
-    store_report.RowRule(17, "国产彩电", ("TCL",), "电视", ("TCL",), fill_digital=False),
-    store_report.RowRule(18, "国产彩电", ("海尔", "卡萨帝"), "电视", ("海尔", "卡萨帝"), fill_digital=False),
-    store_report.RowRule(19, "国产彩电", ("华为", "华为（终端）"), "电视", ("华为", "华为（终端）"), fill_digital=False),
-    store_report.RowRule(20, "空调", ("格力",), "空调", ("格力",), fill_digital=False),
-    store_report.RowRule(21, "空调", ("美的",), "空调", ("美的",), fill_digital=False),
-    store_report.RowRule(22, "空调", ("海尔", "卡萨帝"), "空调", ("海尔", "卡萨帝"), fill_digital=False),
-    store_report.RowRule(23, "空调", ("海信",), "空调", ("海信",), fill_digital=False),
-    store_report.RowRule(24, "空调", ("奥克斯",), "空调", ("奥克斯",), fill_digital=False),
-    store_report.RowRule(25, "空调", ("科龙",), "空调", ("科龙",), fill_digital=False),
-    store_report.RowRule(26, "空调", ("TCL",), "空调", ("TCL",), fill_digital=False),
-    store_report.RowRule(27, "厨卫", ("老板",), "厨卫", ("老板",), fill_digital=False),
-    store_report.RowRule(28, "厨卫", ("方太",), "厨卫", ("方太",), fill_digital=False),
-    store_report.RowRule(29, "厨卫", ("AO史密斯", "A.O.史密斯"), "厨卫", ("AO史密斯", "A.O.史密斯"), fill_digital=False),
-    store_report.RowRule(30, "厨卫", ("海尔", "卡萨帝"), "厨卫", ("海尔", "卡萨帝"), fill_digital=False),
-    store_report.RowRule(31, "厨卫", ("美的", "COLMO"), "厨卫", ("美的系", "美的", "COLMO"), fill_digital=False),
-    store_report.RowRule(32, "厨卫", ("万家乐",), "厨卫", ("万家乐",), fill_digital=False),
-    store_report.RowRule(33, None, (), "数码", (), fill_digital=True),
+    store_report.RowRule(3, ("冰箱",), ("海尔", "卡萨帝"), ("冰箱",), ("海尔", "卡萨帝"), fill_digital=False),
+    store_report.RowRule(4, ("洗衣机",), ("海尔", "卡萨帝"), ("洗衣机",), ("海尔", "卡萨帝"), fill_digital=False),
+    store_report.RowRule(5, ("冰箱",), ("美的", "COLMO", "东芝"), ("冰箱",), ("美的系", "COLMO", "东芝JX"), fill_digital=False),
+    store_report.RowRule(6, ("洗衣机",), ("美的", "小天鹅", "COLMO"), ("洗衣机",), ("美的系", "小天鹅", "COLMO"), fill_digital=False),
+    store_report.RowRule(7, ("冰箱",), ("西门子",), ("冰箱",), ("西门子",), fill_digital=False),
+    store_report.RowRule(8, ("洗衣机",), ("西门子",), ("洗衣机",), ("西门子",), fill_digital=False),
+    store_report.RowRule(9, ("冰箱",), ("博世",), ("冰箱",), ("博世",), fill_digital=False),
+    store_report.RowRule(10, ("洗衣机",), ("博世",), ("洗衣机",), ("博世",), fill_digital=False),
+    store_report.RowRule(11, ("冰箱",), ("美菱",), ("冰箱",), ("美菱",), fill_digital=False),
+    store_report.RowRule(12, ("洗衣机",), ("美菱",), ("洗衣机",), ("美菱",), fill_digital=False),
+    store_report.RowRule(13, ("洗衣机",), ("小鸭",), ("洗衣机",), ("小鸭",), fill_digital=False),
+    store_report.RowRule(14, ("国产彩电",), ("海信",), ("电视",), ("海信",), fill_digital=False),
+    store_report.RowRule(15, ("国产彩电",), ("创维",), ("电视",), ("创维",), fill_digital=False),
+    store_report.RowRule(16, ("国产彩电",), ("TCL",), ("电视",), ("TCL",), fill_digital=False),
+    store_report.RowRule(17, ("国产彩电",), ("海尔", "卡萨帝"), ("电视",), ("海尔", "卡萨帝"), fill_digital=False),
+    store_report.RowRule(18, ("国产彩电",), ("华为", "华为（终端）"), ("电视",), ("华为", "华为（终端）"), fill_digital=False),
+    store_report.RowRule(19, ("空调",), ("格力",), ("空调",), ("格力",), fill_digital=False),
+    store_report.RowRule(20, ("空调",), ("美的",), ("空调",), ("美的",), fill_digital=False),
+    store_report.RowRule(21, ("空调",), ("海尔", "卡萨帝"), ("空调",), ("海尔", "卡萨帝"), fill_digital=False),
+    store_report.RowRule(22, ("空调",), ("海信",), ("空调",), ("海信",), fill_digital=False),
+    store_report.RowRule(23, ("空调",), ("奥克斯",), ("空调",), ("奥克斯",), fill_digital=False),
+    store_report.RowRule(24, ("空调",), ("科龙",), ("空调",), ("科龙",), fill_digital=False),
+    store_report.RowRule(25, ("空调",), ("TCL",), ("空调",), ("TCL",), fill_digital=False),
+    store_report.RowRule(26, ("厨卫",), ("老板",), ("厨卫",), ("老板",), fill_digital=False),
+    store_report.RowRule(27, ("厨卫", "冰箱"), ("方太",), ("厨卫", "冰箱"), ("方太",), fill_digital=False),
+    store_report.RowRule(28, ("厨卫",), ("AO史密斯", "A.O.史密斯"), ("厨卫",), ("AO史密斯", "A.O.史密斯"), fill_digital=False),
+    store_report.RowRule(29, ("厨卫",), ("海尔", "卡萨帝"), ("厨卫",), ("海尔", "卡萨帝"), fill_digital=False),
+    store_report.RowRule(30, ("厨卫",), ("美的", "COLMO"), ("厨卫",), ("美的系", "美的", "COLMO"), fill_digital=False),
+    store_report.RowRule(31, ("厨卫",), ("万家乐",), ("厨卫",), ("万家乐",), fill_digital=False),
+    store_report.RowRule(32, (), (), ("数码",), (), fill_digital=True),
 )
 
 LITERAL_BRAND_GROUP_RULES: tuple[store_report.BrandGroupRule, ...] = (
     store_report.BrandGroupRule(
-        41,
+        40,
         "海尔系",
         (
             store_report.BrandGroupCategory("冰箱", "冰箱", ("海尔", "卡萨帝")),
@@ -146,7 +144,7 @@ LITERAL_BRAND_GROUP_RULES: tuple[store_report.BrandGroupRule, ...] = (
         ),
     ),
     store_report.BrandGroupRule(
-        42,
+        41,
         "美的系",
         (
             store_report.BrandGroupCategory("冰箱", "冰箱", ("美的", "COLMO", "东芝")),
@@ -156,12 +154,12 @@ LITERAL_BRAND_GROUP_RULES: tuple[store_report.BrandGroupRule, ...] = (
         ),
     ),
     store_report.BrandGroupRule(
-        43,
+        42,
         "格力",
         (store_report.BrandGroupCategory("空调", "空调", ("格力",)),),
     ),
     store_report.BrandGroupRule(
-        44,
+        43,
         "博西",
         (
             store_report.BrandGroupCategory("冰箱", "冰箱", ("西门子", "博世")),
@@ -169,7 +167,7 @@ LITERAL_BRAND_GROUP_RULES: tuple[store_report.BrandGroupRule, ...] = (
         ),
     ),
     store_report.BrandGroupRule(
-        45,
+        44,
         "海信系",
         (
             store_report.BrandGroupCategory("国产彩电", "电视", ("海信",)),
@@ -177,12 +175,12 @@ LITERAL_BRAND_GROUP_RULES: tuple[store_report.BrandGroupRule, ...] = (
         ),
     ),
     store_report.BrandGroupRule(
-        46,
+        45,
         "创维",
         (store_report.BrandGroupCategory("国产彩电", "电视", ("创维",)),),
     ),
     store_report.BrandGroupRule(
-        47,
+        46,
         "TCL",
         (
             store_report.BrandGroupCategory("国产彩电", "电视", ("TCL",)),
@@ -206,7 +204,7 @@ def _build_minimal_template() -> Workbook:
         sheet.cell(
             row=1,
             column=column_index,
-            value="        2026年（益庄店 ）门店国补上传及回款情况表\n\n        更新时间："
+            value="表1                  2026年（益庄店 ）门店国补上传及回款情况表_2026-08-15 18:06:27"
             if column_index == 1
             else "",
         )
@@ -214,9 +212,9 @@ def _build_minimal_template() -> Workbook:
         sheet[coordinate] = value
     for range_ in LITERAL_EXPECTED_MERGED_RANGES:
         sheet.merge_cells(range_)
-    for expected, row in enumerate(range(3, 34), start=1):
+    for expected, row in enumerate(range(3, 33), start=1):
         sheet[f"B{row}"] = expected
-    sheet.row_dimensions[55].hidden = True
+    sheet.row_dimensions[53].hidden = True
     return workbook
 
 
@@ -453,7 +451,7 @@ class ReportRatioTests(unittest.TestCase):
 
     def test_household_row_ratio_uses_occurred_amount(self) -> None:
         sheet = Workbook().active
-        rule = store_report.RowRule(7, "冰箱", ("西门子",), "冰箱", ("西门子",))
+        rule = store_report.RowRule(7, ("冰箱",), ("西门子",), ("冰箱",), ("西门子",))
         upload_data = {("冰箱", "西门子"): {"已上传": Decimal("100"), "未上传": Decimal("50")}}
         payment_data = {("冰箱", "西门子"): Decimal("40")}
 
@@ -465,80 +463,50 @@ class ReportRatioTests(unittest.TestCase):
         self.assertAlmostEqual(sheet["H7"].value, 40 / 150)
         self.assertAlmostEqual(sheet["F7"].value, 100 / 150)
 
-    def test_fotile_row_includes_refrigerator_payment(self) -> None:
-        """方太冰箱行两侧规则一致：审核侧（已纠正为冰箱）与回款侧都归入本行。"""
+    def test_fotile_row_combines_refrigerator_and_kitchen_data(self) -> None:
+        """第 27 行（厨卫/方太）同时汇总冰箱和厨卫两侧方太金额，其余行不重复计入。"""
         sheet = Workbook().active
-        rule = next(rule for rule in store_report.ROW_RULES if rule.row == 14)
-        upload_data = {
-            ("冰箱", "方太"): {"已上传": Decimal("1500"), "未上传": Decimal("0")}
-        }
-        payment_data = {("冰箱", "方太"): Decimal("1500")}
-
-        store_report.write_row(
-            sheet, rule, upload_data, payment_data,
-            {"发生额": Decimal("0"), "上传额": Decimal("0")}, Decimal("0"), FONT, {},
-        )
-
-        self.assertEqual(sheet["D14"].value, 1500)
-        self.assertEqual(sheet["E14"].value, 1500)
-        self.assertEqual(sheet["F14"].value, 1)
-        self.assertEqual(sheet["G14"].value, 1500)
-        self.assertEqual(sheet["H14"].value, 1)
-
-    def test_fotile_kitchen_row_only_takes_kitchen_data(self) -> None:
-        """厨卫方太行（28）只收审核/回款两侧真正的厨卫方太；审核侧已纠正为
-        冰箱的记录不会占用它，回款侧厨卫也不会流进方太冰箱行。"""
-        sheet = Workbook().active
-        kitchen_rule = next(
-            rule for rule in store_report.ROW_RULES if rule.row == 28
-        )
-        fridge_rule = next(
-            rule for rule in store_report.ROW_RULES if rule.row == 14
+        fotile_rule = next(
+            rule for rule in store_report.ROW_RULES if rule.row == 27
         )
         upload_data = {
-            ("厨卫", "方太"): {"已上传": Decimal("800"), "未上传": Decimal("0")}
+            ("冰箱", "方太"): {"已上传": Decimal("1500"), "未上传": Decimal("0")},
+            ("厨卫", "方太"): {"已上传": Decimal("800"), "未上传": Decimal("0")},
         }
         payment_data = {
-            ("厨卫", "方太"): Decimal("800"),
-            ("冰箱", "方太"): Decimal("1500"),
+            ("冰箱", "方太"): Decimal("1200"),
+            ("厨卫", "方太"): Decimal("600"),
         }
 
         store_report.write_row(
-            sheet, kitchen_rule, upload_data, payment_data,
-            {"发生额": Decimal("0"), "上传额": Decimal("0")}, Decimal("0"), FONT, {},
-        )
-        store_report.write_row(
-            sheet, fridge_rule, upload_data, payment_data,
+            sheet, fotile_rule, upload_data, payment_data,
             {"发生额": Decimal("0"), "上传额": Decimal("0")}, Decimal("0"), FONT, {},
         )
 
-        self.assertEqual(sheet["D28"].value, 800)
-        self.assertEqual(sheet["E28"].value, 800)
-        self.assertEqual(sheet["F28"].value, 1)
-        self.assertEqual(sheet["G28"].value, 800)
-        self.assertEqual(sheet["H28"].value, 1)
-        # 方太冰箱行只含回款侧冰箱金额，不含厨卫回款。
-        self.assertIsNone(sheet["D14"].value)
-        self.assertEqual(sheet["G14"].value, 1500)
+        self.assertEqual(sheet["D27"].value, 2300)
+        self.assertEqual(sheet["E27"].value, 2300)
+        self.assertEqual(sheet["F27"].value, 1.0)
+        self.assertEqual(sheet["G27"].value, 1800)
+        self.assertAlmostEqual(sheet["H27"].value, 1800 / 2300)
 
     def test_digital_row_fills_amount_and_both_ratios(self) -> None:
         sheet = Workbook().active
-        rule = store_report.RowRule(33, None, (), "数码", (), fill_digital=True)
+        rule = store_report.RowRule(32, (), (), ("数码",), (), fill_digital=True)
         digital_upload = {"发生额": Decimal("1000"), "上传额": Decimal("800")}
 
         store_report.write_row(sheet, rule, {}, {}, digital_upload, Decimal("300"), FONT, {})
 
-        self.assertEqual(sheet["D33"].value, 1000)
-        self.assertEqual(sheet["E33"].value, 800)
-        self.assertAlmostEqual(sheet["F33"].value, 0.8)
-        self.assertEqual(sheet["G33"].value, 300)
-        self.assertAlmostEqual(sheet["H33"].value, 0.3)
-        for coordinate in ("D33", "E33", "G33"):
+        self.assertEqual(sheet["D32"].value, 1000)
+        self.assertEqual(sheet["E32"].value, 800)
+        self.assertAlmostEqual(sheet["F32"].value, 0.8)
+        self.assertEqual(sheet["G32"].value, 300)
+        self.assertAlmostEqual(sheet["H32"].value, 0.3)
+        for coordinate in ("D32", "E32", "G32"):
             self.assertEqual(
                 sheet[coordinate].number_format,
                 store_report.DATA_NUMBER_FORMAT,
             )
-        for coordinate in ("F33", "H33"):
+        for coordinate in ("F32", "H32"):
             self.assertEqual(
                 sheet[coordinate].number_format,
                 store_report.PERCENT_NUMBER_FORMAT,
@@ -559,17 +527,17 @@ class ReportRatioTests(unittest.TestCase):
 
         store_report.update_totals(sheet, FONT, {})
 
-        self.assertEqual(sheet["D34"].value, 200)
-        self.assertEqual(sheet["E34"].value, 100)
-        self.assertAlmostEqual(sheet["F34"].value, 0.5)
-        self.assertEqual(sheet["G34"].value, 50)
-        self.assertAlmostEqual(sheet["H34"].value, 0.25)
-        for coordinate in ("D34", "E34", "G34"):
+        self.assertEqual(sheet["D33"].value, 200)
+        self.assertEqual(sheet["E33"].value, 100)
+        self.assertAlmostEqual(sheet["F33"].value, 0.5)
+        self.assertEqual(sheet["G33"].value, 50)
+        self.assertAlmostEqual(sheet["H33"].value, 0.25)
+        for coordinate in ("D33", "E33", "G33"):
             self.assertEqual(
                 sheet[coordinate].number_format,
                 store_report.DATA_NUMBER_FORMAT,
             )
-        for coordinate in ("F34", "H34"):
+        for coordinate in ("F33", "H33"):
             self.assertEqual(
                 sheet[coordinate].number_format,
                 store_report.PERCENT_NUMBER_FORMAT,
@@ -595,18 +563,18 @@ class ReportRatioTests(unittest.TestCase):
         store_report.write_table3(sheet, upload_metrics, payment_metrics, FONT, {})
 
         self.assertEqual(
-            [sheet[cell].value for cell in ("D52", "E52")],
+            [sheet[cell].value for cell in ("D50", "E50")],
             [6, 3],
         )
         self.assertEqual(
-            [sheet[cell].value for cell in ("D53", "E53")],
+            [sheet[cell].value for cell in ("D51", "E51")],
             [5, 2],
         )
         self.assertEqual(
-            [sheet[cell].value for cell in ("D54", "E54")],
+            [sheet[cell].value for cell in ("D52", "E52")],
             [11, 5],
         )
-        for row in (52, 53, 54):
+        for row in (50, 51, 52):
             for column in ("D", "E"):
                 self.assertEqual(
                     sheet[f"{column}{row}"].number_format,
@@ -1326,47 +1294,47 @@ class BrandGroupTests(unittest.TestCase):
 
         store_report.update_brand_group_totals(sheet, FONT, expected_cells)
 
-        # 41: 海尔系 发生 180, 回款 90, 比例 0.5
-        self.assertEqual(sheet["D41"].value, 180)
-        self.assertEqual(sheet["E41"].value, 90)
+        # 40: 海尔系 发生 180, 回款 90, 比例 0.5
+        self.assertEqual(sheet["D40"].value, 180)
+        self.assertEqual(sheet["E40"].value, 90)
+        self.assertAlmostEqual(sheet["F40"].value, 0.5)
+
+        # 41: 美的系 发生 230, 回款 115, 比例 0.5
+        self.assertEqual(sheet["D41"].value, 230)
+        self.assertEqual(sheet["E41"].value, 115)
         self.assertAlmostEqual(sheet["F41"].value, 0.5)
 
-        # 42: 美的系 发生 230, 回款 115, 比例 0.5
-        self.assertEqual(sheet["D42"].value, 230)
-        self.assertEqual(sheet["E42"].value, 115)
-        self.assertAlmostEqual(sheet["F42"].value, 0.5)
+        # 42: 格力 发生 95, 回款 38, 比例 0.4
+        self.assertEqual(sheet["D42"].value, 95)
+        self.assertEqual(sheet["E42"].value, 38)
+        self.assertAlmostEqual(sheet["F42"].value, 0.4)
 
-        # 43: 格力 发生 95, 回款 38, 比例 0.4
-        self.assertEqual(sheet["D43"].value, 95)
-        self.assertEqual(sheet["E43"].value, 38)
+        # 43: 博西 发生 80, 回款 32, 比例 0.4
+        self.assertEqual(sheet["D43"].value, 80)
+        self.assertEqual(sheet["E43"].value, 32)
         self.assertAlmostEqual(sheet["F43"].value, 0.4)
 
-        # 44: 博西 发生 80, 回款 32, 比例 0.4
-        self.assertEqual(sheet["D44"].value, 80)
-        self.assertEqual(sheet["E44"].value, 32)
-        self.assertAlmostEqual(sheet["F44"].value, 0.4)
+        # 44: 海信系 发生 100, 回款 50, 比例 0.5
+        self.assertEqual(sheet["D44"].value, 100)
+        self.assertEqual(sheet["E44"].value, 50)
+        self.assertAlmostEqual(sheet["F44"].value, 0.5)
 
-        # 45: 海信系 发生 100, 回款 50, 比例 0.5
-        self.assertEqual(sheet["D45"].value, 100)
-        self.assertEqual(sheet["E45"].value, 50)
-        self.assertAlmostEqual(sheet["F45"].value, 0.5)
+        # 45: 创维 发生 45, 回款 18, 比例 0.4
+        self.assertEqual(sheet["D45"].value, 45)
+        self.assertEqual(sheet["E45"].value, 18)
+        self.assertAlmostEqual(sheet["F45"].value, 0.4)
 
-        # 46: 创维 发生 45, 回款 18, 比例 0.4
-        self.assertEqual(sheet["D46"].value, 45)
-        self.assertEqual(sheet["E46"].value, 18)
-        self.assertAlmostEqual(sheet["F46"].value, 0.4)
+        # 46: TCL 发生 70, 回款 35, 比例 0.5
+        self.assertEqual(sheet["D46"].value, 70)
+        self.assertEqual(sheet["E46"].value, 35)
+        self.assertAlmostEqual(sheet["F46"].value, 0.5)
 
-        # 47: TCL 发生 70, 回款 35, 比例 0.5
-        self.assertEqual(sheet["D47"].value, 70)
-        self.assertEqual(sheet["E47"].value, 35)
-        self.assertAlmostEqual(sheet["F47"].value, 0.5)
-
-        # 48: 合计 D48=800, E48=378, F48=378/800=0.4725
+        # 47: 合计 D47=800, E47=378, F47=378/800=0.4725
         total_occurred = 180 + 230 + 95 + 80 + 100 + 45 + 70
         total_paid = 90 + 115 + 38 + 32 + 50 + 18 + 35
-        self.assertEqual(sheet["D48"].value, total_occurred)
-        self.assertEqual(sheet["E48"].value, total_paid)
-        self.assertAlmostEqual(sheet["F48"].value, total_paid / total_occurred)
+        self.assertEqual(sheet["D47"].value, total_occurred)
+        self.assertEqual(sheet["E47"].value, total_paid)
+        self.assertAlmostEqual(sheet["F47"].value, total_paid / total_occurred)
 
 
 class TemplateValidationTests(unittest.TestCase):
@@ -1387,8 +1355,8 @@ class TemplateValidationTests(unittest.TestCase):
         )
 
     def test_all_brand_cells_mutation_rejected_by_template_validation(self) -> None:
-        """参数化测试：C3:C33 与 C41:C47 中任何一个品牌标签被篡改都会被拒绝。"""
-        brand_cells = [f"C{r}" for r in range(3, 34)] + [f"C{r}" for r in range(41, 48)]
+        """参数化测试：C3:C32 与 C40:C46 中任何一个品牌标签被篡改都会被拒绝。"""
+        brand_cells = [f"C{r}" for r in range(3, 33)] + [f"C{r}" for r in range(40, 47)]
         for cell in brand_cells:
             with self.subTest(cell=cell):
                 workbook = _build_minimal_template()
@@ -1413,23 +1381,23 @@ class TemplateValidationTests(unittest.TestCase):
             store_report.validate_template(workbook)
 
     def test_rejects_a_legacy_template_with_old_row_layout(self) -> None:
-        """旧版模板第 14 行是洗衣机小鸭、第 15 行是方太冰箱：若第 14 行被改成海信电视则结构校验拒绝。"""
+        """旧版模板第 14 行是方太冰箱：若第 14 行被改成方太冰箱则结构校验拒绝（新版为海信）。"""
         workbook = _build_minimal_template()
-        workbook.active["C14"] = "海信电视"
+        workbook.active["C14"] = "方太冰箱"
 
         with self.assertRaisesRegex(ValueError, "请更换为新版模板"):
             store_report.validate_template(workbook)
 
     def test_rejects_a_template_with_a_moved_label(self) -> None:
         workbook = _build_minimal_template()
-        workbook.active["C41"] = "格力系"  # 海尔系 moved or renamed
+        workbook.active["C40"] = "格力系"  # 海尔系 moved or renamed
 
-        with self.assertRaisesRegex(ValueError, "C41"):
+        with self.assertRaisesRegex(ValueError, "C40"):
             store_report.validate_template(workbook)
 
     def test_rejects_a_template_missing_a_key_merge(self) -> None:
         workbook = _build_minimal_template()
-        workbook.active.unmerge_cells("A3:A14")
+        workbook.active.unmerge_cells("A3:A13")
 
         with self.assertRaisesRegex(ValueError, "合并区域"):
             store_report.validate_template(workbook)
@@ -1473,42 +1441,35 @@ class TemplateValidationTests(unittest.TestCase):
         group_rows = {rule.row for rule in store_report.BRAND_GROUP_RULES}
         self.assertEqual(
             group_rows,
-            set(range(41, store_report.BRAND_GROUP_TOTAL_ROW)),
+            set(range(40, store_report.BRAND_GROUP_TOTAL_ROW)),
         )
 
     def test_layout_constants_match_structure_cells(self) -> None:
         """表 1 总计、表 2 合计、表 3 行号与模板关键标签互相锁定。"""
-        self.assertEqual(store_report.TOTAL_ROW, 34)
-        self.assertEqual(store_report.TEMPLATE_STRUCTURE_CELLS["A34"], "费用总计")
-        self.assertEqual(store_report.BRAND_GROUP_TOTAL_ROW, 48)
-        self.assertEqual(store_report.TEMPLATE_STRUCTURE_CELLS["C48"], "合计")
+        self.assertEqual(store_report.TOTAL_ROW, 33)
+        self.assertEqual(store_report.TEMPLATE_STRUCTURE_CELLS["A33"], "费用总计")
+        self.assertEqual(store_report.BRAND_GROUP_TOTAL_ROW, 47)
+        self.assertEqual(store_report.TEMPLATE_STRUCTURE_CELLS["C47"], "合计")
         self.assertEqual(
             store_report.TABLE3_PROJECT_ROWS,
-            {"家电": 52, "数码": 53},
+            {"家电": 50, "数码": 51},
         )
-        self.assertEqual(store_report.TABLE3_TOTAL_ROW, 54)
-        self.assertEqual(store_report.TEMPLATE_STRUCTURE_CELLS["C52"], "家电")
-        self.assertEqual(store_report.TEMPLATE_STRUCTURE_CELLS["C53"], "数码")
-        self.assertEqual(store_report.TEMPLATE_STRUCTURE_CELLS["C54"], "合计")
+        self.assertEqual(store_report.TABLE3_TOTAL_ROW, 52)
+        self.assertEqual(store_report.TEMPLATE_STRUCTURE_CELLS["C50"], "家电")
+        self.assertEqual(store_report.TEMPLATE_STRUCTURE_CELLS["C51"], "数码")
+        self.assertEqual(store_report.TEMPLATE_STRUCTURE_CELLS["C52"], "合计")
 
-    def test_fotile_rows_are_separate_and_both_sided(self) -> None:
-        """方太冰箱（14）与方太厨卫（28）是两条独立规则，两侧品类一致，
-        不再有跨品类临时规则。"""
-        fridge = next(rule for rule in store_report.ROW_RULES if rule.row == 14)
-        kitchen = next(rule for rule in store_report.ROW_RULES if rule.row == 28)
+    def test_fotile_rule_covers_both_categories(self) -> None:
+        """方太规则在第 27 行同时覆盖厨卫与冰箱，两侧品类一致。"""
+        fotile = next(rule for rule in store_report.ROW_RULES if rule.row == 27)
         self.assertEqual(
-            fridge,
-            store_report.RowRule(14, "冰箱", ("方太",), "冰箱", ("方太",)),
+            fotile,
+            store_report.RowRule(27, ("厨卫", "冰箱"), ("方太",), ("厨卫", "冰箱"), ("方太",)),
         )
-        self.assertEqual(
-            kitchen,
-            store_report.RowRule(28, "厨卫", ("方太",), "厨卫", ("方太",)),
-        )
-        self.assertEqual(store_report.TEMPLATE_STRUCTURE_CELLS["C14"], "方太冰箱")
-        self.assertEqual(store_report.TEMPLATE_STRUCTURE_CELLS["C28"], "方太")
-        # 白名单必须覆盖纠正目标：冰箱在审核侧有行规则，电视（对应国产彩电）
-        # 不在。
+        self.assertEqual(store_report.TEMPLATE_STRUCTURE_CELLS["C27"], "方太")
+        # 白名单必须覆盖纠正目标：冰箱在审核侧有行规则，电视（对应国产彩电）不在。
         self.assertIn("冰箱", store_report.UPLOAD_CATEGORIES)
+        self.assertIn("厨卫", store_report.UPLOAD_CATEGORIES)
         self.assertNotIn("电视", store_report.UPLOAD_CATEGORIES)
 
     def test_rejects_extra_sheets(self) -> None:
@@ -1532,7 +1493,7 @@ class TemplateValidationTests(unittest.TestCase):
         for column_index in range(1, store_report.EXPECTED_COLUMN_COUNT + 1):
             sheet.cell(row=1, column=column_index, value="")
         for coordinate, value in store_report.TEMPLATE_STRUCTURE_CELLS.items():
-            if int("".join(filter(str.isdigit, coordinate))) <= 34:
+            if int("".join(filter(str.isdigit, coordinate))) <= 33:
                 sheet[coordinate] = value
 
         with self.assertRaisesRegex(ValueError, "行数"):
@@ -1570,17 +1531,17 @@ class ValidateOutputTests(unittest.TestCase):
         sheet = workbook.active
         sheet.title = "益庄"
         _fill_columns(sheet)
-        sheet["A1"] = "更新时间：2026-07-28 00:00:00"
+        sheet["A1"] = "表1                  2026年（益庄店 ）门店国补上传及回款情况表_2026-07-28 00:00:00"
         sheet["D3"] = 100
-        sheet["D34"] = 100
-        sheet["D41"] = 100
-        sheet["D48"] = 100
-        sheet["D52"] = 1
-        sheet["D53"] = 2
-        sheet["D54"] = 3
-        sheet["E52"] = 1
-        sheet["E53"] = 2
-        sheet["E54"] = 3
+        sheet["D33"] = 100
+        sheet["D40"] = 100
+        sheet["D47"] = 100
+        sheet["D50"] = 1
+        sheet["D51"] = 2
+        sheet["D52"] = 3
+        sheet["E50"] = 1
+        sheet["E51"] = 2
+        sheet["E52"] = 3
 
         with TemporaryDirectory() as directory:
             path = Path(directory) / "report.xlsx"
@@ -1592,9 +1553,9 @@ class ValidateOutputTests(unittest.TestCase):
         sheet = workbook.active
         sheet.title = "益庄"
         _fill_columns(sheet)
-        sheet["A1"] = "更新时间：2026-07-28 00:00:00"
+        sheet["A1"] = "表1                  2026年（益庄店 ）门店国补上传及回款情况表_2026-07-28 00:00:00"
         sheet["D3"] = 100
-        sheet["D34"] = 999
+        sheet["D33"] = 999
 
         with TemporaryDirectory() as directory:
             path = Path(directory) / "report.xlsx"
@@ -1607,7 +1568,7 @@ class ValidateOutputTests(unittest.TestCase):
         sheet = workbook.active
         sheet.title = "益庄"
         _fill_columns(sheet)
-        sheet["A1"] = "更新时间：2026-07-28 00:00:00"
+        sheet["A1"] = "表1                  2026年（益庄店 ）门店国补上传及回款情况表_2026-07-28 00:00:00"
         sheet["D3"] = 100
 
         with TemporaryDirectory() as directory:
@@ -1621,11 +1582,12 @@ class ValidateOutputTests(unittest.TestCase):
         sheet = workbook.active
         sheet.title = "益庄"
         _fill_columns(sheet)
+        sheet["A1"] = "无时间戳标题"
 
         with TemporaryDirectory() as directory:
             path = Path(directory) / "report.xlsx"
             workbook.save(path)
-            with self.assertRaisesRegex(ValueError, "更新时间"):
+            with self.assertRaisesRegex(ValueError, "有效时间戳"):
                 store_report.validate_output(path, {}, "益庄")
 
     def test_rejects_a_workbook_with_the_wrong_sheet_title(self) -> None:
@@ -1633,7 +1595,7 @@ class ValidateOutputTests(unittest.TestCase):
         sheet = workbook.active
         sheet.title = "其他门店"
         _fill_columns(sheet)
-        sheet["A1"] = "更新时间：2026-07-28 00:00:00"
+        sheet["A1"] = "表1                  2026年（益庄店 ）门店国补上传及回款情况表_2026-07-28 00:00:00"
 
         with TemporaryDirectory() as directory:
             path = Path(directory) / "report.xlsx"
@@ -1757,38 +1719,35 @@ class ProcessStoreReportIntegrationTests(unittest.TestCase):
             self.assertEqual(sheet["D3"].value, 120)
             self.assertEqual(sheet["E3"].value, 100)
             self.assertEqual(sheet["G3"].value, 60)
-            # 审核侧厨卫/方太经参考号纠正为冰箱，进入方太冰箱行。
-            self.assertEqual(sheet["D14"].value, 1500)
-            self.assertEqual(sheet["E14"].value, 1500)
-            self.assertEqual(sheet["G14"].value, 1500)
-            self.assertEqual(sheet["H14"].value, 1)
-            # 厨卫方太行（28）不重复计算冰箱金额。
-            self.assertIsNone(sheet["D28"].value)
-            self.assertIsNone(sheet["G28"].value)
-            self.assertEqual(sheet["D33"].value, 50)
-            self.assertEqual(sheet["E33"].value, 40)
-            self.assertEqual(sheet["G33"].value, 15)
-            self.assertEqual(sheet["D34"].value, 1670)
-            self.assertEqual(sheet["E34"].value, 1640)
-            self.assertEqual(sheet["G34"].value, 1575)
-            # 表 2 品牌汇总：海尔系 发生 120, 回款 60, 回款率 0.5；其余组为空；第 48 行合计。
-            self.assertEqual(sheet["D41"].value, 120)
-            self.assertEqual(sheet["E41"].value, 60)
-            self.assertAlmostEqual(sheet["F41"].value, 0.5)
-            for row in range(42, 48):
+            # 审核侧厨卫/方太经参考号纠正为冰箱，并入第 27 行（厨卫/方太）。
+            self.assertEqual(sheet["D27"].value, 1500)
+            self.assertEqual(sheet["E27"].value, 1500)
+            self.assertEqual(sheet["G27"].value, 1500)
+            self.assertEqual(sheet["H27"].value, 1)
+            self.assertEqual(sheet["D32"].value, 50)
+            self.assertEqual(sheet["E32"].value, 40)
+            self.assertEqual(sheet["G32"].value, 15)
+            self.assertEqual(sheet["D33"].value, 1670)
+            self.assertEqual(sheet["E33"].value, 1640)
+            self.assertEqual(sheet["G33"].value, 1575)
+            # 表 2 品牌汇总：海尔系 发生 120, 回款 60, 回款率 0.5；其余组为空；第 47 行合计。
+            self.assertEqual(sheet["D40"].value, 120)
+            self.assertEqual(sheet["E40"].value, 60)
+            self.assertAlmostEqual(sheet["F40"].value, 0.5)
+            for row in range(41, 47):
                 self.assertIsNone(sheet[f"D{row}"].value)
                 self.assertIsNone(sheet[f"E{row}"].value)
                 self.assertIsNone(sheet[f"F{row}"].value)
-            self.assertEqual(sheet["D48"].value, 120)
-            self.assertEqual(sheet["E48"].value, 60)
-            self.assertAlmostEqual(sheet["F48"].value, 0.5)
+            self.assertEqual(sheet["D47"].value, 120)
+            self.assertEqual(sheet["E47"].value, 60)
+            self.assertAlmostEqual(sheet["F47"].value, 0.5)
+            self.assertIsNone(sheet["D50"].value)
+            self.assertEqual(sheet["E50"].value, 1)
+            self.assertIsNone(sheet["D51"].value)
+            self.assertEqual(sheet["E51"].value, 1)
             self.assertIsNone(sheet["D52"].value)
-            self.assertEqual(sheet["E52"].value, 1)
-            self.assertIsNone(sheet["D53"].value)
-            self.assertEqual(sheet["E53"].value, 1)
-            self.assertIsNone(sheet["D54"].value)
-            self.assertEqual(sheet["E54"].value, 2)
-            self.assertIn("更新时间：", sheet["A1"].value)
+            self.assertEqual(sheet["E52"].value, 2)
+            self.assertRegex(sheet["A1"].value, store_report.HEADER_TIMESTAMP_RE)
             self.assertIn("审核明细品类纠正：1 条", reporter_text)
             # 合并区域内部的 MergedCell 不参与渲染，openpyxl 保存时会丢弃
             # 对其样式的写入（保持模板原样），所以只断言普通单元格的字体。

@@ -15,6 +15,7 @@ this is deferred until a second store is actually needed.
 from __future__ import annotations
 
 import math
+import re
 from copy import copy
 from dataclasses import dataclass
 from datetime import datetime
@@ -57,15 +58,16 @@ TEMPLATE_FILE_KEYWORD = "门店国补上传及回款情况表"
 DATA_DIR: Path
 
 SHANGHAI_TZ = ZoneInfo("Asia/Shanghai")
+HEADER_TIMESTAMP_RE = re.compile(r"^(.*_)(\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2})\s*$")
 FILLED_ALIGNMENT = Alignment(horizontal="left", vertical="center")
 DATA_NUMBER_FORMAT = "General"
 PERCENT_NUMBER_FORMAT = "0.00%"
-TOTAL_ROW = 34
+TOTAL_ROW = 33
 DETAIL_ROWS = range(3, TOTAL_ROW)
-BRAND_GROUP_TOTAL_ROW = 48
-BRAND_GROUP_DETAIL_ROWS = range(41, BRAND_GROUP_TOTAL_ROW)
-TABLE3_PROJECT_ROWS = {"家电": 52, "数码": 53}
-TABLE3_TOTAL_ROW = 54
+BRAND_GROUP_TOTAL_ROW = 47
+BRAND_GROUP_DETAIL_ROWS = range(40, BRAND_GROUP_TOTAL_ROW)
+TABLE3_PROJECT_ROWS = {"家电": 50, "数码": 51}
+TABLE3_TOTAL_ROW = 52
 EXPECTED_SHEET_COUNT = 1
 EXPECTED_COLUMN_COUNT = 8  # A..H
 EXPECTED_SHEET_TITLE = "益庄"
@@ -74,10 +76,10 @@ EXPECTED_SHEET_TITLE = "益庄"
 # 手工放入各环境，因此这个标记是防止误用旧模板的唯一防线：旧模板
 # （含手工修改版）没有它，validate_template 直接给出更换提示。
 # 版本标记行必须隐藏，否则会出现在最终报表的打印结果里。
-TEMPLATE_VERSION_CELL = "A55"
-TEMPLATE_VERSION_ROW = 55
-TEMPLATE_VERSION_MARKER = "模板版本：2026-V3"
-# 版本标记在第 55 行：模板至少 55 行，与版本契约一致。
+TEMPLATE_VERSION_CELL = "A53"
+TEMPLATE_VERSION_ROW = 53
+TEMPLATE_VERSION_MARKER = "模板版本：2026-V4"
+# 版本标记在第 53 行：模板至少 53 行，与版本契约一致。
 MIN_TEMPLATE_ROW_COUNT = TEMPLATE_VERSION_ROW
 
 # 正式模板的全部固定合并区域。校验“必须包含”——模板被改动丢失任一合并
@@ -86,12 +88,12 @@ MIN_TEMPLATE_ROW_COUNT = TEMPLATE_VERSION_ROW
 EXPECTED_MERGED_RANGES = frozenset(
     {
         "A1:H1",
-        "A3:A14",
-        "A15:A19",
-        "A20:A26",
-        "A27:A32",
-        "A34:C34",
-        "C39:F39",
+        "A3:A13",
+        "A14:A18",
+        "A19:A25",
+        "A26:A31",
+        "A33:C33",
+        "C38:F38",
     }
 )
 
@@ -99,7 +101,7 @@ EXPECTED_MERGED_RANGES = frozenset(
 # Checked before writing (wrong/stale template must not silently produce a
 # wrong report) and again after saving (writing must not have corrupted them).
 
-# 表 1：明细与总计（第 2–34 行）
+# 表 1：明细与总计（第 2–33 行）
 _TABLE1_CELLS: dict[str, str] = {
     "A2": "品类",
     "B2": "序号",
@@ -121,54 +123,53 @@ _TABLE1_CELLS: dict[str, str] = {
     "C11": "美菱冰箱",
     "C12": "美菱洗衣机",
     "C13": "小鸭洗衣机",
-    "C14": "方太冰箱",
-    "C15": "海信电视",
-    "C16": "创维电视",
-    "C17": "TCL电视",
-    "C18": "海尔电视",
-    "C19": "华为电视",
-    "C20": "格力",
-    "C21": "美的",
-    "C22": "海尔",
-    "C23": "海信",
-    "C24": "奥克斯",
-    "C25": "科龙",
-    "C26": "TCL",
-    "C27": "老板",
-    "C28": "方太",
-    "C29": "AO史密斯",
-    "C30": "海尔",
-    "C31": "美的",
-    "C32": "万家乐",
-    "C33": "数码",
-    "A34": "费用总计",
+    "C14": "海信",
+    "C15": "创维",
+    "C16": "TCL",
+    "C17": "海尔",
+    "C18": "华为",
+    "C19": "格力",
+    "C20": "美的",
+    "C21": "海尔",
+    "C22": "海信",
+    "C23": "奥克斯",
+    "C24": "科龙",
+    "C25": "TCL",
+    "C26": "老板",
+    "C27": "方太",
+    "C28": "AO史密斯",
+    "C29": "海尔",
+    "C30": "美的",
+    "C31": "万家乐",
+    "C32": "数码",
+    "A33": "费用总计",
 }
 
-# 表 2：主要品牌汇总（第 39–48 行）
+# 表 2：主要品牌汇总（第 38–47 行）
 _TABLE2_CELLS: dict[str, str] = {
-    "C39": "主要品牌国补上传及回款情况",
-    "C40": "品牌",
-    "D40": "26年国补发生额",
-    "E40": "26年国补回款额",
-    "F40": "回款率",
-    "C41": "海尔系",
-    "C42": "美的系",
-    "C43": "格力",
-    "C44": "博西",
-    "C45": "海信系",
-    "C46": "创维",
-    "C47": "TCL",
-    "C48": "合计",
+    "C38": "表2                主要品牌国补上传及回款情况",
+    "C39": "品牌",
+    "D39": "26年国补发生额",
+    "E39": "26年国补回款额",
+    "F39": "回款率",
+    "C40": "海尔系",
+    "C41": "美的系",
+    "C42": "格力",
+    "C43": "博西",
+    "C44": "海信系",
+    "C45": "创维",
+    "C46": "TCL",
+    "C47": "合计",
 }
 
-# 表 3：数量统计（第 50–54 行）
+# 表 3：数量统计（第 49–52 行）
 _TABLE3_CELLS: dict[str, str] = {
-    "C50": "表3",
-    "D50": "审核中",
-    "E50": "未上传",
-    "C52": "家电",
-    "C53": "数码",
-    "C54": "合计",
+    "C49": "表3",
+    "D49": "审核中",
+    "E49": "未上传",
+    "C50": "家电",
+    "C51": "数码",
+    "C52": "合计",
 }
 
 TEMPLATE_STRUCTURE_CELLS: dict[str, str] = {
@@ -213,8 +214,9 @@ def validate_template(workbook: Workbook) -> None:
     if sheet.max_row < MIN_TEMPLATE_ROW_COUNT:
         raise ValueError(f"空白模板行数至少应为 {MIN_TEMPLATE_ROW_COUNT}，实际为 {sheet.max_row}")
 
-    if "更新时间：" not in str(sheet["A1"].value or ""):
-        raise ValueError("空白模板 A1 单元格缺少“更新时间：”标记；请更换为新版模板")
+    a1_value = str(sheet["A1"].value or "").strip()
+    if not HEADER_TIMESTAMP_RE.match(a1_value):
+        raise ValueError(f"空白模板 A1 标题格式无效（缺少有效时间戳）：{sheet['A1'].value!r}；请更换为新版模板")
 
     # 版本标记先行检查：旧模板（含无标记的手工修改版）在这里被明确拒绝，
     # 而不是混入下面的通用结构错误里让人猜。
@@ -238,7 +240,7 @@ def validate_template(workbook: Workbook) -> None:
             + "；请更换为新版模板"
         )
 
-    # 明细行 3..TOTAL_ROW-1 共 31 行，序号 1..31。
+    # 明细行 3..TOTAL_ROW-1 共 30 行，序号 1..30。
     for expected, row in enumerate(DETAIL_ROWS, start=1):
         actual = sheet[f"B{row}"].value
         if actual != expected:
@@ -262,49 +264,50 @@ def validate_template(workbook: Workbook) -> None:
 @dataclass(frozen=True)
 class RowRule:
     row: int
-    upload_category: str | None
+    upload_categories: tuple[str, ...]
     upload_brands: tuple[str, ...]
-    payment_category: str | None
+    payment_categories: tuple[str, ...]
     payment_brands: tuple[str, ...]
     fill_digital: bool = False
 
 
 ROW_RULES = (
-    RowRule(3, "冰箱", ("海尔", "卡萨帝"), "冰箱", ("海尔", "卡萨帝")),
-    RowRule(4, "洗衣机", ("海尔", "卡萨帝"), "洗衣机", ("海尔", "卡萨帝")),
-    RowRule(5, "冰箱", ("美的", "COLMO", "东芝"), "冰箱", ("美的系", "COLMO", "东芝JX")),
-    RowRule(6, "洗衣机", ("美的", "小天鹅", "COLMO"), "洗衣机", ("美的系", "小天鹅", "COLMO")),
-    RowRule(7, "冰箱", ("西门子",), "冰箱", ("西门子",)),
-    RowRule(8, "洗衣机", ("西门子",), "洗衣机", ("西门子",)),
-    RowRule(9, "冰箱", ("博世",), "冰箱", ("博世",)),
-    RowRule(10, "洗衣机", ("博世",), "洗衣机", ("博世",)),
-    RowRule(11, "冰箱", ("美菱",), "冰箱", ("美菱",)),
-    RowRule(12, "洗衣机", ("美菱",), "洗衣机", ("美菱",)),
-    RowRule(13, "洗衣机", ("小鸭",), "洗衣机", ("小鸭",)),
-    # 方太冰箱：审核侧原品类为厨卫的记录由 load_upload_data 按回款明细的
-    # 交易参考号纠正为冰箱后再进入本行（见 load_payment_data 的编码品类
-    # 索引与 load_upload_data 的品类纠正），因此两侧规则都写冰箱。
-    RowRule(14, "冰箱", ("方太",), "冰箱", ("方太",)),
-    RowRule(15, "国产彩电", ("海信",), "电视", ("海信",)),
-    RowRule(16, "国产彩电", ("创维",), "电视", ("创维",)),
-    RowRule(17, "国产彩电", ("TCL",), "电视", ("TCL",)),
-    RowRule(18, "国产彩电", ("海尔", "卡萨帝"), "电视", ("海尔", "卡萨帝")),
-    RowRule(19, "国产彩电", ("华为", "华为（终端）"), "电视", ("华为", "华为（终端）")),
-    RowRule(20, "空调", ("格力",), "空调", ("格力",)),
-    RowRule(21, "空调", ("美的",), "空调", ("美的",)),
-    RowRule(22, "空调", ("海尔", "卡萨帝"), "空调", ("海尔", "卡萨帝")),
-    RowRule(23, "空调", ("海信",), "空调", ("海信",)),
-    RowRule(24, "空调", ("奥克斯",), "空调", ("奥克斯",)),
-    RowRule(25, "空调", ("科龙",), "空调", ("科龙",)),
-    RowRule(26, "空调", ("TCL",), "空调", ("TCL",)),
-    RowRule(27, "厨卫", ("老板",), "厨卫", ("老板",)),
-    # 真正的方太厨卫商品（若有）走本行；方太冰箱经参考号纠正后不再占用。
-    RowRule(28, "厨卫", ("方太",), "厨卫", ("方太",)),
-    RowRule(29, "厨卫", ("AO史密斯", "A.O.史密斯"), "厨卫", ("AO史密斯", "A.O.史密斯")),
-    RowRule(30, "厨卫", ("海尔", "卡萨帝"), "厨卫", ("海尔", "卡萨帝")),
-    RowRule(31, "厨卫", ("美的", "COLMO"), "厨卫", ("美的系", "美的", "COLMO")),
-    RowRule(32, "厨卫", ("万家乐",), "厨卫", ("万家乐",)),
-    RowRule(33, None, (), "数码", (), fill_digital=True),
+    # 冰洗 3–13
+    RowRule(3, ("冰箱",), ("海尔", "卡萨帝"), ("冰箱",), ("海尔", "卡萨帝")),
+    RowRule(4, ("洗衣机",), ("海尔", "卡萨帝"), ("洗衣机",), ("海尔", "卡萨帝")),
+    RowRule(5, ("冰箱",), ("美的", "COLMO", "东芝"), ("冰箱",), ("美的系", "COLMO", "东芝JX")),
+    RowRule(6, ("洗衣机",), ("美的", "小天鹅", "COLMO"), ("洗衣机",), ("美的系", "小天鹅", "COLMO")),
+    RowRule(7, ("冰箱",), ("西门子",), ("冰箱",), ("西门子",)),
+    RowRule(8, ("洗衣机",), ("西门子",), ("洗衣机",), ("西门子",)),
+    RowRule(9, ("冰箱",), ("博世",), ("冰箱",), ("博世",)),
+    RowRule(10, ("洗衣机",), ("博世",), ("洗衣机",), ("博世",)),
+    RowRule(11, ("冰箱",), ("美菱",), ("冰箱",), ("美菱",)),
+    RowRule(12, ("洗衣机",), ("美菱",), ("洗衣机",), ("美菱",)),
+    RowRule(13, ("洗衣机",), ("小鸭",), ("洗衣机",), ("小鸭",)),
+    # 电视 14–18
+    RowRule(14, ("国产彩电",), ("海信",), ("电视",), ("海信",)),
+    RowRule(15, ("国产彩电",), ("创维",), ("电视",), ("创维",)),
+    RowRule(16, ("国产彩电",), ("TCL",), ("电视",), ("TCL",)),
+    RowRule(17, ("国产彩电",), ("海尔", "卡萨帝"), ("电视",), ("海尔", "卡萨帝")),
+    RowRule(18, ("国产彩电",), ("华为", "华为（终端）"), ("电视",), ("华为", "华为（终端）")),
+    # 空调 19–25
+    RowRule(19, ("空调",), ("格力",), ("空调",), ("格力",)),
+    RowRule(20, ("空调",), ("美的",), ("空调",), ("美的",)),
+    RowRule(21, ("空调",), ("海尔", "卡萨帝"), ("空调",), ("海尔", "卡萨帝")),
+    RowRule(22, ("空调",), ("海信",), ("空调",), ("海信",)),
+    RowRule(23, ("空调",), ("奥克斯",), ("空调",), ("奥克斯",)),
+    RowRule(24, ("空调",), ("科龙",), ("空调",), ("科龙",)),
+    RowRule(25, ("空调",), ("TCL",), ("空调",), ("TCL",)),
+    # 厨卫 26–31
+    RowRule(26, ("厨卫",), ("老板",), ("厨卫",), ("老板",)),
+    # 第 27 行：方太（同时汇总厨卫和冰箱两侧方太）
+    RowRule(27, ("厨卫", "冰箱"), ("方太",), ("厨卫", "冰箱"), ("方太",)),
+    RowRule(28, ("厨卫",), ("AO史密斯", "A.O.史密斯"), ("厨卫",), ("AO史密斯", "A.O.史密斯")),
+    RowRule(29, ("厨卫",), ("海尔", "卡萨帝"), ("厨卫",), ("海尔", "卡萨帝")),
+    RowRule(30, ("厨卫",), ("美的", "COLMO"), ("厨卫",), ("美的系", "美的", "COLMO")),
+    RowRule(31, ("厨卫",), ("万家乐",), ("厨卫",), ("万家乐",)),
+    # 3C 数码 32
+    RowRule(32, (), (), ("数码",), (), fill_digital=True),
 )
 
 # Every payment-file 财务大类 this report knows how to place. A category
@@ -317,7 +320,10 @@ DIGITAL_PAYMENT_CATEGORIES = frozenset({"手机", "平板", "智能穿戴"})
 # 执行纠正。回款侧“电视”对应审核侧“国产彩电”——那是两套口径的体系差异，
 # 不是错标，纠正会让纠正后的行失去规则匹配，因此这类目标品类不纠正。
 UPLOAD_CATEGORIES = frozenset(
-    rule.upload_category for rule in ROW_RULES if rule.upload_category
+    category
+    for rule in ROW_RULES
+    for category in rule.upload_categories
+    if category
 )
 
 
@@ -364,7 +370,7 @@ class CategoryCorrection:
 
 BRAND_GROUP_RULES = (
     BrandGroupRule(
-        41,
+        40,
         "海尔系",
         (
             BrandGroupCategory("冰箱", "冰箱", ("海尔", "卡萨帝")),
@@ -375,7 +381,7 @@ BRAND_GROUP_RULES = (
         ),
     ),
     BrandGroupRule(
-        42,
+        41,
         "美的系",
         (
             BrandGroupCategory("冰箱", "冰箱", ("美的", "COLMO", "东芝")),
@@ -384,9 +390,9 @@ BRAND_GROUP_RULES = (
             BrandGroupCategory("厨卫", "厨卫", ("美的", "COLMO")),
         ),
     ),
-    BrandGroupRule(43, "格力", (BrandGroupCategory("空调", "空调", ("格力",)),)),
+    BrandGroupRule(42, "格力", (BrandGroupCategory("空调", "空调", ("格力",)),)),
     BrandGroupRule(
-        44,
+        43,
         "博西",
         (
             BrandGroupCategory("冰箱", "冰箱", ("西门子", "博世")),
@@ -394,16 +400,16 @@ BRAND_GROUP_RULES = (
         ),
     ),
     BrandGroupRule(
-        45,
+        44,
         "海信系",
         (
             BrandGroupCategory("国产彩电", "电视", ("海信",)),
             BrandGroupCategory("空调", "空调", ("海信", "科龙")),
         ),
     ),
-    BrandGroupRule(46, "创维", (BrandGroupCategory("国产彩电", "电视", ("创维",)),)),
+    BrandGroupRule(45, "创维", (BrandGroupCategory("国产彩电", "电视", ("创维",)),)),
     BrandGroupRule(
-        47,
+        46,
         "TCL",
         (
             BrandGroupCategory("国产彩电", "电视", ("TCL",)),
@@ -1002,45 +1008,49 @@ def load_payment_data(
 
 def sum_upload_amount(
     upload_data: dict[tuple[str, str], dict[str, Decimal]],
-    category: str | None,
+    categories: tuple[str, ...],
     brands: tuple[str, ...],
 ) -> tuple[Decimal, Decimal]:
-    if not category:
+    if not categories or not brands:
         return Decimal("0"), Decimal("0")
 
     occurred = Decimal("0")
     uploaded = Decimal("0")
+    normalized_categories = {normalize_text(cat) for cat in categories}
     normalized_brands = {normalize_text(brand) for brand in brands}
 
-    for brand in normalized_brands:
-        values = upload_data.get((normalize_text(category), brand))
-        if not values:
-            continue
-        uploaded += values.get("已上传", Decimal("0"))
-        occurred += values.get("已上传", Decimal("0")) + values.get("未上传", Decimal("0"))
+    for category in normalized_categories:
+        for brand in normalized_brands:
+            values = upload_data.get((category, brand))
+            if not values:
+                continue
+            uploaded += values.get("已上传", Decimal("0"))
+            occurred += values.get("已上传", Decimal("0")) + values.get("未上传", Decimal("0"))
 
     return occurred, uploaded
 
 
 def sum_payment_amount(
     payment_data: dict[tuple[str, str], Decimal],
-    category: str | None,
+    categories: tuple[str, ...],
     brands: tuple[str, ...],
 ) -> Decimal:
-    if not category:
+    if not categories or not brands:
         return Decimal("0")
 
     total = Decimal("0")
+    normalized_categories = {normalize_text(cat) for cat in categories}
     normalized_brands = {normalize_text(brand) for brand in brands}
 
-    for brand in normalized_brands:
-        total += payment_data.get((normalize_text(category), brand), Decimal("0"))
+    for category in normalized_categories:
+        for brand in normalized_brands:
+            total += payment_data.get((category, brand), Decimal("0"))
 
     return total
 
 
 def _rule_claims(
-    category_attr: str, brands_attr: str, business_name: str
+    categories_attr: str, brands_attr: str, business_name: str
 ) -> dict[tuple[str, str], int]:
     """Map each (品类, 品牌) ROW_RULES claims to the row that claims it.
 
@@ -1052,18 +1062,19 @@ def _rule_claims(
     """
     claims: dict[tuple[str, str], int] = {}
     for rule in ROW_RULES:
-        category = getattr(rule, category_attr)
-        if not category:
+        categories = getattr(rule, categories_attr)
+        if not categories:
             continue
-        normalized_category = normalize_text(category)
-        for brand in getattr(rule, brands_attr):
-            key = (normalized_category, normalize_text(brand))
-            if key in claims and claims[key] != rule.row:
-                raise ValueError(
-                    f"ROW_RULES 配置冲突：{business_name}品类品牌 {key} 同时被第 {claims[key]} 行"
-                    f"和第 {rule.row} 行规则匹配"
-                )
-            claims[key] = rule.row
+        for category in categories:
+            normalized_category = normalize_text(category)
+            for brand in getattr(rule, brands_attr):
+                key = (normalized_category, normalize_text(brand))
+                if key in claims and claims[key] != rule.row:
+                    raise ValueError(
+                        f"ROW_RULES 配置冲突：{business_name}品类品牌 {key} 同时被第 {claims[key]} 行"
+                        f"和第 {rule.row} 行规则匹配"
+                    )
+                claims[key] = rule.row
     return claims
 
 
@@ -1079,8 +1090,8 @@ def validate_rule_coverage(
     still balances, because both sides of that check are already missing the
     same money.
     """
-    upload_claims = _rule_claims("upload_category", "upload_brands", "审核明细")
-    payment_claims = _rule_claims("payment_category", "payment_brands", "回款明细")
+    upload_claims = _rule_claims("upload_categories", "upload_brands", "审核明细")
+    payment_claims = _rule_claims("payment_categories", "payment_brands", "回款明细")
 
     unmatched: list[str] = [
         f"审核明细未配置规则：{category}/{brand}，发生额 {occurred}"
@@ -1196,10 +1207,10 @@ def write_row(
         paid = digital_payment
     else:
         occurred, uploaded = sum_upload_amount(
-            upload_data, row_rule.upload_category, row_rule.upload_brands
+            upload_data, row_rule.upload_categories, row_rule.upload_brands
         )
         paid = sum_payment_amount(
-            payment_data, row_rule.payment_category, row_rule.payment_brands
+            payment_data, row_rule.payment_categories, row_rule.payment_brands
         )
 
     write_metrics_row(
@@ -1238,10 +1249,12 @@ def sum_brand_group(
 
     for category in categories:
         category_occurred, _ = sum_upload_amount(
-            upload_data, category.upload_category, category.brands
+            upload_data, (category.upload_category,), category.brands
         )
         occurred += category_occurred
-        paid += sum_payment_amount(payment_data, category.payment_category, category.brands)
+        paid += sum_payment_amount(
+            payment_data, (category.payment_category,), category.brands
+        )
 
     return occurred, paid
 
@@ -1335,9 +1348,12 @@ def current_timestamp() -> datetime:
 
 def update_header(sheet, timestamp: datetime, expected_cells: dict[str, object]) -> None:
     formatted_timestamp = timestamp.strftime("%Y-%m-%d %H:%M:%S")
-    original = str(sheet["A1"].value or "")
-    prefix, marker, _ = original.rpartition("更新时间：")
-    value = f"{prefix}{marker}{formatted_timestamp}"
+    original = str(sheet["A1"].value or "").strip()
+    match = HEADER_TIMESTAMP_RE.match(original)
+    if not match:
+        raise ValueError(f"空白模板 A1 标题格式无效（缺少有效时间戳）：{sheet['A1'].value!r}")
+    prefix = match.group(1)
+    value = f"{prefix}{formatted_timestamp}"
     sheet["A1"] = value
     expected_cells["A1"] = value
 
@@ -1381,22 +1397,22 @@ def _validate_totals_match_details(sheet, path_name: str) -> None:
             )
 
     # 表3 独立守恒校验
-    d52 = to_count(sheet[f"D{TABLE3_PROJECT_ROWS['家电']}"].value)
-    d53 = to_count(sheet[f"D{TABLE3_PROJECT_ROWS['数码']}"].value)
-    d54 = to_count(sheet[f"D{TABLE3_TOTAL_ROW}"].value)
-    if d54 != d52 + d53:
+    d_appliance = to_count(sheet[f"D{TABLE3_PROJECT_ROWS['家电']}"].value)
+    d_digital = to_count(sheet[f"D{TABLE3_PROJECT_ROWS['数码']}"].value)
+    d_total = to_count(sheet[f"D{TABLE3_TOTAL_ROW}"].value)
+    if d_total != d_appliance + d_digital:
         raise ValueError(
             f"{path_name} 第 {TABLE3_TOTAL_ROW} 行审核中数量合计校验失败："
-            f"D{TABLE3_TOTAL_ROW} 应为 {d52 + d53}，实际为 {d54}"
+            f"D{TABLE3_TOTAL_ROW} 应为 {d_appliance + d_digital}，实际为 {d_total}"
         )
 
-    e52 = to_count(sheet[f"E{TABLE3_PROJECT_ROWS['家电']}"].value)
-    e53 = to_count(sheet[f"E{TABLE3_PROJECT_ROWS['数码']}"].value)
-    e54 = to_count(sheet[f"E{TABLE3_TOTAL_ROW}"].value)
-    if e54 != e52 + e53:
+    e_appliance = to_count(sheet[f"E{TABLE3_PROJECT_ROWS['家电']}"].value)
+    e_digital = to_count(sheet[f"E{TABLE3_PROJECT_ROWS['数码']}"].value)
+    e_total = to_count(sheet[f"E{TABLE3_TOTAL_ROW}"].value)
+    if e_total != e_appliance + e_digital:
         raise ValueError(
             f"{path_name} 第 {TABLE3_TOTAL_ROW} 行未上传数量合计校验失败："
-            f"E{TABLE3_TOTAL_ROW} 应为 {e52 + e53}，实际为 {e54}"
+            f"E{TABLE3_TOTAL_ROW} 应为 {e_appliance + e_digital}，实际为 {e_total}"
         )
 
 
@@ -1442,8 +1458,9 @@ def validate_output(
             raise ValueError(
                 f"{path.name} 列数应为 {EXPECTED_COLUMN_COUNT}，实际为 {sheet.max_column}"
             )
-        if "更新时间：" not in str(sheet["A1"].value or ""):
-            raise ValueError(f"{path.name} A1 未写入更新时间")
+        a1_value = str(sheet["A1"].value or "").strip()
+        if not HEADER_TIMESTAMP_RE.match(a1_value):
+            raise ValueError(f"{path.name} A1 标题格式无效（缺少有效时间戳）：{sheet['A1'].value!r}")
 
         mismatches = [
             f"{coordinate}（应为 {expected!r}，实际为 {sheet[coordinate].value!r}）"

@@ -712,7 +712,7 @@ class EndToEndAllModeTest(unittest.TestCase):
             sheet.cell(
                 row=1,
                 column=column_index,
-                value="        2026年（益庄店 ）门店国补上传及回款情况表\n\n        更新时间："
+                value="表1                  2026年（益庄店 ）门店国补上传及回款情况表_2026-08-15 18:06:27"
                 if column_index == 1
                 else "",
             )
@@ -720,9 +720,9 @@ class EndToEndAllModeTest(unittest.TestCase):
             sheet[coordinate] = value
         for range_ in LITERAL_EXPECTED_MERGED_RANGES:
             sheet.merge_cells(range_)
-        for expected, row in enumerate(range(3, 34), start=1):
+        for expected, row in enumerate(range(3, 33), start=1):
             sheet[f"B{row}"] = expected
-        sheet.row_dimensions[55].hidden = True
+        sheet.row_dimensions[53].hidden = True
         workbook.save(path)
 
     @staticmethod
@@ -933,38 +933,36 @@ class EndToEndAllModeTest(unittest.TestCase):
             self.assertIsNone(summary_data[("数码", None, "未上传")][2])
             self.assertEqual(summary_data[("数码", None, "合计")][2], 1)
 
-            # 门店报表：方太冰箱行显示纠正后的金额，厨卫方太行保持为空。
+            # 门店报表：方太冰箱与厨卫统一汇总至第 27 行。
             result = load_workbook(output_files["store"], data_only=True)
             sheet = result[result.sheetnames[0]]
             self.assertEqual(sheet.max_column, 8)
             self.assertEqual(sheet["D3"].value, 150)
             self.assertEqual(sheet["E3"].value, 150)
             self.assertEqual(sheet["G3"].value, 150)
-            self.assertEqual(sheet["D14"].value, 1500)
-            self.assertEqual(sheet["E14"].value, 1500)
-            self.assertEqual(sheet["G14"].value, 1500)
-            self.assertIsNone(sheet["D28"].value)
-            self.assertIsNone(sheet["G28"].value)
-            self.assertEqual(sheet["D33"].value, 75)
-            self.assertEqual(sheet["E33"].value, 75)
-            self.assertEqual(sheet["G33"].value, 75)
+            self.assertEqual(sheet["D27"].value, 1500)
+            self.assertEqual(sheet["E27"].value, 1500)
+            self.assertEqual(sheet["G27"].value, 1500)
+            self.assertEqual(sheet["D32"].value, 75)
+            self.assertEqual(sheet["E32"].value, 75)
+            self.assertEqual(sheet["G32"].value, 75)
             # 表 1 总计：
-            self.assertEqual(sheet["D34"].value, 1725)
-            self.assertEqual(sheet["E34"].value, 1725)
-            self.assertEqual(sheet["G34"].value, 1725)
-            self.assertEqual(sheet["F34"].value, 1)
-            self.assertEqual(sheet["H34"].value, 1)
-            # 表 2 品牌汇总：海尔系 发生 150, 回款 150, 回款率 1；其余为空；第 48 行合计。
-            self.assertEqual(sheet["D41"].value, 150)
-            self.assertEqual(sheet["E41"].value, 150)
-            self.assertEqual(sheet["F41"].value, 1)
-            for row in range(42, 48):
+            self.assertEqual(sheet["D33"].value, 1725)
+            self.assertEqual(sheet["E33"].value, 1725)
+            self.assertEqual(sheet["G33"].value, 1725)
+            self.assertEqual(sheet["F33"].value, 1)
+            self.assertEqual(sheet["H33"].value, 1)
+            # 表 2 品牌汇总：海尔系 发生 150, 回款 150, 回款率 1；其余为空；第 47 行合计。
+            self.assertEqual(sheet["D40"].value, 150)
+            self.assertEqual(sheet["E40"].value, 150)
+            self.assertEqual(sheet["F40"].value, 1)
+            for row in range(41, 47):
                 self.assertIsNone(sheet[f"D{row}"].value)
                 self.assertIsNone(sheet[f"E{row}"].value)
                 self.assertIsNone(sheet[f"F{row}"].value)
-            self.assertEqual(sheet["D48"].value, 150)
-            self.assertEqual(sheet["E48"].value, 150)
-            self.assertEqual(sheet["F48"].value, 1)
+            self.assertEqual(sheet["D47"].value, 150)
+            self.assertEqual(sheet["E47"].value, 150)
+            self.assertEqual(sheet["F47"].value, 1)
 
 
 if __name__ == "__main__":
