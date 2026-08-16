@@ -16,6 +16,7 @@ from collections import Counter
 from dataclasses import dataclass
 from datetime import date
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
+from typing import NamedTuple
 
 from processors.common.dates import (
     normalize_document_number,
@@ -90,7 +91,14 @@ REFERENCE_REPORT_ORDER = {
     REFERENCE_REPORT_COLLISION: 1,
     REFERENCE_REPORT_UNRESOLVED: 2,
 }
-ReferenceDecision = tuple[str, str, object, str, str]
+
+
+class ReferenceDecision(NamedTuple):
+    outcome: str
+    document_number: str
+    document_date: object
+    raw_reference: str
+    note: str
 
 # ---------------------------------------------------------------------------
 # 参考号纠正（明细摘要 → 已上传宇宙中的 \d{11}N）
@@ -339,12 +347,12 @@ def reference_decision(
     The detail rows get re-sorted after corrections are applied, so a row
     number recorded here would point at the wrong row in the saved sheet.
     """
-    return (
-        outcome,
-        normalize_document_number(row[DOCUMENT_INDEX]),
-        row[DATE_INDEX],
-        raw_reference,
-        note,
+    return ReferenceDecision(
+        outcome=outcome,
+        document_number=normalize_document_number(row[DOCUMENT_INDEX]),
+        document_date=row[DATE_INDEX],
+        raw_reference=raw_reference,
+        note=note,
     )
 
 
@@ -433,7 +441,7 @@ def correct_coupon_references(
             )
         )
 
-    decisions.sort(key=lambda decision: REFERENCE_REPORT_ORDER[decision[0]])
+    decisions.sort(key=lambda decision: REFERENCE_REPORT_ORDER[decision.outcome])
     return decisions
 
 
