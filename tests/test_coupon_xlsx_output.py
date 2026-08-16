@@ -27,7 +27,16 @@ from processors.coupons.xlsx_output import (
 
 FILL_COLOR = "FFC7CE"
 DETAIL_HEADER = ("单据号", "单据日期", "商品名称", "备注", "详细情况")
-SUMMARY_HEADER = ("财务大类", "品牌", "上传状态", "数量", "2026国补金额", "退回")
+SUMMARY_HEADER = (
+    "财务大类",
+    "品牌",
+    "上传状态",
+    "数量",
+    "2026国补金额",
+    "退回",
+    "回款数量",
+    "回款金额",
+)
 
 
 class WriterContractTest(unittest.TestCase):
@@ -94,9 +103,9 @@ class WriterContractTest(unittest.TestCase):
 
     def test_summary_sheet_borders_currency_and_merges(self) -> None:
         rows = [
-            ("空调", "格力", "已上传", 1, 1.5, None),
-            ("空调", "格力", "未上传", 2, 2.5, None),
-            ("冰箱", "海尔", "已上传", 3, 3.5, 1),
+            ("空调", "格力", "已上传", 1, 1.5, None, 1, 1.5),
+            ("空调", "格力", "未上传", 2, 2.5, None, None, None),
+            ("冰箱", "海尔", "已上传", 3, 3.5, 1, 3, 3.5),
         ]
         with Workbook(str(self.path)) as workbook:
             formats = CouponFormatCache(workbook, self.font_name, FILL_COLOR)
@@ -112,14 +121,16 @@ class WriterContractTest(unittest.TestCase):
             )
         sheet = self._read("数据汇总")
 
-        self.assertEqual(sheet.max_column, 6)
-        # The currency column is E (2026国补金额), and F (退回) is General.
+        self.assertEqual(sheet.max_column, 8)
+        # The currency column is E (2026国补金额) and H (回款金额), F (退回) and G (回款数量) are General.
         self.assertEqual(sheet["E2"].number_format, "0.00")
         self.assertEqual(sheet["E4"].number_format, "0.00")
         self.assertEqual(sheet["F2"].number_format, "General")
+        self.assertEqual(sheet["G2"].number_format, "General")
+        self.assertEqual(sheet["H2"].number_format, "0.00")
         self.assertEqual(sheet["A2"].number_format, "General")
-        # Borders cover the header row and every data row across A:F.
-        for coordinate in ("A1", "F1", "A4", "F4"):
+        # Borders cover the header row and every data row across A:H.
+        for coordinate in ("A1", "H1", "A4", "H4"):
             with self.subTest(coordinate=coordinate):
                 self.assertEqual(sheet[coordinate].border.left.style, "thin")
         self.assertEqual(
@@ -165,13 +176,16 @@ class CouponOutputValidationTest(unittest.TestCase):
             rows=[list(digital.COUPON_OUTPUT_HEADER)],
             matched_count=0,
         )
-        self.extra_summary_rows = []
+        self.augmented_summary_rows = [
+            ("空调", "格力", "已上传", 1, 1.5, 1, 1, 1.5),
+            ("空调", "格力", "未上传", 1, 2.5, None, None, None),
+        ]
         self.decisions = []
         coupon_report.write_coupon_workbook(
             self.path,
             self.appliance_computation,
             self.digital_computation,
-            self.extra_summary_rows,
+            self.augmented_summary_rows,
             self.decisions,
         )
 
@@ -180,7 +194,7 @@ class CouponOutputValidationTest(unittest.TestCase):
             self.path,
             self.appliance_computation,
             self.digital_computation,
-            self.extra_summary_rows,
+            self.augmented_summary_rows,
             self.decisions,
         )
 
@@ -205,10 +219,48 @@ class CouponOutputValidationTest(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "输出校验失败"):
             self.validate()
 
+    def test_calamine_validation_rejects_a_changed_payment_count_cell(self) -> None:
+        workbook = load_workbook(self.path)
+        workbook[appliance.SUMMARY_SHEET_NAME]["G2"] = 999
+        workbook.save(self.path)
+        workbook.close()
+
+        with self.assertRaisesRegex(RuntimeError, "输出校验失败"):
+            self.validate()
+
+    def test_calamine_validation_rejects_a_changed_payment_amount_cell(self) -> None:
+        workbook = load_workbook(self.path)
+        workbook[appliance.SUMMARY_SHEET_NAME]["H2"] = 999.0
+        workbook.save(self.path)
+        workbook.close()
+
+        with self.assertRaisesRegex(RuntimeError, "输出校验失败"):
+            self.validate()
+
     def test_calamine_validation_rejects_zero_in_empty_returned_cell(self) -> None:
         """F 列原本为空（无退回，如未上传行 F3）时，若被写成数值 0，校验必须失败。"""
         workbook = load_workbook(self.path)
         workbook[appliance.SUMMARY_SHEET_NAME]["F3"] = 0
+        workbook.save(self.path)
+        workbook.close()
+
+        with self.assertRaisesRegex(RuntimeError, "输出校验失败"):
+            self.validate()
+
+    def test_calamine_validation_rejects_zero_in_empty_payment_count_cell(self) -> None:
+        """G 列原本为空（如未上传行 G3）时，若被写成数值 0，校验必须失败。"""
+        workbook = load_workbook(self.path)
+        workbook[appliance.SUMMARY_SHEET_NAME]["G3"] = 0
+        workbook.save(self.path)
+        workbook.close()
+
+        with self.assertRaisesRegex(RuntimeError, "输出校验失败"):
+            self.validate()
+
+    def test_calamine_validation_rejects_zero_in_empty_payment_amount_cell(self) -> None:
+        """H 列原本为空（如未上传行 H3）时，若被写成数值 0，校验必须失败。"""
+        workbook = load_workbook(self.path)
+        workbook[appliance.SUMMARY_SHEET_NAME]["H3"] = 0
         workbook.save(self.path)
         workbook.close()
 

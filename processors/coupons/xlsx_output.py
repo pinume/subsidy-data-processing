@@ -30,7 +30,10 @@ from processors.common.excel import (
     width_measurer,
 )
 
-from .report_contract import SUMMARY_SUBSIDY_HEADER
+from .report_contract import (
+    SUMMARY_PAYMENT_AMOUNT_HEADER,
+    SUMMARY_SUBSIDY_HEADER,
+)
 
 TEXT_FORMAT = "@"
 # Shared with the other XlsxWriter writers: openpyxl stamped these onto a cell
@@ -298,6 +301,11 @@ def write_summary_sheet(
     back what it has written the way the openpyxl version did.
     """
     bordered_rows = len(rows) + 1
+    currency_columns = tuple(
+        header.index(name)
+        for name in (SUMMARY_SUBSIDY_HEADER, SUMMARY_PAYMENT_AMOUNT_HEADER)
+        if name in header
+    )
     sheet = _write_table(
         workbook,
         sheet_name,
@@ -306,7 +314,7 @@ def write_summary_sheet(
         formats,
         measurement_font,
         number_formats=column_number_formats(
-            currency_columns=(header.index(SUMMARY_SUBSIDY_HEADER),)
+            currency_columns=currency_columns
         ),
         bordered_rows=bordered_rows,
     )

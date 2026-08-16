@@ -902,18 +902,20 @@ class EndToEndAllModeTest(unittest.TestCase):
             for name, path in output_files.items():
                 self.assertTrue(path.exists(), f"缺少输出：{name}")
 
-            # 审核明细：验证数据汇总表 F 列“退回”统计正确
+            # 审核明细：验证数据汇总表 G/H 列回款统计正确
             coupon_result = load_workbook(output_files["coupon"], data_only=True)
             summary_sheet = coupon_result[coupon_report.SUMMARY_SHEET_NAME]
-            self.assertEqual(summary_sheet.max_column, 6)
+            self.assertEqual(summary_sheet.max_column, 8)
             self.assertEqual(summary_sheet["F1"].value, "退回")
+            self.assertEqual(summary_sheet["G1"].value, "回款数量")
+            self.assertEqual(summary_sheet["H1"].value, "回款金额")
             summary_data = {}
             current_category = None
             current_brand = None
             for row in summary_sheet.iter_rows(min_row=2, values_only=True):
                 if not any(v is not None for v in row):
                     continue
-                category, brand, status, count, amount, returned = row[:6]
+                category, brand, status, count, amount, returned, p_cnt, p_amt = row[:8]
                 if category is not None:
                     current_category = category
                     current_brand = brand
@@ -923,15 +925,33 @@ class EndToEndAllModeTest(unittest.TestCase):
                     count,
                     amount,
                     returned,
+                    p_cnt,
+                    p_amt,
                 )
             self.assertEqual(summary_data[("冰箱", "海尔", "已上传")][2], 1)
+            self.assertEqual(summary_data[("冰箱", "海尔", "已上传")][3], 1)
+            self.assertEqual(summary_data[("冰箱", "海尔", "已上传")][4], 150)
             self.assertIsNone(summary_data[("厨卫", "方太", "已上传")][2])
+            self.assertEqual(summary_data[("厨卫", "方太", "已上传")][3], 1)
+            self.assertEqual(summary_data[("厨卫", "方太", "已上传")][4], 1500)
             self.assertEqual(summary_data[("家电", None, "已上传")][2], 1)
+            self.assertEqual(summary_data[("家电", None, "已上传")][3], 2)
+            self.assertEqual(summary_data[("家电", None, "已上传")][4], 1650)
             self.assertIsNone(summary_data[("家电", None, "未上传")][2])
+            self.assertIsNone(summary_data[("家电", None, "未上传")][3])
+            self.assertIsNone(summary_data[("家电", None, "未上传")][4])
             self.assertEqual(summary_data[("家电", None, "合计")][2], 1)
+            self.assertIsNone(summary_data[("家电", None, "合计")][3])
+            self.assertIsNone(summary_data[("家电", None, "合计")][4])
             self.assertEqual(summary_data[("数码", None, "已上传")][2], 1)
+            self.assertEqual(summary_data[("数码", None, "已上传")][3], 1)
+            self.assertEqual(summary_data[("数码", None, "已上传")][4], 75)
             self.assertIsNone(summary_data[("数码", None, "未上传")][2])
+            self.assertIsNone(summary_data[("数码", None, "未上传")][3])
+            self.assertIsNone(summary_data[("数码", None, "未上传")][4])
             self.assertEqual(summary_data[("数码", None, "合计")][2], 1)
+            self.assertIsNone(summary_data[("数码", None, "合计")][3])
+            self.assertIsNone(summary_data[("数码", None, "合计")][4])
 
             # 门店报表：方太冰箱与厨卫统一汇总至第 27 行。
             result = load_workbook(output_files["store"], data_only=True)

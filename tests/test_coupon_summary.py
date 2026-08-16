@@ -515,7 +515,16 @@ class SummarySheetLayoutTest(unittest.TestCase):
         """
         self.assertEqual(
             appliance.COUPON_SUMMARY_HEADER,
-            ("财务大类", "品牌", "上传状态", "数量", "2026国补金额", "退回"),
+            (
+                "财务大类",
+                "品牌",
+                "上传状态",
+                "数量",
+                "2026国补金额",
+                "退回",
+                "回款数量",
+                "回款金额",
+            ),
         )
         workbook, computation = self.build_sheet()
         try:
@@ -1097,6 +1106,13 @@ class SubsidyCorrectionWarningTests(unittest.TestCase):
                 )
             )
             stack.enter_context(
+                patch.object(
+                    coupon_report,
+                    "load_payment_summary",
+                    return_value=({}, (0, Decimal("0")), (0, Decimal("0"))),
+                )
+            )
+            stack.enter_context(
                 patch.object(coupon_report, "CalamineWorkbook")
             )
             stack.enter_context(
@@ -1239,6 +1255,13 @@ class SupplementConflictWarningTests(unittest.TestCase):
                 )
             )
             stack.enter_context(
+                patch.object(
+                    coupon_report,
+                    "load_payment_summary",
+                    return_value=({}, (0, Decimal("0")), (0, Decimal("0"))),
+                )
+            )
+            stack.enter_context(
                 patch.object(coupon_report, "CalamineWorkbook")
             )
             stack.enter_context(
@@ -1305,6 +1328,138 @@ class SourceTotalGapTest(unittest.TestCase):
 
     def test_unparsable_source_total_reports_nothing(self) -> None:
         self.assertEqual(self.report(None, Decimal("2867621.40")), "")
+
+
+class PaymentSummaryAugmentationTests(unittest.TestCase):
+    """测试回款明细汇总读取、口径映射、数据汇总增强及校验规则。"""
+
+    def test_map_payment_appliance_key(self) -> None:
+        """回款品类与品牌映射：
+        电视 → 国产彩电
+        美的系 → 美的
+        A.O.史密斯 → AO史密斯
+        冰箱/方太 → 厨卫/方太
+        """
+        from processors.coupon_report import map_payment_appliance_key
+
+        self.assertEqual(map_payment_appliance_key("电视", "海信"), ("国产彩电", "海信"))
+        self.assertEqual(map_payment_appliance_key("电视", "TCL"), ("国产彩电", "TCL"))
+        self.assertEqual(map_payment_appliance_key("洗衣机", "美的系"), ("洗衣机", "美的"))
+        self.assertEqual(map_payment_appliance_key("厨卫", "A.O.史密斯"), ("厨卫", "AO史密斯"))
+        self.assertEqual(map_payment_appliance_key("冰箱", "方太"), ("厨卫", "方太"))
+        self.assertEqual(map_payment_appliance_key("厨卫", "方太"), ("厨卫", "方太"))
+        self.assertEqual(map_payment_appliance_key("空调", "格力"), ("空调", "格力"))
+
+    def test_fotile_and_duplicate_keys_merging(self) -> None:
+        """方太冰箱与厨卫回款求和归并入厨卫/方太，重复归并键累计而不是覆盖。"""
+        from processors.coupon_report import append_payment_summary_columns
+
+        household_payments = {
+            ("厨卫", "方太"): (3, Decimal("2300.00")),
+            ("空调", "格力"): (5, Decimal("10000.00")),
+        }
+        household_total = (8, Decimal("12300.00"))
+        digital_total = (4, Decimal("4000.00"))
+
+        summary_rows = [
+            ("厨卫", "方太", "已上传", 10, Decimal("50000.00"), None),
+            ("厨卫", "方太", "未上传", 2, Decimal("10000.00"), None),
+            ("空调", "格力", "已上传", 20, Decimal("80000.00"), None),
+            ("家电", None, "已上传", 30, Decimal("130000.00"), None),
+            ("家电", None, "未上传", 2, Decimal("10000.00"), None),
+            ("家电", None, "合计", 32, Decimal("140000.00"), None),
+            ("数码", None, "已上传", 15, Decimal("30000.00"), None),
+            ("数码", None, "未上传", 1, Decimal("2000.00"), None),
+            ("数码", None, "合计", 16, Decimal("32000.00"), None),
+        ]
+
+        augmented = append_payment_summary_columns(
+            summary_rows,
+            household_payments,
+            household_total,
+            digital_total,
+        )
+
+        # 检查方太已上传行：回款数量 3，回款金额 2300
+        self.assertEqual(augmented[0][6], 3)
+        self.assertEqual(augmented[0][7], Decimal("2300.00"))
+        # 检查方太未上传行：G/H 为空
+        self.assertIsNone(augmented[1][6])
+        self.assertIsNone(augmented[1][7])
+        # 检查格力已上传行：回款数量 5，回款金额 10000
+        self.assertEqual(augmented[2][6], 5)
+        self.assertEqual(augmented[2][7], Decimal("10000.00"))
+        # 检查家电已上传项目行：写入家电合计 (8, 12300)
+        self.assertEqual(augmented[3][6], 8)
+        self.assertEqual(augmented[3][7], Decimal("12300.00"))
+        # 检查家电未上传和合计：G/H 为空
+        self.assertIsNone(augmented[4][6])
+        self.assertIsNone(augmented[4][7])
+        self.assertIsNone(augmented[5][6])
+        self.assertIsNone(augmented[5][7])
+        # 检查数码已上传项目行：写入数码合计 (4, 4000)
+        self.assertEqual(augmented[6][6], 4)
+        self.assertEqual(augmented[6][7], Decimal("4000.00"))
+        # 检查数码未上传和合计：G/H 为空
+        self.assertIsNone(augmented[7][6])
+        self.assertIsNone(augmented[7][7])
+        self.assertIsNone(augmented[8][6])
+        self.assertIsNone(augmented[8][7])
+
+    def test_unmatched_payment_record_raises_error(self) -> None:
+        """回款明细中有品牌在审核汇总中无对应已上传行时，拒绝输出并提示品类、品牌、数量、金额。"""
+        from processors.coupon_report import append_payment_summary_columns
+
+        household_payments = {
+            ("冰箱", "新品牌"): (2, Decimal("3000.00")),
+        }
+        household_total = (2, Decimal("3000.00"))
+        digital_total = (0, Decimal("0.00"))
+
+        summary_rows = [
+            ("冰箱", "海尔", "已上传", 10, Decimal("50000.00"), None),
+            ("家电", None, "已上传", 10, Decimal("50000.00"), None),
+            ("家电", None, "合计", 10, Decimal("50000.00"), None),
+        ]
+
+        with self.assertRaisesRegex(ValueError, "回款明细未能匹配审核汇总.*冰箱/新品牌.*回款数量 2.*回款金额 3000.00"):
+            append_payment_summary_columns(
+                summary_rows,
+                household_payments,
+                household_total,
+                digital_total,
+            )
+
+    def test_load_payment_summary_reads_and_validates_structure(self) -> None:
+        """load_payment_summary 能正确解析包含合并单元格、合计校验的回款汇总表。"""
+        from processors.coupon_report import load_payment_summary
+
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "回款明细.xlsx"
+            wb = Workbook()
+            sheet = wb.active
+            sheet.title = "汇总"
+            sheet.append(["财务大类", "品牌", "补贴金额合计", "补贴金额计数"])
+            # 家电
+            sheet.append(["电视", "海信", 9900.00, 9])
+            sheet.append([None, "TCL", 5000.00, 5])
+            sheet.append(["冰箱", "方太", 1500.00, 1])
+            sheet.append(["厨卫", "方太", 800.00, 2])
+            sheet.append(["合计", None, 17200.00, 17])
+            sheet.append([None, None, None, None])
+            # 数码
+            sheet.append(["手机", "华为", 3000.00, 3])
+            sheet.append(["合计", None, 3000.00, 3])
+            sheet.append(["合计", None, 20200.00, 20])
+            wb.save(path)
+            wb.close()
+
+            payments, h_total, d_total = load_payment_summary(path)
+            self.assertEqual(payments[("国产彩电", "海信")], (9, Decimal("9900.00")))
+            self.assertEqual(payments[("国产彩电", "TCL")], (5, Decimal("5000.00")))
+            self.assertEqual(payments[("厨卫", "方太")], (3, Decimal("2300.00")))
+            self.assertEqual(h_total, (17, Decimal("17200.00")))
+            self.assertEqual(d_total, (3, Decimal("3000.00")))
 
 
 if __name__ == "__main__":

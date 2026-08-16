@@ -1529,6 +1529,13 @@ class TemplateValidationTests(unittest.TestCase):
         self.assertIn("厨卫", store_report.UPLOAD_CATEGORIES)
         self.assertNotIn("电视", store_report.UPLOAD_CATEGORIES)
 
+    def test_summary_header_compatibility_with_store_report(self) -> None:
+        """审核明细的 SUMMARY_HEADER 扩展为 8 列后，前 5 列仍与 SUMMARY_CORE_HEADER 完全一致。"""
+        from processors.coupon_report import SUMMARY_CORE_HEADER, SUMMARY_HEADER
+
+        self.assertEqual(SUMMARY_HEADER[:5], SUMMARY_CORE_HEADER)
+        self.assertEqual(store_report.UPLOAD_HEADER, SUMMARY_CORE_HEADER)
+
     def test_rejects_extra_sheets(self) -> None:
         workbook = _build_minimal_template()
         workbook.create_sheet("附表")

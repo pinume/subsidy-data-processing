@@ -14,7 +14,7 @@ processors.coupons.appliance's internals.
 """
 
 from datetime import date, datetime
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
 from python_calamine import CalamineWorkbook
@@ -32,11 +32,25 @@ from processors.coupons.report_contract import (
     SUBSIDY_YEAR,
     SUMMARY_CORE_HEADER,
     SUMMARY_HEADER,
+    SUMMARY_PAYMENT_AMOUNT_HEADER,
+    SUMMARY_PAYMENT_COUNT_HEADER,
     SUMMARY_SHEET_NAME,
     SUMMARY_SUBSIDY_HEADER,
 )
 from processors.coupons.sources import load_coupon_remark_lookup
-from processors.payment import OUTPUT_FILE as PAYMENT_FILE
+from processors.payment import (
+    APPLIANCE_CATEGORY_MAP,
+    DIGITAL_CATEGORY_MAP,
+)
+from processors.payment import (
+    OUTPUT_FILE as PAYMENT_FILE,
+)
+from processors.payment import (
+    SUMMARY_HEADERS as PAYMENT_SUMMARY_HEADERS,
+)
+from processors.payment import (
+    SUMMARY_SHEET_NAME as PAYMENT_SUMMARY_SHEET_NAME,
+)
 
 # Not unused despite the lack of a local reference: re-exported for
 # store_report.py, which imports SUMMARY_SHEET_NAME/SUMMARY_CORE_HEADER from this
@@ -46,6 +60,8 @@ from processors.payment import OUTPUT_FILE as PAYMENT_FILE
 __all__ = [
     "SUMMARY_CORE_HEADER",
     "SUMMARY_HEADER",
+    "SUMMARY_PAYMENT_AMOUNT_HEADER",
+    "SUMMARY_PAYMENT_COUNT_HEADER",
     "SUMMARY_SHEET_NAME",
     "SUMMARY_SUBSIDY_HEADER",
     "SUBSIDY_YEAR",
@@ -197,19 +213,284 @@ def digital_extra_summary_rows(
     ]
 
 
+def map_payment_appliance_key(category: str, brand: str) -> tuple[str, str]:
+    """Map payment category and brand to the coupon report naming conventions."""
+    target_category = "国产彩电" if category == "电视" else category
+    target_brand = {
+        "美的系": "美的",
+        "A.O.史密斯": "AO史密斯",
+    }.get(brand, brand)
+    if (target_category, target_brand) == ("冰箱", "方太"):
+        target_category, target_brand = ("厨卫", "方太")
+    return target_category, target_brand
+
+
+def load_payment_summary(
+    payment_file: Path,
+) -> tuple[
+    dict[tuple[str, str], tuple[int, Decimal]],
+    tuple[int, Decimal],
+    tuple[int, Decimal],
+]:
+    """Load and aggregate the payment summary sheet from output/回款明细.xlsx.
+
+    Returns:
+        1. Mapped appliance brand payment dict: {(category, brand): (count, amount)}
+        2. Appliance total: (count, amount)
+        3. Digital total: (count, amount)
+    """
+    if not payment_file.exists():
+        raise FileNotFoundError(
+            f"未找到 {payment_file}，请先运行回款明细处理模式"
+        )
+    appliance_categories = set(APPLIANCE_CATEGORY_MAP.values())
+    digital_categories = set(DIGITAL_CATEGORY_MAP.values())
+
+    workbook = CalamineWorkbook.from_path(str(payment_file))
+    try:
+        if PAYMENT_SUMMARY_SHEET_NAME not in workbook.sheet_names:
+            raise ValueError(
+                f"{payment_file.name} 中缺少“{PAYMENT_SUMMARY_SHEET_NAME}”工作表"
+            )
+        sheet = workbook.get_sheet_by_name(PAYMENT_SUMMARY_SHEET_NAME)
+        rows = sheet.to_python()
+    finally:
+        workbook.close()
+
+    if not rows:
+        raise ValueError(
+            f"{payment_file.name} 的“{PAYMENT_SUMMARY_SHEET_NAME}”工作表为空"
+        )
+    actual_header = list(rows[0])
+    if actual_header != PAYMENT_SUMMARY_HEADERS:
+        raise ValueError(
+            f"{payment_file.name} 的“{PAYMENT_SUMMARY_SHEET_NAME}”表头不符合预期，"
+            f"预期为 {PAYMENT_SUMMARY_HEADERS}，实际为 {actual_header}"
+        )
+
+    current_category: str | None = None
+    appliance_brand_rows: list[tuple[str, str, Decimal, int]] = []
+    digital_brand_rows: list[tuple[str, str, Decimal, int]] = []
+    section_totals: list[tuple[Decimal, int]] = []
+
+    for row_number, row in enumerate(rows[1:], start=2):
+        if not any(c is not None and c != "" for c in row):
+            continue
+        cat_cell, brand_cell, amount_cell, count_cell = (
+            row[0],
+            row[1],
+            row[2],
+            row[3],
+        )
+        if cat_cell is not None and str(cat_cell).strip() != "":
+            current_category = str(cat_cell).strip()
+
+        if current_category == "合计" or cat_cell == "合计":
+            try:
+                tot_amount = Decimal(str(amount_cell)).quantize(Decimal("0.01"))
+            except (InvalidOperation, TypeError, ValueError):
+                raise ValueError(
+                    f"{payment_file.name} 汇总表第 {row_number} 行合计金额无效：{amount_cell!r}"
+                ) from None
+            if (
+                isinstance(count_cell, bool)
+                or not isinstance(count_cell, (int, float))
+                or int(count_cell) != count_cell
+            ):
+                raise ValueError(
+                    f"{payment_file.name} 汇总表第 {row_number} 行合计数量必须为整数：{count_cell!r}"
+                )
+            section_totals.append((tot_amount, int(count_cell)))
+            continue
+
+        if brand_cell is None or str(brand_cell).strip() == "":
+            continue
+
+        brand = str(brand_cell).strip()
+        try:
+            amount = Decimal(str(amount_cell)).quantize(Decimal("0.01"))
+        except (InvalidOperation, TypeError, ValueError):
+            raise ValueError(
+                f"{payment_file.name} 汇总表第 {row_number} 行金额无效：{amount_cell!r}"
+            ) from None
+        if (
+            isinstance(count_cell, bool)
+            or not isinstance(count_cell, (int, float))
+            or int(count_cell) != count_cell
+        ):
+            raise ValueError(
+                f"{payment_file.name} 汇总表第 {row_number} 行数量必须为整数：{count_cell!r}"
+            )
+        count = int(count_cell)
+
+        if current_category in appliance_categories:
+            appliance_brand_rows.append((current_category, brand, amount, count))
+        elif current_category in digital_categories:
+            digital_brand_rows.append((current_category, brand, amount, count))
+        else:
+            raise ValueError(
+                f"{payment_file.name} 汇总表第 {row_number} 行品类未知：{current_category!r}"
+            )
+
+    if len(section_totals) < 3:
+        raise ValueError(
+            f"{payment_file.name} 汇总表缺少家电、数码或总合计行，实际找到 {len(section_totals)} 个合计"
+        )
+
+    expected_app_amount = sum((r[2] for r in appliance_brand_rows), Decimal("0"))
+    expected_app_count = sum(r[3] for r in appliance_brand_rows)
+    if (expected_app_amount, expected_app_count) != section_totals[0]:
+        raise ValueError(
+            f"{payment_file.name} 汇总表家电明细累加与家电合计不一致："
+            f"明细累加 ({expected_app_count}, {expected_app_amount}) vs "
+            f"合计行 ({section_totals[0][1]}, {section_totals[0][0]})"
+        )
+
+    expected_dig_amount = sum((r[2] for r in digital_brand_rows), Decimal("0"))
+    expected_dig_count = sum(r[3] for r in digital_brand_rows)
+    if (expected_dig_amount, expected_dig_count) != section_totals[1]:
+        raise ValueError(
+            f"{payment_file.name} 汇总表数码明细累加与数码合计不一致："
+            f"明细累加 ({expected_dig_count}, {expected_dig_amount}) vs "
+            f"合计行 ({section_totals[1][1]}, {section_totals[1][0]})"
+        )
+
+    if (
+        section_totals[0][0] + section_totals[1][0] != section_totals[2][0]
+        or section_totals[0][1] + section_totals[1][1] != section_totals[2][1]
+    ):
+        raise ValueError(
+            f"{payment_file.name} 汇总表总合计不等于家电合计加数码合计"
+        )
+
+    household_payments_agg: dict[tuple[str, str], list[object]] = {}
+    for cat, brand, amount, count in appliance_brand_rows:
+        mapped_key = map_payment_appliance_key(cat, brand)
+        if mapped_key not in household_payments_agg:
+            household_payments_agg[mapped_key] = [0, Decimal("0")]
+        household_payments_agg[mapped_key][0] += count
+        household_payments_agg[mapped_key][1] += amount
+
+    household_payments = {
+        key: (val[0], val[1])
+        for key, val in household_payments_agg.items()
+    }
+    household_total = (section_totals[0][1], section_totals[0][0])
+    digital_total = (section_totals[1][1], section_totals[1][0])
+    return household_payments, household_total, digital_total
+
+
+def append_payment_summary_columns(
+    summary_rows: list[tuple[object, ...]],
+    household_payments: dict[tuple[str, str], tuple[int, Decimal]],
+    household_total: tuple[int, Decimal],
+    digital_total: tuple[int, Decimal],
+) -> list[tuple[object, ...]]:
+    """Augment 6-column 数据汇总 rows with 回款数量 and 回款金额 to produce 8-column rows."""
+    augmented_rows: list[tuple[object, ...]] = []
+    matched_appliance_keys: set[tuple[str, str]] = set()
+
+    for row in summary_rows:
+        cat, brand, status, count, amount, returned_count = row[:6]
+        payment_count: int | None = None
+        payment_amount: Decimal | None = None
+
+        if status == "已上传":
+            if brand is not None and str(brand).strip() != "":
+                key = (str(cat).strip(), str(brand).strip())
+                if key in household_payments:
+                    payment_count, payment_amount = household_payments[key]
+                    matched_appliance_keys.add(key)
+            elif cat == "家电":
+                payment_count, payment_amount = household_total
+            elif cat == "数码":
+                payment_count, payment_amount = digital_total
+
+        augmented_rows.append(
+            (
+                cat,
+                brand,
+                status,
+                count,
+                amount,
+                returned_count,
+                payment_count,
+                payment_amount,
+            )
+        )
+
+    # 完整性校验：回款明细中所有非零家电回款键都必须被审核汇总的已上传品牌行匹配
+    unmatched_keys = [
+        key
+        for key, (cnt, amt) in household_payments.items()
+        if (cnt != 0 or amt != Decimal("0")) and key not in matched_appliance_keys
+    ]
+    if unmatched_keys:
+        details = [
+            f"{cat}/{brand}，回款数量 {household_payments[(cat, brand)][0]}，"
+            f"回款金额 {household_payments[(cat, brand)][1]:.2f}"
+            for cat, brand in sorted(unmatched_keys)
+        ]
+        raise ValueError(
+            f"回款明细未能匹配审核汇总：{'；'.join(details)}"
+        )
+
+    # 守恒校验
+    appliance_brand_uploaded_rows = [
+        r
+        for r in augmented_rows
+        if r[0] != "家电"
+        and r[0] != "数码"
+        and r[1] is not None
+        and r[2] == "已上传"
+    ]
+    app_brand_count_sum = sum(
+        (r[6] for r in appliance_brand_uploaded_rows if r[6] is not None),
+        0,
+    )
+    app_brand_amount_sum = sum(
+        (
+            Decimal(str(r[7]))
+            for r in appliance_brand_uploaded_rows
+            if r[7] is not None
+        ),
+        Decimal("0"),
+    )
+    if (
+        app_brand_count_sum != household_total[0]
+        or app_brand_amount_sum != household_total[1]
+    ):
+        raise ValueError(
+            "审核汇总家电回款品牌合计与家电项目合计不一致："
+            f"品牌合计 ({app_brand_count_sum}, {app_brand_amount_sum}) vs "
+            f"项目合计 ({household_total[0]}, {household_total[1]})"
+        )
+
+    # 状态与空值校验：只有已上传行允许回款列非空，且回款数量和金额必须同时为空或同时有值
+    for row_number, r in enumerate(augmented_rows, start=1):
+        p_cnt, p_amt = r[6], r[7]
+        if (p_cnt is None) != (p_amt is None):
+            raise ValueError(
+                f"数据汇总第 {row_number} 行回款数量与回款金额必须同时为空或同时有值：{r}"
+            )
+        if r[2] != "已上传" and (p_cnt is not None or p_amt is not None):
+            raise ValueError(
+                f"数据汇总非“已上传”行不允许有回款数据：第 {row_number} 行 {r}"
+            )
+
+    return augmented_rows
+
+
 def write_coupon_workbook(
     path: Path,
     appliance_computation: appliance.CouponComputation,
     digital_computation: digital.CouponComputation,
-    extra_summary_rows: list[tuple[object, ...]],
+    augmented_summary_rows: list[tuple[object, ...]],
     decisions: list[tuple[object, ...]],
 ) -> None:
     """Write all 30 sheets in workbook order: 数据汇总, the two 明细总表, the
     group sheets, then the Processing Report."""
-    combined_summary_rows = [
-        *appliance_computation.summary_rows,
-        *extra_summary_rows,
-    ]
+    combined_summary_rows = augmented_summary_rows
     project_blocks = appliance.project_summary_blocks(combined_summary_rows)
     brand_rows_end = (
         project_blocks[0][0] if project_blocks else len(combined_summary_rows)
@@ -232,7 +513,7 @@ def write_coupon_workbook(
         xlsx_output.write_summary_sheet(
             workbook,
             appliance.SUMMARY_SHEET_NAME,
-            appliance.COUPON_SUMMARY_HEADER,
+            SUMMARY_HEADER,
             combined_summary_rows,
             formats,
             measurement_font,
@@ -344,20 +625,34 @@ def process_coupon_sales(reporter: ConsoleReporter) -> None:
         extra_summary_rows,
     )
     digital.validate_computation(digital_computation)
+
+    household_payments, household_total, digital_total = load_payment_summary(
+        PAYMENT_FILE
+    )
+    raw_summary_rows = [
+        *appliance_computation.summary_rows,
+        *extra_summary_rows,
+    ]
+    augmented_summary_rows = append_payment_summary_columns(
+        raw_summary_rows,
+        household_payments,
+        household_total,
+        digital_total,
+    )
     write_xlsx_atomically(
         OUTPUT_FILE,
         lambda path: write_coupon_workbook(
             path,
             appliance_computation,
             digital_computation,
-            extra_summary_rows,
+            augmented_summary_rows,
             decisions,
         ),
         lambda path: validate_merged_coupon_output(
             path,
             appliance_computation,
             digital_computation,
-            extra_summary_rows,
+            augmented_summary_rows,
             decisions,
         ),
     )
@@ -445,19 +740,16 @@ def _validate_sheet_rows(
 def _expected_coupon_output(
     appliance_computation: appliance.CouponComputation,
     digital_computation: digital.CouponComputation,
-    extra_summary_rows: list[tuple[object, ...]],
+    augmented_summary_rows: list[tuple[object, ...]],
     decisions: list[tuple[object, ...]],
 ) -> tuple[
     dict[str, list[tuple[object, ...]]],
     dict[str, set[tuple[tuple[int, int], tuple[int, int]]]],
 ]:
-    combined_summary_rows = [
-        *appliance_computation.summary_rows,
-        *extra_summary_rows,
-    ]
+    combined_summary_rows = augmented_summary_rows
     expected_rows = {
         appliance.SUMMARY_SHEET_NAME: [
-            appliance.COUPON_SUMMARY_HEADER,
+            SUMMARY_HEADER,
             *appliance.merged_coupon_summary_values(combined_summary_rows),
         ],
         appliance.DETAILS_SHEET_NAME: [
@@ -509,13 +801,13 @@ def validate_merged_coupon_output(
     path: Path,
     appliance_computation: appliance.CouponComputation,
     digital_computation: digital.CouponComputation,
-    extra_summary_rows: list[tuple[object, ...]],
+    augmented_summary_rows: list[tuple[object, ...]],
     decisions: list[tuple[object, ...]],
 ) -> None:
     expected_rows, expected_merges = _expected_coupon_output(
         appliance_computation,
         digital_computation,
-        extra_summary_rows,
+        augmented_summary_rows,
         decisions,
     )
     workbook = CalamineWorkbook.from_path(str(path))
