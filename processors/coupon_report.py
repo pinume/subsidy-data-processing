@@ -234,6 +234,9 @@ def load_payment_summary(
 ]:
     """Load and aggregate the payment summary sheet from output/回款明细.xlsx.
 
+    Dynamically handles single-category files (appliance-only or digital-only),
+    two-category files, and empty files.
+
     Returns:
         1. Mapped appliance brand payment dict: {(category, brand): (count, amount)}
         2. Appliance total: (count, amount)
@@ -269,9 +272,13 @@ def load_payment_summary(
         )
 
     current_category: str | None = None
+    current_section_type: str | None = None
+    current_section_brand_rows: list[tuple[str, str, Decimal, int]] = []
     appliance_brand_rows: list[tuple[str, str, Decimal, int]] = []
     digital_brand_rows: list[tuple[str, str, Decimal, int]] = []
-    section_totals: list[tuple[Decimal, int]] = []
+    appliance_total = (0, Decimal("0.00"))
+    digital_total = (0, Decimal("0.00"))
+    grand_total: tuple[int, Decimal] | None = None
 
     for row_number, row in enumerate(rows[1:], start=2):
         if not any(c is not None and c != "" for c in row):
@@ -300,7 +307,40 @@ def load_payment_summary(
                 raise ValueError(
                     f"{payment_file.name} 汇总表第 {row_number} 行合计数量必须为整数：{count_cell!r}"
                 )
-            section_totals.append((tot_amount, int(count_cell)))
+            tot_count = int(count_cell)
+
+            if current_section_type == "家电":
+                expected_amount = sum(
+                    (r[2] for r in current_section_brand_rows), Decimal("0")
+                )
+                expected_count = sum(r[3] for r in current_section_brand_rows)
+                if (expected_amount, expected_count) != (tot_amount, tot_count):
+                    raise ValueError(
+                        f"{payment_file.name} 汇总表家电明细累加与家电合计不一致："
+                        f"明细累加 ({expected_count}, {expected_amount}) vs "
+                        f"合计行 ({tot_count}, {tot_amount})"
+                    )
+                appliance_total = (tot_count, tot_amount)
+                current_section_type = None
+                current_section_brand_rows = []
+                current_category = None
+            elif current_section_type == "数码":
+                expected_amount = sum(
+                    (r[2] for r in current_section_brand_rows), Decimal("0")
+                )
+                expected_count = sum(r[3] for r in current_section_brand_rows)
+                if (expected_amount, expected_count) != (tot_amount, tot_count):
+                    raise ValueError(
+                        f"{payment_file.name} 汇总表数码明细累加与数码合计不一致："
+                        f"明细累加 ({expected_count}, {expected_amount}) vs "
+                        f"合计行 ({tot_count}, {tot_amount})"
+                    )
+                digital_total = (tot_count, tot_amount)
+                current_section_type = None
+                current_section_brand_rows = []
+                current_category = None
+            else:
+                grand_total = (tot_count, tot_amount)
             continue
 
         if brand_cell is None or str(brand_cell).strip() == "":
@@ -324,43 +364,43 @@ def load_payment_summary(
         count = int(count_cell)
 
         if current_category in appliance_categories:
-            appliance_brand_rows.append((current_category, brand, amount, count))
+            if current_section_type is None:
+                current_section_type = "家电"
+            elif current_section_type != "家电":
+                raise ValueError(
+                    f"{payment_file.name} 汇总表品类交错：在 {current_section_type} 区段出现家电品类 {current_category}"
+                )
+            item = (current_category, brand, amount, count)
+            appliance_brand_rows.append(item)
+            current_section_brand_rows.append(item)
         elif current_category in digital_categories:
-            digital_brand_rows.append((current_category, brand, amount, count))
+            if current_section_type is None:
+                current_section_type = "数码"
+            elif current_section_type != "数码":
+                raise ValueError(
+                    f"{payment_file.name} 汇总表品类交错：在 {current_section_type} 区段出现数码品类 {current_category}"
+                )
+            item = (current_category, brand, amount, count)
+            digital_brand_rows.append(item)
+            current_section_brand_rows.append(item)
         else:
             raise ValueError(
                 f"{payment_file.name} 汇总表第 {row_number} 行品类未知：{current_category!r}"
             )
 
-    if len(section_totals) < 3:
-        raise ValueError(
-            f"{payment_file.name} 汇总表缺少家电、数码或总合计行，实际找到 {len(section_totals)} 个合计"
-        )
+    if grand_total is None:
+        raise ValueError(f"{payment_file.name} 汇总表缺少总合计行")
 
-    expected_app_amount = sum((r[2] for r in appliance_brand_rows), Decimal("0"))
-    expected_app_count = sum(r[3] for r in appliance_brand_rows)
-    if (expected_app_amount, expected_app_count) != section_totals[0]:
-        raise ValueError(
-            f"{payment_file.name} 汇总表家电明细累加与家电合计不一致："
-            f"明细累加 ({expected_app_count}, {expected_app_amount}) vs "
-            f"合计行 ({section_totals[0][1]}, {section_totals[0][0]})"
-        )
-
-    expected_dig_amount = sum((r[2] for r in digital_brand_rows), Decimal("0"))
-    expected_dig_count = sum(r[3] for r in digital_brand_rows)
-    if (expected_dig_amount, expected_dig_count) != section_totals[1]:
-        raise ValueError(
-            f"{payment_file.name} 汇总表数码明细累加与数码合计不一致："
-            f"明细累加 ({expected_dig_count}, {expected_dig_amount}) vs "
-            f"合计行 ({section_totals[1][1]}, {section_totals[1][0]})"
-        )
-
-    if (
-        section_totals[0][0] + section_totals[1][0] != section_totals[2][0]
-        or section_totals[0][1] + section_totals[1][1] != section_totals[2][1]
+    expected_grand_count = appliance_total[0] + digital_total[0]
+    expected_grand_amount = appliance_total[1] + digital_total[1]
+    if (grand_total[0], grand_total[1]) != (
+        expected_grand_count,
+        expected_grand_amount,
     ):
         raise ValueError(
-            f"{payment_file.name} 汇总表总合计不等于家电合计加数码合计"
+            f"{payment_file.name} 汇总表总合计不等于家电合计加数码合计："
+            f"总计 ({grand_total[0]}, {grand_total[1]}) vs "
+            f"分项合计 ({expected_grand_count}, {expected_grand_amount})"
         )
 
     household_payments_agg: dict[tuple[str, str], list[object]] = {}
@@ -375,9 +415,7 @@ def load_payment_summary(
         key: (val[0], val[1])
         for key, val in household_payments_agg.items()
     }
-    household_total = (section_totals[0][1], section_totals[0][0])
-    digital_total = (section_totals[1][1], section_totals[1][0])
-    return household_payments, household_total, digital_total
+    return household_payments, appliance_total, digital_total
 
 
 def append_payment_summary_columns(

@@ -1461,6 +1461,86 @@ class PaymentSummaryAugmentationTests(unittest.TestCase):
             self.assertEqual(h_total, (17, Decimal("17200.00")))
             self.assertEqual(d_total, (3, Decimal("3000.00")))
 
+    def test_load_payment_summary_appliance_only_file(self) -> None:
+        """仅有家电回款的合法文件（2 个合计行）能正确解析，数码合计自动按 0 处理。"""
+        from processors.coupon_report import load_payment_summary
+
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "回款明细.xlsx"
+            wb = Workbook()
+            sheet = wb.active
+            sheet.title = "汇总"
+            sheet.append(["财务大类", "品牌", "补贴金额合计", "补贴金额计数"])
+            sheet.append(["空调", "格力", 5000.00, 5])
+            sheet.append(["合计", None, 5000.00, 5])
+            sheet.append(["合计", None, 5000.00, 5])
+            wb.save(path)
+            wb.close()
+
+            payments, h_total, d_total = load_payment_summary(path)
+            self.assertEqual(payments[("空调", "格力")], (5, Decimal("5000.00")))
+            self.assertEqual(h_total, (5, Decimal("5000.00")))
+            self.assertEqual(d_total, (0, Decimal("0.00")))
+
+    def test_load_payment_summary_digital_only_file(self) -> None:
+        """仅有数码回款的合法文件（2 个合计行）能正确解析，家电合计及字典按空/0 处理。"""
+        from processors.coupon_report import load_payment_summary
+
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "回款明细.xlsx"
+            wb = Workbook()
+            sheet = wb.active
+            sheet.title = "汇总"
+            sheet.append(["财务大类", "品牌", "补贴金额合计", "补贴金额计数"])
+            sheet.append(["手机", "华为", 3000.00, 3])
+            sheet.append(["合计", None, 3000.00, 3])
+            sheet.append(["合计", None, 3000.00, 3])
+            wb.save(path)
+            wb.close()
+
+            payments, h_total, d_total = load_payment_summary(path)
+            self.assertEqual(payments, {})
+            self.assertEqual(h_total, (0, Decimal("0.00")))
+            self.assertEqual(d_total, (3, Decimal("3000.00")))
+
+    def test_load_payment_summary_empty_file(self) -> None:
+        """无任何回款的合法空文件（1 个总合计行 0/0）能正确解析。"""
+        from processors.coupon_report import load_payment_summary
+
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "回款明细.xlsx"
+            wb = Workbook()
+            sheet = wb.active
+            sheet.title = "汇总"
+            sheet.append(["财务大类", "品牌", "补贴金额合计", "补贴金额计数"])
+            sheet.append(["合计", None, 0, 0])
+            wb.save(path)
+            wb.close()
+
+            payments, h_total, d_total = load_payment_summary(path)
+            self.assertEqual(payments, {})
+            self.assertEqual(h_total, (0, Decimal("0.00")))
+            self.assertEqual(d_total, (0, Decimal("0.00")))
+
+    def test_load_payment_summary_rejects_mismatched_totals(self) -> None:
+        """分项合计与总合计不一致或明细与分项不一致时报错。"""
+        from processors.coupon_report import load_payment_summary
+
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "回款明细.xlsx"
+            wb = Workbook()
+            sheet = wb.active
+            sheet.title = "汇总"
+            sheet.append(["财务大类", "品牌", "补贴金额合计", "补贴金额计数"])
+            sheet.append(["空调", "格力", 5000.00, 5])
+            sheet.append(["合计", None, 5000.00, 5])
+            sheet.append(["合计", None, 9999.00, 9])
+            wb.save(path)
+            wb.close()
+
+            with self.assertRaisesRegex(ValueError, "总合计不等于家电合计加数码合计"):
+                load_payment_summary(path)
+
 
 if __name__ == "__main__":
     unittest.main()
