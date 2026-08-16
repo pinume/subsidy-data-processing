@@ -5,6 +5,8 @@ is validated separately with calamine, so these checks do not depend on cell
 styles or on an Excel reader's worksheet API.
 """
 
+from __future__ import annotations
+
 from datetime import date, datetime
 
 from processors.common.dates import normalize_receipt_identifier
@@ -132,4 +134,42 @@ def validate_payment_statuses(
         raise RuntimeError(
             "销售用券已回款匹配数校验失败："
             f"预期 {expected_paid_rows} 条，实际 {actual_paid_rows} 条"
+        )
+
+
+def validate_returned_counts(
+    uploaded_row: tuple,
+    unuploaded_row: tuple,
+    total_row: tuple,
+    expected_returned_count: int,
+    returned_col_index: int,
+    source_label: str,
+) -> None:
+    """校验已上传/未上传/合计行的退回数量字段。
+
+    - expected_returned_count > 0 时：已上传行和合计行的退回列必须为该正整数
+    - expected_returned_count == 0 时：已上传行和合计行的退回列必须为 None
+    - 未上传行的退回列始终必须为 None
+    """
+    if expected_returned_count > 0:
+        if (
+            type(uploaded_row[returned_col_index]) is not int
+            or uploaded_row[returned_col_index] != expected_returned_count
+            or type(total_row[returned_col_index]) is not int
+            or total_row[returned_col_index] != expected_returned_count
+        ):
+            raise RuntimeError(
+                f"{source_label}销售用券汇总已上传/合计退回数量校验失败"
+            )
+    else:
+        if (
+            uploaded_row[returned_col_index] is not None
+            or total_row[returned_col_index] is not None
+        ):
+            raise RuntimeError(
+                f"{source_label}销售用券汇总已上传/合计退回数量校验失败"
+            )
+    if unuploaded_row[returned_col_index] is not None:
+        raise RuntimeError(
+            f"{source_label}销售用券汇总未上传退回数量校验失败"
         )

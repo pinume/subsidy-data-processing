@@ -43,6 +43,7 @@ from .validation import (
     validate_matched_subsidy_total,
     validate_payment_statuses,
     validate_remark_and_detail_values,
+    validate_returned_counts,
     validate_uploaded_and_unmatched_counts,
 )
 
@@ -978,17 +979,11 @@ def validate_computation(
     if actual_brand_returns != dict(expected_brand_returns):
         raise RuntimeError("销售用券汇总品牌行退回数量校验失败")
 
-    expected_returned_count = sum(expected_brand_returns.values())
-    if expected_returned_count > 0:
-        if (
-            type(uploaded_row[5]) is not int
-            or uploaded_row[5] != expected_returned_count
-            or type(total_row[5]) is not int
-            or total_row[5] != expected_returned_count
-        ):
-            raise RuntimeError("销售用券汇总已上传/合计退回数量校验失败")
-    else:
-        if uploaded_row[5] is not None or total_row[5] is not None:
-            raise RuntimeError("销售用券汇总已上传/合计退回数量校验失败")
-    if unuploaded_row[5] is not None:
-        raise RuntimeError("销售用券汇总未上传退回数量校验失败")
+    validate_returned_counts(
+        uploaded_row,
+        unuploaded_row,
+        total_row,
+        expected_returned_count=sum(expected_brand_returns.values()),
+        returned_col_index=5,
+        source_label="",
+    )

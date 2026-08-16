@@ -27,6 +27,7 @@ from .validation import (
     validate_matched_subsidy_total,
     validate_payment_statuses,
     validate_remark_and_detail_values,
+    validate_returned_counts,
     validate_uploaded_and_unmatched_counts,
 )
 
@@ -291,16 +292,11 @@ def validate_computation(computation: CouponComputation) -> None:
     if [row[0] for row in computation.summary_rows] != ["已上传", "未上传", "合计"]:
         raise RuntimeError("数码销售用券汇总缺少已上传/未上传/合计三行")
     uploaded_row, unuploaded_row, total_row = computation.summary_rows
-    if expected_returned_count > 0:
-        if (
-            type(uploaded_row[3]) is not int
-            or uploaded_row[3] != expected_returned_count
-            or type(total_row[3]) is not int
-            or total_row[3] != expected_returned_count
-        ):
-            raise RuntimeError("数码销售用券汇总已上传/合计退回数量校验失败")
-    else:
-        if uploaded_row[3] is not None or total_row[3] is not None:
-            raise RuntimeError("数码销售用券汇总已上传/合计退回数量校验失败")
-    if unuploaded_row[3] is not None:
-        raise RuntimeError("数码销售用券汇总未上传退回数量校验失败")
+    validate_returned_counts(
+        uploaded_row,
+        unuploaded_row,
+        total_row,
+        expected_returned_count=expected_returned_count,
+        returned_col_index=3,
+        source_label="数码",
+    )
