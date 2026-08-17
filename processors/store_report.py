@@ -79,7 +79,7 @@ EXPECTED_SHEET_TITLE = "益庄"
 # 版本标记行必须隐藏，否则会出现在最终报表的打印结果里。
 TEMPLATE_VERSION_CELL = "A53"
 TEMPLATE_VERSION_ROW = 53
-TEMPLATE_VERSION_MARKER = "模板版本：2026-V4"
+TEMPLATE_VERSION_MARKER = "模板版本：2026-V5"
 # 版本标记在第 53 行：模板至少 53 行，与版本契约一致。
 MIN_TEMPLATE_ROW_COUNT = TEMPLATE_VERSION_ROW
 
@@ -94,7 +94,7 @@ EXPECTED_MERGED_RANGES = frozenset(
         "A19:A25",
         "A26:A31",
         "A33:C33",
-        "C38:F38",
+        "C38:H38",
     }
 )
 
@@ -148,11 +148,13 @@ _TABLE1_CELLS: dict[str, str] = {
 
 # 表 2：主要品牌汇总（第 38–47 行）
 _TABLE2_CELLS: dict[str, str] = {
-    "C38": "表2                主要品牌国补上传及回款情况",
+    "C38": "表2                            主要品牌国补上传及回款情况",
     "C39": "品牌",
     "D39": "26年国补发生额",
-    "E39": "26年国补回款额",
-    "F39": "回款率",
+    "E39": "26年国补上传额",
+    "F39": "26年国补回款额",
+    "G39": "上传率",
+    "H39": "回款率",
     "C40": "海尔系",
     "C41": "美的系",
     "C42": "格力",
@@ -163,11 +165,13 @@ _TABLE2_CELLS: dict[str, str] = {
     "C47": "合计",
 }
 
-# 表 3：数量统计（第 49–52 行）
+# 表 3：数量与金额统计（第 49–52 行）
 _TABLE3_CELLS: dict[str, str] = {
     "C49": "表3",
-    "D49": "审核中",
-    "E49": "未上传",
+    "D49": "审核中（数量）",
+    "E49": "审核中（金额）",
+    "F49": "未上传（数量）",
+    "G49": "未上传（金额）",
     "C50": "家电",
     "C51": "数码",
     "C52": "合计",
@@ -345,6 +349,19 @@ UPLOAD_CATEGORIES = frozenset(
     for rule in ROW_RULES
     for category in rule.upload_categories
     if category
+)
+
+# 品类纠正的豁免：某些品牌在行规则中横跨多个审核侧品类汇总到同一行，
+# 审核侧标注任一品类都是合理的，纠正反而会打破下游的合并逻辑。
+# 格式: frozenset of (审核侧品类, 回款侧品类, 品牌)
+CATEGORY_CORRECTION_EXEMPTIONS: frozenset[tuple[str, str, str]] = frozenset(
+    (upload_cat, other_cat, brand)
+    for rule in ROW_RULES
+    if len(rule.upload_categories) > 1
+    for brand in rule.upload_brands
+    for upload_cat in rule.upload_categories
+    for other_cat in rule.upload_categories
+    if upload_cat != other_cat
 )
 
 
@@ -668,6 +685,8 @@ def _correct_upload_category(
                     f" vs 回款侧 {record.subsidy}",
                 ),
             )
+        if (category, record.category, record.brand) in CATEGORY_CORRECTION_EXEMPTIONS:
+            return category, record, None
         return record.category, record, None
 
     records = ambiguous_refs.get(reference)
@@ -855,6 +874,10 @@ def load_upload_data(
         "家电": {},
         "数码": {},
     }
+    upload_amounts: dict[str, dict[str, Decimal]] = {
+        "家电": {},
+        "数码": {},
+    }
     summary_amounts: dict[tuple[str, str], dict[str, Decimal]] = {}
 
     for row in (r[:header_width] for r in rows[1:]):
@@ -877,6 +900,7 @@ def load_upload_data(
                 count = to_count(count_raw)
                 if status != "合计":
                     upload_counts[current_category][status] = count
+                    upload_amounts[current_category][status] = amount
             if current_category == "数码":
                 if status == "已上传":
                     digital_uploaded += amount
@@ -947,7 +971,7 @@ def load_upload_data(
                 f"{'、'.join(sorted(missing_statuses))}"
             )
 
-    return amounts, digital_totals, upload_counts, corrections, reviews
+    return amounts, digital_totals, upload_counts, upload_amounts, corrections, reviews
 
 
 def load_payment_data(
@@ -1024,7 +1048,11 @@ def load_payment_data(
     finally:
         workbook.close()
 
-    return amounts, digital_amount, payment_counts, payment_index, ambiguous_refs
+    payment_amounts = {
+        "家电": sum(amounts.values(), Decimal("0")),
+        "数码": digital_amount,
+    }
+    return amounts, digital_amount, payment_counts, payment_amounts, payment_index, ambiguous_refs
 
 
 def sum_upload_amount(
@@ -1264,20 +1292,22 @@ def sum_brand_group(
     upload_data: dict[tuple[str, str], dict[str, Decimal]],
     payment_data: dict[tuple[str, str], Decimal],
     categories: tuple[BrandGroupCategory, ...],
-) -> tuple[Decimal, Decimal]:
+) -> tuple[Decimal, Decimal, Decimal]:
     occurred = Decimal("0")
+    uploaded = Decimal("0")
     paid = Decimal("0")
 
     for category in categories:
-        category_occurred, _ = sum_upload_amount(
+        cat_occurred, cat_uploaded = sum_upload_amount(
             upload_data, (category.upload_category,), category.brands
         )
-        occurred += category_occurred
+        occurred += cat_occurred
+        uploaded += cat_uploaded
         paid += sum_payment_amount(
             payment_data, (category.payment_category,), category.brands
         )
 
-    return occurred, paid
+    return occurred, uploaded, paid
 
 
 def write_brand_group_row(
@@ -1288,14 +1318,16 @@ def write_brand_group_row(
     font: Font,
     expected_cells: dict[str, object],
 ) -> None:
-    occurred, paid = sum_brand_group(
+    occurred, uploaded, paid = sum_brand_group(
         upload_data, payment_data, brand_group_rule.categories
     )
     row = brand_group_rule.row
     values = {
         f"D{row}": decimal_to_cell_value(occurred),
-        f"E{row}": decimal_to_cell_value(paid),
-        f"F{row}": safe_ratio(paid, occurred),
+        f"E{row}": decimal_to_cell_value(uploaded),
+        f"F{row}": decimal_to_cell_value(paid),
+        f"G{row}": safe_ratio(uploaded, occurred),
+        f"H{row}": safe_ratio(paid, occurred),
     }
     for coordinate, value in values.items():
         sheet[coordinate] = value
@@ -1303,21 +1335,25 @@ def write_brand_group_row(
 
     apply_filled_style(
         sheet,
-        (f"D{row}", f"E{row}", f"F{row}"),
+        (f"D{row}", f"E{row}", f"F{row}", f"G{row}", f"H{row}"),
         font,
     )
     apply_data_number_format(
         sheet,
-        (f"D{row}", f"E{row}"),
+        (f"D{row}", f"E{row}", f"F{row}"),
     )
-    sheet[f"F{row}"].number_format = PERCENT_NUMBER_FORMAT
+    sheet[f"G{row}"].number_format = PERCENT_NUMBER_FORMAT
+    sheet[f"H{row}"].number_format = PERCENT_NUMBER_FORMAT
 
 
 def update_brand_group_totals(sheet, font: Font, expected_cells: dict[str, object]) -> None:
     update_totals_row(
         sheet,
-        amount_columns=("D", "E"),
-        ratio_columns={"F": ("E", "D")},
+        amount_columns=("D", "E", "F"),
+        ratio_columns={
+            "G": ("E", "D"),
+            "H": ("F", "D"),
+        },
         source_rows=BRAND_GROUP_DETAIL_ROWS,
         total_row=BRAND_GROUP_TOTAL_ROW,
         font=font,
@@ -1328,39 +1364,69 @@ def update_brand_group_totals(sheet, font: Font, expected_cells: dict[str, objec
 def write_table3(
     sheet,
     upload_counts: dict[str, dict[str, int]],
+    upload_amounts: dict[str, dict[str, Decimal]],
     payment_counts: dict[str, int],
+    payment_amounts: dict[str, Decimal],
     font: Font,
     expected_cells: dict[str, object],
 ) -> None:
-    pending_total = 0
-    not_uploaded_total = 0
+    pending_count_total = 0
+    pending_amount_total = Decimal("0")
+    not_uploaded_count_total = 0
+    not_uploaded_amount_total = Decimal("0")
     for project, row in TABLE3_PROJECT_ROWS.items():
         pending_count = (
             upload_counts[project]["已上传"]
             - payment_counts[project]
         )
+        pending_amount = (
+            upload_amounts[project]["已上传"]
+            - payment_amounts[project]
+        )
         not_uploaded_count = upload_counts[project]["未上传"]
+        not_uploaded_amount = upload_amounts[project]["未上传"]
 
-        sheet[f"D{row}"] = pending_count or None
-        sheet[f"E{row}"] = not_uploaded_count or None
-        expected_cells[f"D{row}"] = pending_count or None
-        expected_cells[f"E{row}"] = not_uploaded_count or None
+        values = {
+            f"D{row}": pending_count or None,
+            f"E{row}": decimal_to_cell_value(pending_amount),
+            f"F{row}": not_uploaded_count or None,
+            f"G{row}": decimal_to_cell_value(not_uploaded_amount),
+        }
+        for coordinate, value in values.items():
+            sheet[coordinate] = value
+            expected_cells[coordinate] = value
+            sheet[coordinate].font = font
 
-        sheet[f"D{row}"].font = font
-        sheet[f"E{row}"].font = font
-        apply_data_number_format(sheet, (f"D{row}", f"E{row}"))
+        apply_data_number_format(
+            sheet,
+            (f"D{row}", f"E{row}", f"F{row}", f"G{row}"),
+        )
 
-        pending_total += pending_count
-        not_uploaded_total += not_uploaded_count
+        pending_count_total += pending_count
+        pending_amount_total += pending_amount
+        not_uploaded_count_total += not_uploaded_count
+        not_uploaded_amount_total += not_uploaded_amount
 
-    sheet[f"D{TABLE3_TOTAL_ROW}"] = pending_total or None
-    sheet[f"E{TABLE3_TOTAL_ROW}"] = not_uploaded_total or None
-    expected_cells[f"D{TABLE3_TOTAL_ROW}"] = pending_total or None
-    expected_cells[f"E{TABLE3_TOTAL_ROW}"] = not_uploaded_total or None
+    total_values = {
+        f"D{TABLE3_TOTAL_ROW}": pending_count_total or None,
+        f"E{TABLE3_TOTAL_ROW}": decimal_to_cell_value(pending_amount_total),
+        f"F{TABLE3_TOTAL_ROW}": not_uploaded_count_total or None,
+        f"G{TABLE3_TOTAL_ROW}": decimal_to_cell_value(not_uploaded_amount_total),
+    }
+    for coordinate, value in total_values.items():
+        sheet[coordinate] = value
+        expected_cells[coordinate] = value
+        sheet[coordinate].font = font
 
-    sheet[f"D{TABLE3_TOTAL_ROW}"].font = font
-    sheet[f"E{TABLE3_TOTAL_ROW}"].font = font
-    apply_data_number_format(sheet, (f"D{TABLE3_TOTAL_ROW}", f"E{TABLE3_TOTAL_ROW}"))
+    apply_data_number_format(
+        sheet,
+        (
+            f"D{TABLE3_TOTAL_ROW}",
+            f"E{TABLE3_TOTAL_ROW}",
+            f"F{TABLE3_TOTAL_ROW}",
+            f"G{TABLE3_TOTAL_ROW}",
+        ),
+    )
 
 
 def current_timestamp() -> datetime:
@@ -1401,7 +1467,7 @@ def _validate_totals_match_details(sheet, path_name: str) -> None:
             )
 
     # 表2
-    for column in ("D", "E"):
+    for column in ("D", "E", "F"):
         recomputed = sum(
             (to_decimal(sheet[f"{column}{row}"].value) for row in BRAND_GROUP_DETAIL_ROWS),
             Decimal("0"),
@@ -1423,13 +1489,31 @@ def _validate_totals_match_details(sheet, path_name: str) -> None:
             f"D{TABLE3_TOTAL_ROW} 应为 {d_appliance + d_digital}，实际为 {d_total}"
         )
 
-    e_appliance = to_count(sheet[f"E{TABLE3_PROJECT_ROWS['家电']}"].value)
-    e_digital = to_count(sheet[f"E{TABLE3_PROJECT_ROWS['数码']}"].value)
-    e_total = to_count(sheet[f"E{TABLE3_TOTAL_ROW}"].value)
-    if e_total != e_appliance + e_digital:
+    f_appliance = to_count(sheet[f"F{TABLE3_PROJECT_ROWS['家电']}"].value)
+    f_digital = to_count(sheet[f"F{TABLE3_PROJECT_ROWS['数码']}"].value)
+    f_total = to_count(sheet[f"F{TABLE3_TOTAL_ROW}"].value)
+    if f_total != f_appliance + f_digital:
         raise ValueError(
             f"{path_name} 第 {TABLE3_TOTAL_ROW} 行未上传数量合计校验失败："
+            f"F{TABLE3_TOTAL_ROW} 应为 {f_appliance + f_digital}，实际为 {f_total}"
+        )
+
+    e_appliance = to_decimal(sheet[f"E{TABLE3_PROJECT_ROWS['家电']}"].value)
+    e_digital = to_decimal(sheet[f"E{TABLE3_PROJECT_ROWS['数码']}"].value)
+    e_total = to_decimal(sheet[f"E{TABLE3_TOTAL_ROW}"].value)
+    if e_total != e_appliance + e_digital:
+        raise ValueError(
+            f"{path_name} 第 {TABLE3_TOTAL_ROW} 行审核中金额合计校验失败："
             f"E{TABLE3_TOTAL_ROW} 应为 {e_appliance + e_digital}，实际为 {e_total}"
+        )
+
+    g_appliance = to_decimal(sheet[f"G{TABLE3_PROJECT_ROWS['家电']}"].value)
+    g_digital = to_decimal(sheet[f"G{TABLE3_PROJECT_ROWS['数码']}"].value)
+    g_total = to_decimal(sheet[f"G{TABLE3_TOTAL_ROW}"].value)
+    if g_total != g_appliance + g_digital:
+        raise ValueError(
+            f"{path_name} 第 {TABLE3_TOTAL_ROW} 行未上传金额合计校验失败："
+            f"G{TABLE3_TOTAL_ROW} 应为 {g_appliance + g_digital}，实际为 {g_total}"
         )
 
 
@@ -1440,7 +1524,7 @@ def _validate_ratios_match_totals(sheet, path_name: str) -> None:
     that comparison reuses the same safe_ratio() call that wrote the cell."""
     checks = (
         (TOTAL_ROW, {"F": ("E", "D"), "H": ("G", "D")}),
-        (BRAND_GROUP_TOTAL_ROW, {"F": ("E", "D")}),
+        (BRAND_GROUP_TOTAL_ROW, {"G": ("E", "D"), "H": ("F", "D")}),
     )
     for total_row, ratio_columns in checks:
         for ratio_column, (numerator_column, denominator_column) in ratio_columns.items():
@@ -1517,13 +1601,14 @@ def report_category_corrections(
 def process_store_report(reporter: ConsoleReporter) -> None:
     timestamp = current_timestamp()
     font_name, _ = resolve_font()
-    payment_data, digital_payment, payment_counts, payment_index, ambiguous_refs = (
+    payment_data, digital_payment, payment_counts, payment_amounts, payment_index, ambiguous_refs = (
         load_payment_data(PAYMENT_FILE)
     )
     (
         upload_data,
         digital_upload,
         upload_counts,
+        upload_amounts,
         category_corrections,
         review_items,
     ) = load_upload_data(UPLOAD_FILE, payment_index, ambiguous_refs)
@@ -1555,7 +1640,9 @@ def process_store_report(reporter: ConsoleReporter) -> None:
         write_table3(
             sheet,
             upload_counts,
+            upload_amounts,
             payment_counts,
+            payment_amounts,
             font,
             expected_cells,
         )

@@ -72,20 +72,24 @@ LITERAL_STRUCTURE_CELLS: dict[str, str] = {
     "H2": "回款率",
     **{f"C{row}": label for row, label in LITERAL_DETAIL_ROW_LABELS.items()},
     "A33": "费用总计",
-    "C38": "表2                主要品牌国补上传及回款情况",
+    "C38": "表2                            主要品牌国补上传及回款情况",
     "C39": "品牌",
     "D39": "26年国补发生额",
-    "E39": "26年国补回款额",
-    "F39": "回款率",
+    "E39": "26年国补上传额",
+    "F39": "26年国补回款额",
+    "G39": "上传率",
+    "H39": "回款率",
     **{f"C{row}": label for row, label in LITERAL_BRAND_GROUP_ROW_LABELS.items()},
     "C47": "合计",
     "C49": "表3",
-    "D49": "审核中",
-    "E49": "未上传",
+    "D49": "审核中（数量）",
+    "E49": "审核中（金额）",
+    "F49": "未上传（数量）",
+    "G49": "未上传（金额）",
     "C50": "家电",
     "C51": "数码",
     "C52": "合计",
-    "A53": "模板版本：2026-V4",
+    "A53": "模板版本：2026-V5",
 }
 
 LITERAL_EXPECTED_MERGED_RANGES: frozenset[str] = frozenset({
@@ -95,7 +99,7 @@ LITERAL_EXPECTED_MERGED_RANGES: frozenset[str] = frozenset({
     "A19:A25",
     "A26:A31",
     "A33:C33",
-    "C38:F38",
+    "C38:H38",
 })
 
 LITERAL_ROW_RULES: tuple[store_report.RowRule, ...] = (
@@ -371,7 +375,8 @@ class ReportRatioTests(unittest.TestCase):
             (
                 upload_data,
                 digital_totals,
-                project_metrics,
+                upload_counts,
+                upload_amounts,
                 corrections,
                 reviews,
             ) = store_report.load_upload_data(upload_file)
@@ -388,10 +393,17 @@ class ReportRatioTests(unittest.TestCase):
             {"发生额": Decimal("240"), "上传额": Decimal("200")},
         )
         self.assertEqual(
-            project_metrics,
+            upload_counts,
             {
                 "家电": {"已上传": 2, "未上传": 1},
                 "数码": {"已上传": 4, "未上传": 1},
+            },
+        )
+        self.assertEqual(
+            upload_amounts,
+            {
+                "家电": {"已上传": Decimal("100"), "未上传": Decimal("50")},
+                "数码": {"已上传": Decimal("200"), "未上传": Decimal("40")},
             },
         )
 
@@ -416,7 +428,8 @@ class ReportRatioTests(unittest.TestCase):
             (
                 payment_data,
                 digital_amount,
-                project_metrics,
+                payment_counts,
+                payment_amounts,
                 payment_index,
                 ambiguous_refs,
             ) = store_report.load_payment_data(payment_file)
@@ -434,10 +447,17 @@ class ReportRatioTests(unittest.TestCase):
         self.assertEqual(ambiguous_refs, {})
         self.assertEqual(digital_amount, Decimal("100"))
         self.assertEqual(
-            project_metrics,
+            payment_counts,
             {
                 "家电": 1,
                 "数码": 3,
+            },
+        )
+        self.assertEqual(
+            payment_amounts,
+            {
+                "家电": Decimal("100"),
+                "数码": Decimal("100"),
             },
         )
 
@@ -550,7 +570,7 @@ class ReportRatioTests(unittest.TestCase):
 
     def test_table3_subtracts_payment_from_uploaded_metrics(self) -> None:
         sheet = Workbook().active
-        upload_metrics = {
+        upload_counts = {
             "家电": {
                 "已上传": 10,
                 "未上传": 3,
@@ -560,27 +580,49 @@ class ReportRatioTests(unittest.TestCase):
                 "未上传": 2,
             },
         }
-        payment_metrics = {
+        upload_amounts = {
+            "家电": {
+                "已上传": Decimal("1000"),
+                "未上传": Decimal("300"),
+            },
+            "数码": {
+                "已上传": Decimal("800"),
+                "未上传": Decimal("200"),
+            },
+        }
+        payment_counts = {
             "家电": 4,
             "数码": 3,
         }
+        payment_amounts = {
+            "家电": Decimal("400"),
+            "数码": Decimal("300"),
+        }
 
-        store_report.write_table3(sheet, upload_metrics, payment_metrics, FONT, {})
+        store_report.write_table3(
+            sheet,
+            upload_counts,
+            upload_amounts,
+            payment_counts,
+            payment_amounts,
+            FONT,
+            {},
+        )
 
         self.assertEqual(
-            [sheet[cell].value for cell in ("D50", "E50")],
-            [6, 3],
+            [sheet[cell].value for cell in ("D50", "E50", "F50", "G50")],
+            [6, 600, 3, 300],
         )
         self.assertEqual(
-            [sheet[cell].value for cell in ("D51", "E51")],
-            [5, 2],
+            [sheet[cell].value for cell in ("D51", "E51", "F51", "G51")],
+            [5, 500, 2, 200],
         )
         self.assertEqual(
-            [sheet[cell].value for cell in ("D52", "E52")],
-            [11, 5],
+            [sheet[cell].value for cell in ("D52", "E52", "F52", "G52")],
+            [11, 1100, 5, 500],
         )
         for row in (50, 51, 52):
-            for column in ("D", "E"):
+            for column in ("D", "E", "F", "G"):
                 self.assertEqual(
                     sheet[f"{column}{row}"].number_format,
                     store_report.DATA_NUMBER_FORMAT,
@@ -643,6 +685,7 @@ class SourceHeaderValidationTests(unittest.TestCase):
                 _amounts,
                 digital_totals,
                 project_metrics,
+                _upload_amounts,
                 _corrections,
                 _reviews,
             ) = store_report.load_upload_data(upload_file)
@@ -677,6 +720,7 @@ class SourceHeaderValidationTests(unittest.TestCase):
                 _amounts,
                 digital_totals,
                 project_metrics,
+                _upload_amounts,
                 _corrections,
                 _reviews,
             ) = store_report.load_upload_data(upload_file)
@@ -688,6 +732,7 @@ class SourceHeaderValidationTests(unittest.TestCase):
         self.assertEqual(project_metrics["家电"]["已上传"], 2)
         self.assertEqual(project_metrics["家电"]["未上传"], 1)
         self.assertEqual(project_metrics["数码"]["已上传"], 4)
+        self.assertEqual(project_metrics["数码"]["未上传"], 1)
         self.assertEqual(project_metrics["数码"]["未上传"], 1)
 
     def test_load_upload_data_rejects_non_integer_total_count(self) -> None:
@@ -803,15 +848,29 @@ class UploadCategoryCorrectionTests(unittest.TestCase):
             (
                 _payment_data,
                 _digital_amount,
-                _payment_metrics,
+                _payment_counts,
+                _payment_amounts,
                 payment_index,
                 ambiguous_refs,
             ) = store_report.load_payment_data(payment_file)
-            return store_report.load_upload_data(
+            (
+                amounts,
+                digital_totals,
+                upload_counts,
+                _upload_amounts,
+                corrections,
+                reviews,
+            ) = store_report.load_upload_data(
                 upload_file, payment_index, ambiguous_refs
             )
+            return amounts, digital_totals, upload_counts, corrections, reviews
 
-    def test_corrects_kitchen_fotile_to_refrigerator_by_reference(self) -> None:
+    def test_category_correction_exemptions_derived_from_row_rules(self) -> None:
+        self.assertIn(("厨卫", "冰箱", "方太"), store_report.CATEGORY_CORRECTION_EXEMPTIONS)
+        self.assertIn(("冰箱", "厨卫", "方太"), store_report.CATEGORY_CORRECTION_EXEMPTIONS)
+        self.assertNotIn(("厨卫", "冰箱", "美的"), store_report.CATEGORY_CORRECTION_EXEMPTIONS)
+
+    def test_exempts_kitchen_fotile_from_refrigerator_correction(self) -> None:
         amounts, _totals, _metrics, corrections, reviews = self._load(
             [
                 _upload_detail_row(
@@ -835,7 +894,40 @@ class UploadCategoryCorrectionTests(unittest.TestCase):
         self.assertEqual(
             amounts,
             {
-                ("冰箱", "方太"): {
+                ("厨卫", "方太"): {
+                    "已上传": Decimal("1500"),
+                    "未上传": Decimal("0"),
+                }
+            },
+        )
+        self.assertEqual(corrections, [])
+        self.assertEqual(reviews, [])
+
+    def test_corrects_kitchen_midea_to_refrigerator_by_reference(self) -> None:
+        amounts, _totals, _metrics, corrections, reviews = self._load(
+            [
+                _upload_detail_row(
+                    document="ZHLT000260",
+                    category="厨卫",
+                    brand="美的",
+                    reference=self.FOTILE_REFERENCE,
+                    subsidy=1500,
+                )
+            ],
+            [
+                _payment_detail_row(
+                    raw_category="A02-电冰箱",
+                    brand="美的",
+                    reference=self.FOTILE_REFERENCE,
+                    subsidy=1500,
+                )
+            ],
+        )
+
+        self.assertEqual(
+            amounts,
+            {
+                ("冰箱", "美的"): {
                     "已上传": Decimal("1500"),
                     "未上传": Decimal("0"),
                 }
@@ -852,7 +944,7 @@ class UploadCategoryCorrectionTests(unittest.TestCase):
                 correction.corrected_category,
                 correction.raw_payment_category,
             ),
-            ("ZHLT000259", self.FOTILE_REFERENCE, "方太", "厨卫", "冰箱", "A02-电冰箱"),
+            ("ZHLT000260", self.FOTILE_REFERENCE, "美的", "厨卫", "冰箱", "A02-电冰箱"),
         )
         self.assertEqual(reviews, [])
 
@@ -1184,14 +1276,14 @@ class UploadCategoryCorrectionTests(unittest.TestCase):
                 _upload_detail_row(
                     document="A1",
                     category="厨卫",
-                    brand="方太",
+                    brand="美的",
                     reference=self.FOTILE_REFERENCE,
                     subsidy=1500,
                 ),
                 _upload_detail_row(
                     document="A2",
                     category="厨卫",
-                    brand="方太",
+                    brand="美的",
                     reference="",  # 无参考号 → 保留厨卫
                     subsidy=800,
                 ),
@@ -1199,7 +1291,7 @@ class UploadCategoryCorrectionTests(unittest.TestCase):
             [
                 _payment_detail_row(
                     raw_category="A02-电冰箱",
-                    brand="方太",
+                    brand="美的",
                     reference=self.FOTILE_REFERENCE,
                     subsidy=1500,
                 )
@@ -1209,11 +1301,11 @@ class UploadCategoryCorrectionTests(unittest.TestCase):
         self.assertEqual(
             amounts,
             {
-                ("冰箱", "方太"): {
+                ("冰箱", "美的"): {
                     "已上传": Decimal("1500"),
                     "未上传": Decimal("0"),
                 },
-                ("厨卫", "方太"): {
+                ("厨卫", "美的"): {
                     "已上传": Decimal("800"),
                     "未上传": Decimal("0"),
                 },
@@ -1235,9 +1327,10 @@ class BrandGroupTests(unittest.TestCase):
             ("电视", "卡萨帝"): Decimal("30"),
         }
 
-        occurred, paid = store_report.sum_brand_group(upload_data, payment_data, rule.categories)
+        occurred, uploaded, paid = store_report.sum_brand_group(upload_data, payment_data, rule.categories)
 
         self.assertEqual(occurred, Decimal("170"))
+        self.assertEqual(uploaded, Decimal("150"))
         self.assertEqual(paid, Decimal("90"))
 
     def test_midea_group_sums_across_categories(self) -> None:
@@ -1251,9 +1344,10 @@ class BrandGroupTests(unittest.TestCase):
             ("空调", "美的"): Decimal("150"),
         }
 
-        occurred, paid = store_report.sum_brand_group(upload_data, payment_data, rule.categories)
+        occurred, uploaded, paid = store_report.sum_brand_group(upload_data, payment_data, rule.categories)
 
         self.assertEqual(occurred, Decimal("300"))
+        self.assertEqual(uploaded, Decimal("240"))
         self.assertEqual(paid, Decimal("180"))
 
     def test_upload_category_differs_from_payment_category_for_tv_brands(self) -> None:
@@ -1262,13 +1356,14 @@ class BrandGroupTests(unittest.TestCase):
         upload_data = {("国产彩电", "创维"): {"已上传": Decimal("70"), "未上传": Decimal("10")}}
         payment_data = {("电视", "创维"): Decimal("50")}
 
-        occurred, paid = store_report.sum_brand_group(upload_data, payment_data, rule.categories)
+        occurred, uploaded, paid = store_report.sum_brand_group(upload_data, payment_data, rule.categories)
 
         self.assertEqual(occurred, Decimal("80"))
+        self.assertEqual(uploaded, Decimal("70"))
         self.assertEqual(paid, Decimal("50"))
 
     def test_brand_group_writing_and_totals_with_distinct_amounts(self) -> None:
-        """使用互不相等的发生额、上传额、回款额验证表 2 的 D/E/F 写入和第 47 行合计。"""
+        """使用互不相等的发生额、上传额、回款额验证表 2 的 D/E/F/G/H 写入和第 47 行合计。"""
         sheet = Workbook().active
         upload_data = {
             ("冰箱", "海尔"): {"已上传": Decimal("100"), "未上传": Decimal("20")},
@@ -1299,47 +1394,64 @@ class BrandGroupTests(unittest.TestCase):
 
         store_report.update_brand_group_totals(sheet, FONT, expected_cells)
 
-        # 40: 海尔系 发生 180, 回款 90, 比例 0.5
+        # 40: 海尔系 发生 180, 上传 150, 回款 90, 上传率 150/180, 回款率 90/180=0.5
         self.assertEqual(sheet["D40"].value, 180)
-        self.assertEqual(sheet["E40"].value, 90)
-        self.assertAlmostEqual(sheet["F40"].value, 0.5)
+        self.assertEqual(sheet["E40"].value, 150)
+        self.assertEqual(sheet["F40"].value, 90)
+        self.assertAlmostEqual(sheet["G40"].value, 150 / 180)
+        self.assertAlmostEqual(sheet["H40"].value, 0.5)
 
-        # 41: 美的系 发生 230, 回款 115, 比例 0.5
+        # 41: 美的系 发生 230, 上传 200, 回款 115, 上传率 200/230, 回款率 115/230=0.5
         self.assertEqual(sheet["D41"].value, 230)
-        self.assertEqual(sheet["E41"].value, 115)
-        self.assertAlmostEqual(sheet["F41"].value, 0.5)
+        self.assertEqual(sheet["E41"].value, 200)
+        self.assertEqual(sheet["F41"].value, 115)
+        self.assertAlmostEqual(sheet["G41"].value, 200 / 230)
+        self.assertAlmostEqual(sheet["H41"].value, 0.5)
 
-        # 42: 格力 发生 95, 回款 38, 比例 0.4
+        # 42: 格力 发生 95, 上传 80, 回款 38, 上传率 80/95, 回款率 38/95=0.4
         self.assertEqual(sheet["D42"].value, 95)
-        self.assertEqual(sheet["E42"].value, 38)
-        self.assertAlmostEqual(sheet["F42"].value, 0.4)
+        self.assertEqual(sheet["E42"].value, 80)
+        self.assertEqual(sheet["F42"].value, 38)
+        self.assertAlmostEqual(sheet["G42"].value, 80 / 95)
+        self.assertAlmostEqual(sheet["H42"].value, 0.4)
 
-        # 43: 博西 发生 80, 回款 32, 比例 0.4
+        # 43: 博西 发生 80, 上传 70, 回款 32, 上传率 70/80, 回款率 32/80=0.4
         self.assertEqual(sheet["D43"].value, 80)
-        self.assertEqual(sheet["E43"].value, 32)
-        self.assertAlmostEqual(sheet["F43"].value, 0.4)
+        self.assertEqual(sheet["E43"].value, 70)
+        self.assertEqual(sheet["F43"].value, 32)
+        self.assertAlmostEqual(sheet["G43"].value, 70 / 80)
+        self.assertAlmostEqual(sheet["H43"].value, 0.4)
 
-        # 44: 海信系 发生 100, 回款 50, 比例 0.5
+        # 44: 海信系 发生 100, 上传 90, 回款 50, 上传率 90/100, 回款率 50/100=0.5
         self.assertEqual(sheet["D44"].value, 100)
-        self.assertEqual(sheet["E44"].value, 50)
-        self.assertAlmostEqual(sheet["F44"].value, 0.5)
+        self.assertEqual(sheet["E44"].value, 90)
+        self.assertEqual(sheet["F44"].value, 50)
+        self.assertAlmostEqual(sheet["G44"].value, 0.9)
+        self.assertAlmostEqual(sheet["H44"].value, 0.5)
 
-        # 45: 创维 发生 45, 回款 18, 比例 0.4
+        # 45: 创维 发生 45, 上传 40, 回款 18, 上传率 40/45, 回款率 18/45=0.4
         self.assertEqual(sheet["D45"].value, 45)
-        self.assertEqual(sheet["E45"].value, 18)
-        self.assertAlmostEqual(sheet["F45"].value, 0.4)
+        self.assertEqual(sheet["E45"].value, 40)
+        self.assertEqual(sheet["F45"].value, 18)
+        self.assertAlmostEqual(sheet["G45"].value, 40 / 45)
+        self.assertAlmostEqual(sheet["H45"].value, 0.4)
 
-        # 46: TCL 发生 70, 回款 35, 比例 0.5
+        # 46: TCL 发生 70, 上传 60, 回款 35, 上传率 60/70, 回款率 35/70=0.5
         self.assertEqual(sheet["D46"].value, 70)
-        self.assertEqual(sheet["E46"].value, 35)
-        self.assertAlmostEqual(sheet["F46"].value, 0.5)
+        self.assertEqual(sheet["E46"].value, 60)
+        self.assertEqual(sheet["F46"].value, 35)
+        self.assertAlmostEqual(sheet["G46"].value, 60 / 70)
+        self.assertAlmostEqual(sheet["H46"].value, 0.5)
 
-        # 47: 合计 D47=800, E47=378, F47=378/800=0.4725
+        # 47: 合计 D47=800, E47=690, F47=378, G47=690/800, H47=378/800=0.4725
         total_occurred = 180 + 230 + 95 + 80 + 100 + 45 + 70
+        total_uploaded = 150 + 200 + 80 + 70 + 90 + 40 + 60
         total_paid = 90 + 115 + 38 + 32 + 50 + 18 + 35
         self.assertEqual(sheet["D47"].value, total_occurred)
-        self.assertEqual(sheet["E47"].value, total_paid)
-        self.assertAlmostEqual(sheet["F47"].value, total_paid / total_occurred)
+        self.assertEqual(sheet["E47"].value, total_uploaded)
+        self.assertEqual(sheet["F47"].value, total_paid)
+        self.assertAlmostEqual(sheet["G47"].value, total_uploaded / total_occurred)
+        self.assertAlmostEqual(sheet["H47"].value, total_paid / total_occurred)
 
 
 class TemplateValidationTests(unittest.TestCase):
@@ -1822,7 +1934,7 @@ class ProcessStoreReportIntegrationTests(unittest.TestCase):
             self.assertEqual(sheet["D3"].value, 120)
             self.assertEqual(sheet["E3"].value, 100)
             self.assertEqual(sheet["G3"].value, 60)
-            # 审核侧厨卫/方太经参考号纠正为冰箱，并入第 27 行（厨卫/方太）。
+            # 审核侧厨卫/方太保持厨卫（豁免纠正），并入第 27 行（厨卫/方太）。
             self.assertEqual(sheet["D27"].value, 1500)
             self.assertEqual(sheet["E27"].value, 1500)
             self.assertEqual(sheet["G27"].value, 1500)
@@ -1833,30 +1945,46 @@ class ProcessStoreReportIntegrationTests(unittest.TestCase):
             self.assertEqual(sheet["D33"].value, 1670)
             self.assertEqual(sheet["E33"].value, 1640)
             self.assertEqual(sheet["G33"].value, 1575)
-            # 表 2 品牌汇总：海尔系 发生 120, 回款 60, 回款率 0.5；其余组为空；第 47 行合计。
+            # 表 2 品牌汇总：海尔系 发生 120, 上传 100, 回款 60, 上传率 100/120, 回款率 0.5；其余组为空；第 47 行合计。
             self.assertEqual(sheet["D40"].value, 120)
-            self.assertEqual(sheet["E40"].value, 60)
-            self.assertAlmostEqual(sheet["F40"].value, 0.5)
+            self.assertEqual(sheet["E40"].value, 100)
+            self.assertEqual(sheet["F40"].value, 60)
+            self.assertAlmostEqual(sheet["G40"].value, 100 / 120)
+            self.assertAlmostEqual(sheet["H40"].value, 0.5)
             for row in range(41, 47):
                 self.assertIsNone(sheet[f"D{row}"].value)
                 self.assertIsNone(sheet[f"E{row}"].value)
                 self.assertIsNone(sheet[f"F{row}"].value)
+                self.assertIsNone(sheet[f"G{row}"].value)
+                self.assertIsNone(sheet[f"H{row}"].value)
             self.assertEqual(sheet["D47"].value, 120)
-            self.assertEqual(sheet["E47"].value, 60)
-            self.assertAlmostEqual(sheet["F47"].value, 0.5)
+            self.assertEqual(sheet["E47"].value, 100)
+            self.assertEqual(sheet["F47"].value, 60)
+            self.assertAlmostEqual(sheet["G47"].value, 100 / 120)
+            self.assertAlmostEqual(sheet["H47"].value, 0.5)
+            # 表 3：
+            # 家电: 审核中 数量 0 (None), 金额 40; 未上传 数量 1, 金额 20
             self.assertIsNone(sheet["D50"].value)
-            self.assertEqual(sheet["E50"].value, 1)
+            self.assertEqual(sheet["E50"].value, 40)
+            self.assertEqual(sheet["F50"].value, 1)
+            self.assertEqual(sheet["G50"].value, 20)
+            # 数码: 审核中 数量 0 (None), 金额 25; 未上传 数量 1, 金额 10
             self.assertIsNone(sheet["D51"].value)
-            self.assertEqual(sheet["E51"].value, 1)
+            self.assertEqual(sheet["E51"].value, 25)
+            self.assertEqual(sheet["F51"].value, 1)
+            self.assertEqual(sheet["G51"].value, 10)
+            # 合计:
             self.assertIsNone(sheet["D52"].value)
-            self.assertEqual(sheet["E52"].value, 2)
+            self.assertEqual(sheet["E52"].value, 65)
+            self.assertEqual(sheet["F52"].value, 2)
+            self.assertEqual(sheet["G52"].value, 30)
             ts_str = str(sheet["A1"].value)[len(store_report.TEMPLATE_HEADER_PREFIX):]
             parsed = datetime.strptime(ts_str, "%Y-%m-%d %H:%M:%S")
             self.assertEqual(
                 sheet["A1"].value,
                 f"{store_report.TEMPLATE_HEADER_PREFIX}{parsed.strftime('%Y-%m-%d %H:%M:%S')}",
             )
-            self.assertIn("审核明细品类纠正：1 条", reporter_text)
+            self.assertIn("数据修正：0 项", reporter_text)
             # 合并区域内部的 MergedCell 不参与渲染，openpyxl 保存时会丢弃
             # 对其样式的写入（保持模板原样），所以只断言普通单元格的字体。
             output_fonts = {

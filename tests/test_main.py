@@ -537,9 +537,9 @@ class UploadDataDebugTest(unittest.TestCase):
 class EndToEndAllModeTest(unittest.TestCase):
     """完整 --all 端到端：5 个模式用最小真实源文件跑通。
 
-    数据链覆盖方太品类纠正场景：审核侧 ZHLT000259 被标为厨卫/方太，回款
-    明细编码品类 A02-电冰箱 表明它是冰箱，门店报表应按参考号纠正后统一归入
-    厨卫/方太汇总行（第 27 行）。
+    数据链覆盖方太场景：审核侧 ZHLT000259 被标为厨卫/方太，回款
+    明细编码品类 A02-电冰箱 表明它是冰箱，门店报表因豁免规则保持厨卫，
+    第 27 行自动汇总厨卫和冰箱两侧方太。
     """
 
     FOTILE_REFERENCE = "17914133741N"
@@ -972,17 +972,23 @@ class EndToEndAllModeTest(unittest.TestCase):
             self.assertEqual(sheet["G33"].value, 1725)
             self.assertEqual(sheet["F33"].value, 1)
             self.assertEqual(sheet["H33"].value, 1)
-            # 表 2 品牌汇总：海尔系 发生 150, 回款 150, 回款率 1；其余为空；第 47 行合计。
+            # 表 2 品牌汇总：海尔系 发生 150, 上传 150, 回款 150, 上传率 1, 回款率 1；其余为空；第 47 行合计。
             self.assertEqual(sheet["D40"].value, 150)
             self.assertEqual(sheet["E40"].value, 150)
-            self.assertEqual(sheet["F40"].value, 1)
+            self.assertEqual(sheet["F40"].value, 150)
+            self.assertEqual(sheet["G40"].value, 1)
+            self.assertEqual(sheet["H40"].value, 1)
             for row in range(41, 47):
                 self.assertIsNone(sheet[f"D{row}"].value)
                 self.assertIsNone(sheet[f"E{row}"].value)
                 self.assertIsNone(sheet[f"F{row}"].value)
+                self.assertIsNone(sheet[f"G{row}"].value)
+                self.assertIsNone(sheet[f"H{row}"].value)
             self.assertEqual(sheet["D47"].value, 150)
             self.assertEqual(sheet["E47"].value, 150)
-            self.assertEqual(sheet["F47"].value, 1)
+            self.assertEqual(sheet["F47"].value, 150)
+            self.assertEqual(sheet["G47"].value, 1)
+            self.assertEqual(sheet["H47"].value, 1)
 
 
 if __name__ == "__main__":

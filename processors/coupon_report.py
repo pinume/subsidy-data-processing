@@ -225,51 +225,28 @@ def map_payment_appliance_key(category: str, brand: str) -> tuple[str, str]:
     return target_category, target_brand
 
 
-def load_payment_summary(
-    payment_file: Path,
+def _parse_payment_summary_rows(
+    rows: list[list[object]],
+    source_name: str,
 ) -> tuple[
     dict[tuple[str, str], tuple[int, Decimal]],
     tuple[int, Decimal],
     tuple[int, Decimal],
 ]:
-    """Load and aggregate the payment summary sheet from output/回款明细.xlsx.
-
-    Dynamically handles single-category files (appliance-only or digital-only),
-    two-category files, and empty files.
-
-    Returns:
-        1. Mapped appliance brand payment dict: {(category, brand): (count, amount)}
-        2. Appliance total: (count, amount)
-        3. Digital total: (count, amount)
-    """
-    if not payment_file.exists():
-        raise FileNotFoundError(
-            f"未找到 {payment_file}，请先运行回款明细处理模式"
-        )
-    appliance_categories = set(APPLIANCE_CATEGORY_MAP.values())
-    digital_categories = set(DIGITAL_CATEGORY_MAP.values())
-
-    workbook = CalamineWorkbook.from_path(str(payment_file))
-    try:
-        if PAYMENT_SUMMARY_SHEET_NAME not in workbook.sheet_names:
-            raise ValueError(
-                f"{payment_file.name} 中缺少“{PAYMENT_SUMMARY_SHEET_NAME}”工作表"
-            )
-        sheet = workbook.get_sheet_by_name(PAYMENT_SUMMARY_SHEET_NAME)
-        rows = sheet.to_python()
-    finally:
-        workbook.close()
-
+    """Parse and validate rows of the payment summary sheet."""
     if not rows:
         raise ValueError(
-            f"{payment_file.name} 的“{PAYMENT_SUMMARY_SHEET_NAME}”工作表为空"
+            f"{source_name} 的“{PAYMENT_SUMMARY_SHEET_NAME}”工作表为空"
         )
     actual_header = list(rows[0])
     if actual_header != PAYMENT_SUMMARY_HEADERS:
         raise ValueError(
-            f"{payment_file.name} 的“{PAYMENT_SUMMARY_SHEET_NAME}”表头不符合预期，"
+            f"{source_name} 的“{PAYMENT_SUMMARY_SHEET_NAME}”表头不符合预期，"
             f"预期为 {PAYMENT_SUMMARY_HEADERS}，实际为 {actual_header}"
         )
+
+    appliance_categories = set(APPLIANCE_CATEGORY_MAP.values())
+    digital_categories = set(DIGITAL_CATEGORY_MAP.values())
 
     current_category: str | None = None
     current_section_type: str | None = None
@@ -297,7 +274,7 @@ def load_payment_summary(
                 tot_amount = Decimal(str(amount_cell)).quantize(Decimal("0.01"))
             except (InvalidOperation, TypeError, ValueError):
                 raise ValueError(
-                    f"{payment_file.name} 汇总表第 {row_number} 行合计金额无效：{amount_cell!r}"
+                    f"{source_name} 汇总表第 {row_number} 行合计金额无效：{amount_cell!r}"
                 ) from None
             if (
                 isinstance(count_cell, bool)
@@ -305,7 +282,7 @@ def load_payment_summary(
                 or int(count_cell) != count_cell
             ):
                 raise ValueError(
-                    f"{payment_file.name} 汇总表第 {row_number} 行合计数量必须为整数：{count_cell!r}"
+                    f"{source_name} 汇总表第 {row_number} 行合计数量必须为整数：{count_cell!r}"
                 )
             tot_count = int(count_cell)
 
@@ -316,7 +293,7 @@ def load_payment_summary(
                 expected_count = sum(r[3] for r in current_section_brand_rows)
                 if (expected_amount, expected_count) != (tot_amount, tot_count):
                     raise ValueError(
-                        f"{payment_file.name} 汇总表家电明细累加与家电合计不一致："
+                        f"{source_name} 汇总表家电明细累加与家电合计不一致："
                         f"明细累加 ({expected_count}, {expected_amount}) vs "
                         f"合计行 ({tot_count}, {tot_amount})"
                     )
@@ -331,7 +308,7 @@ def load_payment_summary(
                 expected_count = sum(r[3] for r in current_section_brand_rows)
                 if (expected_amount, expected_count) != (tot_amount, tot_count):
                     raise ValueError(
-                        f"{payment_file.name} 汇总表数码明细累加与数码合计不一致："
+                        f"{source_name} 汇总表数码明细累加与数码合计不一致："
                         f"明细累加 ({expected_count}, {expected_amount}) vs "
                         f"合计行 ({tot_count}, {tot_amount})"
                     )
@@ -351,7 +328,7 @@ def load_payment_summary(
             amount = Decimal(str(amount_cell)).quantize(Decimal("0.01"))
         except (InvalidOperation, TypeError, ValueError):
             raise ValueError(
-                f"{payment_file.name} 汇总表第 {row_number} 行金额无效：{amount_cell!r}"
+                f"{source_name} 汇总表第 {row_number} 行金额无效：{amount_cell!r}"
             ) from None
         if (
             isinstance(count_cell, bool)
@@ -359,7 +336,7 @@ def load_payment_summary(
             or int(count_cell) != count_cell
         ):
             raise ValueError(
-                f"{payment_file.name} 汇总表第 {row_number} 行数量必须为整数：{count_cell!r}"
+                f"{source_name} 汇总表第 {row_number} 行数量必须为整数：{count_cell!r}"
             )
         count = int(count_cell)
 
@@ -368,7 +345,7 @@ def load_payment_summary(
                 current_section_type = "家电"
             elif current_section_type != "家电":
                 raise ValueError(
-                    f"{payment_file.name} 汇总表品类交错：在 {current_section_type} 区段出现家电品类 {current_category}"
+                    f"{source_name} 汇总表品类交错：在 {current_section_type} 区段出现家电品类 {current_category}"
                 )
             item = (current_category, brand, amount, count)
             appliance_brand_rows.append(item)
@@ -378,18 +355,18 @@ def load_payment_summary(
                 current_section_type = "数码"
             elif current_section_type != "数码":
                 raise ValueError(
-                    f"{payment_file.name} 汇总表品类交错：在 {current_section_type} 区段出现数码品类 {current_category}"
+                    f"{source_name} 汇总表品类交错：在 {current_section_type} 区段出现数码品类 {current_category}"
                 )
             item = (current_category, brand, amount, count)
             digital_brand_rows.append(item)
             current_section_brand_rows.append(item)
         else:
             raise ValueError(
-                f"{payment_file.name} 汇总表第 {row_number} 行品类未知：{current_category!r}"
+                f"{source_name} 汇总表第 {row_number} 行品类未知：{current_category!r}"
             )
 
     if grand_total is None:
-        raise ValueError(f"{payment_file.name} 汇总表缺少总合计行")
+        raise ValueError(f"{source_name} 汇总表缺少总合计行")
 
     expected_grand_count = appliance_total[0] + digital_total[0]
     expected_grand_amount = appliance_total[1] + digital_total[1]
@@ -398,7 +375,7 @@ def load_payment_summary(
         expected_grand_amount,
     ):
         raise ValueError(
-            f"{payment_file.name} 汇总表总合计不等于家电合计加数码合计："
+            f"{source_name} 汇总表总合计不等于家电合计加数码合计："
             f"总计 ({grand_total[0]}, {grand_total[1]}) vs "
             f"分项合计 ({expected_grand_count}, {expected_grand_amount})"
         )
@@ -416,6 +393,42 @@ def load_payment_summary(
         for key, val in household_payments_agg.items()
     }
     return household_payments, appliance_total, digital_total
+
+
+def load_payment_summary(
+    payment_file: Path,
+) -> tuple[
+    dict[tuple[str, str], tuple[int, Decimal]],
+    tuple[int, Decimal],
+    tuple[int, Decimal],
+]:
+    """Load and aggregate the payment summary sheet from output/回款明细.xlsx.
+
+    Dynamically handles single-category files (appliance-only or digital-only),
+    two-category files, and empty files.
+
+    Returns:
+        1. Mapped appliance brand payment dict: {(category, brand): (count, amount)}
+        2. Appliance total: (count, amount)
+        3. Digital total: (count, amount)
+    """
+    if not payment_file.exists():
+        raise FileNotFoundError(
+            f"未找到 {payment_file}，请先运行回款明细处理模式"
+        )
+
+    workbook = CalamineWorkbook.from_path(str(payment_file))
+    try:
+        if PAYMENT_SUMMARY_SHEET_NAME not in workbook.sheet_names:
+            raise ValueError(
+                f"{payment_file.name} 中缺少“{PAYMENT_SUMMARY_SHEET_NAME}”工作表"
+            )
+        sheet = workbook.get_sheet_by_name(PAYMENT_SUMMARY_SHEET_NAME)
+        rows = sheet.to_python()
+    finally:
+        workbook.close()
+
+    return _parse_payment_summary_rows(rows, payment_file.name)
 
 
 def append_payment_summary_columns(

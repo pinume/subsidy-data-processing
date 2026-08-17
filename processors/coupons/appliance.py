@@ -39,11 +39,10 @@ from .report_contract import SUMMARY_HEADER, SUMMARY_SHEET_NAME
 from .sources import load_coupon_remark_lookup, load_uploaded_summary
 from .validation import (
     validate_detail_rows_shape,
-    validate_document_and_date_values,
     validate_matched_subsidy_total,
     validate_payment_statuses,
-    validate_remark_and_detail_values,
     validate_returned_counts,
+    validate_row_statuses_and_matched_subsidy,
     validate_uploaded_and_unmatched_counts,
 )
 
@@ -744,43 +743,15 @@ def compute_coupon_data(
     )
 
 
-def validate_computation(
-    computation: CouponComputation,
-    extra_summary_rows: list[tuple[object, ...]] = (),
+def _validate_detail_ordering_and_brands(
+    rows: list[list[object]],
+    *,
+    header: tuple[str, ...],
+    matched_start: int,
+    reference_universe: set[str] | frozenset[str],
+    expected_unresolved_rows: int,
 ) -> None:
-    """Validate business invariants before serializing the workbook."""
-    expected_data_rows = computation.data_row_count
-    expected_matched_rows = computation.matched_count
-    remark_lookup = computation.remark_lookup
-    expected_reference_supplement_matches = (
-        computation.reference_supplement_matches
-    )
-    expected_matched_subsidy_total = computation.matched_subsidy_total
-    detail_lookup = computation.detail_lookup
-    expected_uploaded_rows = computation.uploaded_count
-    reference_universe = computation.reference_universe
-    payment_references = computation.payment_references
-    expected_paid_rows = computation.payment_match_count
-    expected_unresolved_rows = computation.final_unresolved_reference_count
-    expected_unmatched_rows = computation.unmatched_count
-    expected_excluded_category_rows = computation.excluded_category_row_count
-    expected_summary_rows = computation.summary_rows
-    combined_summary_rows = [*expected_summary_rows, *extra_summary_rows]
-
-    rows = computation.rows
-    validate_detail_rows_shape(rows, COUPON_OUTPUT_HEADER, expected_data_rows)
-    validate_payment_statuses(
-        rows,
-        COUPON_OUTPUT_HEADER,
-        payment_references,
-        expected_matched_rows,
-        expected_paid_rows,
-    )
-    detail_column, remark_column = validate_uploaded_and_unmatched_counts(
-        rows, COUPON_OUTPUT_HEADER, expected_uploaded_rows, expected_unmatched_rows
-    )
-    matched_start = len(rows) - expected_matched_rows
-    summary_column = COUPON_OUTPUT_HEADER.index("明细摘要")
+    summary_column = header.index("明细摘要")
     actual_unresolved_rows = sum(
         reference not in reference_universe
         for reference in (
@@ -807,7 +778,7 @@ def validate_computation(
         key=coupon_pink_sort_key,
     ):
         raise RuntimeError("销售用券明细匹配分区排序校验失败")
-    brand_column = COUPON_OUTPUT_HEADER.index("品牌")
+    brand_column = header.index("品牌")
     remaining_source_brands = {
         str(row[brand_column] or "").strip() for row in rows[1:]
     } & COUPON_BRAND_REPLACEMENTS.keys()
@@ -816,75 +787,21 @@ def validate_computation(
             "销售用券品牌替换校验失败："
             f"{sorted(remaining_source_brands)}"
         )
-    actual_matched_subsidy_total = Decimal("0")
-    actual_reference_supplement_matches: Counter[
-        tuple[str, date, str]
-    ] = Counter()
-    subsidy_column = COUPON_OUTPUT_HEADER.index(COUPON_SUBSIDY_HEADER)
-    for row_number, row in enumerate(rows[1:], start=2):
-        document = row[0]
-        document_date = validate_document_and_date_values(
-            document, row[1], row_number
-        )
-        receipt_remark = remark_lookup.get(
-            (
-                normalize_document_number(document),
-                document_date,
-            ),
-            "",
-        )
-        reference = normalize_receipt_identifier(
-            row[summary_column]
-        ).upper()
-        in_matched_partition = (
-            expected_matched_rows > 0
-            and row_number - 1 >= matched_start
-        )
-        supplement_match = (
-            normalize_document_number(document),
-            document_date,
-            reference,
-        )
-        if (
-            not in_matched_partition
-            and supplement_match
-            in expected_reference_supplement_matches
-        ):
-            actual_reference_supplement_matches[supplement_match] += 1
-        if in_matched_partition:
-            expected_detail = ""
-            expected_remark = receipt_remark
-        else:
-            expected_detail = detail_lookup.get(reference, "")
-            if expected_detail:
-                expected_remark = "已上传"
-            elif reference not in reference_universe:
-                expected_remark = "未上传"
-            else:
-                expected_remark = receipt_remark
-        validate_remark_and_detail_values(
-            row[remark_column],
-            row[detail_column],
-            expected_remark,
-            expected_detail,
-            row_number,
-        )
-        if in_matched_partition:
-            subsidy = row[subsidy_column]
-            if subsidy not in (None, ""):
-                actual_matched_subsidy_total += Decimal(str(subsidy))
 
-    if any(
-        actual_reference_supplement_matches[match] < expected_count
-        for match, expected_count
-        in expected_reference_supplement_matches.items()
-    ):
-        raise RuntimeError(
-            "销售用券补充参考号逐行匹配结果校验失败"
-        )
-    validate_matched_subsidy_total(
-        actual_matched_subsidy_total, expected_matched_subsidy_total
-    )
+
+def _validate_appliance_summary_rows(
+    computation: CouponComputation,
+    extra_summary_rows: list[tuple[object, ...]],
+    brand_column: int,
+    remark_column: int,
+    detail_column: int,
+) -> None:
+    expected_data_rows = computation.data_row_count
+    expected_matched_rows = computation.matched_count
+    expected_excluded_category_rows = computation.excluded_category_row_count
+    expected_summary_rows = computation.summary_rows
+    combined_summary_rows = [*expected_summary_rows, *extra_summary_rows]
+
     actual_summary_rows = combined_summary_rows
     # The 家电 portion ends in 已上传 / 未上传 / 合计 (in 上传状态, with
     # 财务大类 merged into a single 家电 cell); anything appended after it
@@ -923,6 +840,7 @@ def validate_computation(
         Decimal(str(total_row[4]))
     ):
         raise RuntimeError("销售用券汇总合计金额校验失败")
+
     # 合计 must be this coupon file's own 国补 total, counted with reversals
     # as -1 so a return and its original cancel out.
     expected_total = Decimal("0")
@@ -986,4 +904,61 @@ def validate_computation(
         expected_returned_count=sum(expected_brand_returns.values()),
         returned_col_index=5,
         source_label="",
+    )
+
+
+def validate_computation(
+    computation: CouponComputation,
+    extra_summary_rows: list[tuple[object, ...]] = (),
+) -> None:
+    """Validate business invariants before serializing the workbook."""
+    rows = computation.rows
+    expected_matched_rows = computation.matched_count
+
+    validate_detail_rows_shape(
+        rows, COUPON_OUTPUT_HEADER, computation.data_row_count
+    )
+    validate_payment_statuses(
+        rows,
+        COUPON_OUTPUT_HEADER,
+        computation.payment_references,
+        expected_matched_rows,
+        computation.payment_match_count,
+    )
+    detail_column, remark_column = validate_uploaded_and_unmatched_counts(
+        rows,
+        COUPON_OUTPUT_HEADER,
+        computation.uploaded_count,
+        computation.unmatched_count,
+    )
+
+    matched_start = len(rows) - expected_matched_rows
+    _validate_detail_ordering_and_brands(
+        rows,
+        header=COUPON_OUTPUT_HEADER,
+        matched_start=matched_start,
+        reference_universe=computation.reference_universe,
+        expected_unresolved_rows=computation.final_unresolved_reference_count,
+    )
+
+    actual_matched_subsidy_total = validate_row_statuses_and_matched_subsidy(
+        rows,
+        header=COUPON_OUTPUT_HEADER,
+        subsidy_header=COUPON_SUBSIDY_HEADER,
+        remark_lookup=computation.remark_lookup,
+        detail_lookup=computation.detail_lookup,
+        reference_universe=computation.reference_universe,
+        expected_matched_rows=expected_matched_rows,
+        expected_reference_supplement_matches=computation.reference_supplement_matches,
+    )
+    validate_matched_subsidy_total(
+        actual_matched_subsidy_total, computation.matched_subsidy_total
+    )
+
+    _validate_appliance_summary_rows(
+        computation,
+        extra_summary_rows,
+        brand_column=COUPON_OUTPUT_HEADER.index("品牌"),
+        remark_column=remark_column,
+        detail_column=detail_column,
     )

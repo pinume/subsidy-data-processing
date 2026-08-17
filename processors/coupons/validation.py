@@ -7,9 +7,15 @@ styles or on an Excel reader's worksheet API.
 
 from __future__ import annotations
 
+from collections import Counter
+from collections.abc import Mapping
 from datetime import date, datetime
+from decimal import Decimal
 
-from processors.common.dates import normalize_receipt_identifier
+from processors.common.dates import (
+    normalize_document_number,
+    normalize_receipt_identifier,
+)
 
 from .matching import UPLOADED_REMARK, as_currency
 
@@ -97,6 +103,95 @@ def validate_matched_subsidy_total(actual_total, expected_total) -> None:
             "销售用券匹配行国补合计校验失败："
             f"预期 {expected_total}，实际 {actual_total}"
         )
+
+
+def validate_row_statuses_and_matched_subsidy(
+    rows: list[list[object]],
+    *,
+    header: tuple[str, ...],
+    subsidy_header: str,
+    remark_lookup: Mapping[tuple[str, date], str],
+    detail_lookup: Mapping[str, str],
+    reference_universe: set[str] | frozenset[str],
+    expected_matched_rows: int,
+    expected_reference_supplement_matches: (
+        Mapping[tuple[str, date, str], int] | None
+    ) = None,
+) -> Decimal:
+    """Validate remark/detail per row, track supplement matches, and accumulate matched subsidy."""
+    summary_column = header.index("明细摘要")
+    remark_column = header.index("备注")
+    detail_column = header.index("详细情况")
+    subsidy_column = header.index(subsidy_header)
+    matched_start = len(rows) - expected_matched_rows
+    actual_matched_subsidy_total = Decimal("0")
+    actual_reference_supplement_matches: Counter[
+        tuple[str, date, str]
+    ] = Counter()
+
+    for row_number, row in enumerate(rows[1:], start=2):
+        document = row[0]
+        document_date = validate_document_and_date_values(
+            document, row[1], row_number
+        )
+        receipt_remark = remark_lookup.get(
+            (
+                normalize_document_number(document),
+                document_date,
+            ),
+            "",
+        )
+        reference = normalize_receipt_identifier(
+            row[summary_column]
+        ).upper()
+        in_matched_partition = (
+            expected_matched_rows > 0
+            and row_number - 1 >= matched_start
+        )
+        if expected_reference_supplement_matches:
+            supplement_match = (
+                normalize_document_number(document),
+                document_date,
+                reference,
+            )
+            if (
+                not in_matched_partition
+                and supplement_match in expected_reference_supplement_matches
+            ):
+                actual_reference_supplement_matches[supplement_match] += 1
+        if in_matched_partition:
+            # The 退换货 block keeps the receipt remark and never gets a
+            # 详细情况: the reference passes skip it, so expecting an upload
+            # status here would be checking for something nothing writes.
+            expected_detail = ""
+            expected_remark = receipt_remark
+        else:
+            expected_detail = detail_lookup.get(reference, "")
+            if expected_detail:
+                expected_remark = "已上传"
+            elif reference not in reference_universe:
+                expected_remark = "未上传"
+            else:
+                expected_remark = receipt_remark
+        validate_remark_and_detail_values(
+            row[remark_column],
+            row[detail_column],
+            expected_remark,
+            expected_detail,
+            row_number,
+        )
+        if in_matched_partition:
+            subsidy = row[subsidy_column]
+            if subsidy not in (None, ""):
+                actual_matched_subsidy_total += Decimal(str(subsidy))
+
+    if expected_reference_supplement_matches and any(
+        actual_reference_supplement_matches[match] < expected_count
+        for match, expected_count in expected_reference_supplement_matches.items()
+    ):
+        raise RuntimeError("销售用券补充参考号逐行匹配结果校验失败")
+
+    return actual_matched_subsidy_total
 
 
 def validate_payment_statuses(

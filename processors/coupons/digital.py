@@ -11,10 +11,6 @@ from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal, InvalidOperation
 
-from processors.common.dates import (
-    normalize_document_number,
-    normalize_receipt_identifier,
-)
 from processors.receipts import OUTPUT_FILE as RECEIPTS_OUTPUT_FILE
 from processors.submitted import PROFILES as SUBMITTED_PROFILES
 
@@ -23,11 +19,10 @@ from .matching import as_currency
 from .sources import load_coupon_remark_lookup, load_uploaded_summary
 from .validation import (
     validate_detail_rows_shape,
-    validate_document_and_date_values,
     validate_matched_subsidy_total,
     validate_payment_statuses,
-    validate_remark_and_detail_values,
     validate_returned_counts,
+    validate_row_statuses_and_matched_subsidy,
     validate_uploaded_and_unmatched_counts,
 )
 
@@ -226,56 +221,15 @@ def validate_computation(computation: CouponComputation) -> None:
         computation.uploaded_match_count,
         computation.unmatched_count,
     )
-    summary_column = COUPON_OUTPUT_HEADER.index("明细摘要")
-
-    matched_start = len(rows) - expected_matched_rows
-    actual_matched_subsidy_total = Decimal("0")
-    subsidy_column = COUPON_OUTPUT_HEADER.index(COUPON_SUBSIDY_HEADER)
-    for row_number, row in enumerate(rows[1:], start=2):
-        document = row[0]
-        document_date = validate_document_and_date_values(
-            document, row[1], row_number
-        )
-        receipt_remark = remark_lookup.get(
-            (
-                normalize_document_number(document),
-                document_date,
-            ),
-            "",
-        )
-        reference = normalize_receipt_identifier(
-            row[summary_column]
-        ).upper()
-        in_matched_partition = (
-            expected_matched_rows > 0
-            and row_number - 1 >= matched_start
-        )
-        if in_matched_partition:
-            # The 退换货 block keeps the receipt remark and never gets a
-            # 详细情况: the reference passes skip it, so expecting an upload
-            # status here would be checking for something nothing writes.
-            expected_detail = ""
-            expected_remark = receipt_remark
-        else:
-            expected_detail = detail_lookup.get(reference, "")
-            if expected_detail:
-                expected_remark = "已上传"
-            elif reference not in reference_universe:
-                expected_remark = "未上传"
-            else:
-                expected_remark = receipt_remark
-        validate_remark_and_detail_values(
-            row[remark_column],
-            row[detail_column],
-            expected_remark,
-            expected_detail,
-            row_number,
-        )
-        if in_matched_partition:
-            subsidy = row[subsidy_column]
-            if subsidy not in (None, ""):
-                actual_matched_subsidy_total += Decimal(str(subsidy))
-
+    actual_matched_subsidy_total = validate_row_statuses_and_matched_subsidy(
+        rows,
+        header=COUPON_OUTPUT_HEADER,
+        subsidy_header=COUPON_SUBSIDY_HEADER,
+        remark_lookup=remark_lookup,
+        detail_lookup=detail_lookup,
+        reference_universe=reference_universe,
+        expected_matched_rows=expected_matched_rows,
+    )
     validate_matched_subsidy_total(
         actual_matched_subsidy_total, expected_matched_subsidy_total
     )

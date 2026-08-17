@@ -1,5 +1,7 @@
 import tempfile
 import unittest
+from datetime import date
+from decimal import Decimal
 from pathlib import Path
 
 from openpyxl import Workbook
@@ -11,7 +13,10 @@ from processors.coupons.sources import (
     load_uploaded_summary,
     validate_payment_reference_subset,
 )
-from processors.coupons.validation import validate_payment_statuses
+from processors.coupons.validation import (
+    validate_payment_statuses,
+    validate_row_statuses_and_matched_subsidy,
+)
 
 HEADERS = (coupons_digital.COUPON_OUTPUT_HEADER, appliance.COUPON_OUTPUT_HEADER)
 
@@ -260,6 +265,159 @@ class PaymentReferenceSourceTest(unittest.TestCase):
             "家电回款参考号子集校验失败.*第 2 行",
         ):
             validate_payment_reference_subset("家电", locations, set())
+
+
+class RowStatusesAndMatchedSubsidyTest(unittest.TestCase):
+    def test_accumulates_matched_partition_and_tracks_supplement_matches(self) -> None:
+        header = appliance.COUPON_OUTPUT_HEADER
+        subsidy_header = appliance.COUPON_SUBSIDY_HEADER
+        doc_idx = header.index("单据号")
+        date_idx = header.index("单据日期")
+        summary_idx = header.index("明细摘要")
+        subsidy_idx = header.index(subsidy_header)
+        remark_idx = header.index("备注")
+        detail_idx = header.index("详细情况")
+
+        # Row 1: Regular row matching reference supplement
+        row1 = [None] * len(header)
+        row1[doc_idx] = "DOC001"
+        row1[date_idx] = date(2026, 1, 1)
+        row1[summary_idx] = "REF001"
+        row1[subsidy_idx] = Decimal("100.00")
+        row1[remark_idx] = "已上传"
+        row1[detail_idx] = "已完成：匹配成功"
+
+        # Row 2: Matched partition row (退换货)
+        row2 = [None] * len(header)
+        row2[doc_idx] = "DOC002"
+        row2[date_idx] = date(2026, 1, 2)
+        row2[summary_idx] = "REF002"
+        row2[subsidy_idx] = Decimal("-50.00")
+        row2[remark_idx] = "退货备注"
+        row2[detail_idx] = ""
+
+        # Row 3: Matched partition row with positive subsidy
+        row3 = [None] * len(header)
+        row3[doc_idx] = "DOC003"
+        row3[date_idx] = date(2026, 1, 3)
+        row3[summary_idx] = "REF003"
+        row3[subsidy_idx] = Decimal("20.00")
+        row3[remark_idx] = "换货备注"
+        row3[detail_idx] = ""
+
+        rows = [list(header), row1, row2, row3]
+
+        remark_lookup = {
+            ("DOC001", date(2026, 1, 1)): "原始备注",
+            ("DOC002", date(2026, 1, 2)): "退货备注",
+            ("DOC003", date(2026, 1, 3)): "换货备注",
+        }
+        detail_lookup = {"REF001": "已完成：匹配成功"}
+        reference_universe = {"REF001"}
+        expected_supplements = {("DOC001", date(2026, 1, 1), "REF001"): 1}
+
+        total = validate_row_statuses_and_matched_subsidy(
+            rows,
+            header=header,
+            subsidy_header=subsidy_header,
+            remark_lookup=remark_lookup,
+            detail_lookup=detail_lookup,
+            reference_universe=reference_universe,
+            expected_matched_rows=2,
+            expected_reference_supplement_matches=expected_supplements,
+        )
+
+        self.assertEqual(total, Decimal("-30.00"))
+
+    def test_rejects_insufficient_supplement_matches(self) -> None:
+        header = appliance.COUPON_OUTPUT_HEADER
+        subsidy_header = appliance.COUPON_SUBSIDY_HEADER
+        doc_idx = header.index("单据号")
+        date_idx = header.index("单据日期")
+        summary_idx = header.index("明细摘要")
+        subsidy_idx = header.index(subsidy_header)
+        remark_idx = header.index("备注")
+        detail_idx = header.index("详细情况")
+
+        # Row 1: Regular row matching REF001
+        row1 = [None] * len(header)
+        row1[doc_idx] = "DOC001"
+        row1[date_idx] = date(2026, 1, 1)
+        row1[summary_idx] = "REF001"
+        row1[subsidy_idx] = Decimal("100.00")
+        row1[remark_idx] = "已上传"
+        row1[detail_idx] = "已完成：匹配成功"
+
+        rows = [list(header), row1]
+
+        remark_lookup = {("DOC001", date(2026, 1, 1)): "原始备注"}
+        detail_lookup = {"REF001": "已完成：匹配成功"}
+        reference_universe = {"REF001"}
+        # Expecting 2 matches but only 1 provided in rows
+        expected_supplements = {("DOC001", date(2026, 1, 1), "REF001"): 2}
+
+        with self.assertRaisesRegex(
+            RuntimeError, "销售用券补充参考号逐行匹配结果校验失败"
+        ):
+            validate_row_statuses_and_matched_subsidy(
+                rows,
+                header=header,
+                subsidy_header=subsidy_header,
+                remark_lookup=remark_lookup,
+                detail_lookup=detail_lookup,
+                reference_universe=reference_universe,
+                expected_matched_rows=0,
+                expected_reference_supplement_matches=expected_supplements,
+            )
+
+    def test_regular_partition_remarks_unuploaded_or_fallback_to_receipt_remark(self) -> None:
+        header = coupons_digital.COUPON_OUTPUT_HEADER
+        subsidy_header = coupons_digital.COUPON_SUBSIDY_HEADER
+        doc_idx = header.index("单据号")
+        date_idx = header.index("单据日期")
+        summary_idx = header.index("明细摘要")
+        subsidy_idx = header.index(subsidy_header)
+        remark_idx = header.index("备注")
+        detail_idx = header.index("详细情况")
+
+        # Row 1: Not in reference universe -> 未上传
+        row1 = [None] * len(header)
+        row1[doc_idx] = "DOC001"
+        row1[date_idx] = date(2026, 1, 1)
+        row1[summary_idx] = "REF_NOT_IN_UNIVERSE"
+        row1[subsidy_idx] = Decimal("100.00")
+        row1[remark_idx] = "未上传"
+        row1[detail_idx] = ""
+
+        # Row 2: In universe but not uploaded -> keeps receipt remark
+        row2 = [None] * len(header)
+        row2[doc_idx] = "DOC002"
+        row2[date_idx] = date(2026, 1, 2)
+        row2[summary_idx] = "REF_IN_UNIVERSE"
+        row2[subsidy_idx] = Decimal("200.00")
+        row2[remark_idx] = "回单备注"
+        row2[detail_idx] = ""
+
+        rows = [list(header), row1, row2]
+
+        remark_lookup = {
+            ("DOC001", date(2026, 1, 1)): "原始备注",
+            ("DOC002", date(2026, 1, 2)): "回单备注",
+        }
+        detail_lookup = {}
+        reference_universe = {"REF_IN_UNIVERSE"}
+
+        total = validate_row_statuses_and_matched_subsidy(
+            rows,
+            header=header,
+            subsidy_header=subsidy_header,
+            remark_lookup=remark_lookup,
+            detail_lookup=detail_lookup,
+            reference_universe=reference_universe,
+            expected_matched_rows=0,
+        )
+
+        self.assertEqual(total, Decimal("0"))
 
 
 if __name__ == "__main__":

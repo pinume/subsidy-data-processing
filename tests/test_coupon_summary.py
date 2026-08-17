@@ -1541,6 +1541,34 @@ class PaymentSummaryAugmentationTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "总合计不等于家电合计加数码合计"):
                 load_payment_summary(path)
 
+    def test_parse_payment_summary_rows_pure_data(self) -> None:
+        from processors.coupon_report import _parse_payment_summary_rows
+
+        rows: list[list[object]] = [
+            ["财务大类", "品牌", "补贴金额合计", "补贴金额计数"],
+            ["空调", "格力", 5000.0, 5],
+            ["合计", None, 5000.0, 5],
+            ["手机", "华为", 2000.0, 2],
+            ["合计", None, 2000.0, 2],
+            ["合计", None, 7000.0, 7],
+        ]
+        payments, h_total, d_total = _parse_payment_summary_rows(rows, "test.xlsx")
+        self.assertEqual(payments, {("空调", "格力"): (5, Decimal("5000.00"))})
+        self.assertEqual(h_total, (5, Decimal("5000.00")))
+        self.assertEqual(d_total, (2, Decimal("2000.00")))
+
+    def test_parse_payment_summary_rows_rejects_category_interleaving(self) -> None:
+        from processors.coupon_report import _parse_payment_summary_rows
+
+        rows: list[list[object]] = [
+            ["财务大类", "品牌", "补贴金额合计", "补贴金额计数"],
+            ["空调", "格力", 5000.0, 5],
+            ["手机", "华为", 2000.0, 2],
+            ["合计", None, 7000.0, 7],
+        ]
+        with self.assertRaisesRegex(ValueError, "品类交错"):
+            _parse_payment_summary_rows(rows, "test.xlsx")
+
 
 if __name__ == "__main__":
     unittest.main()
