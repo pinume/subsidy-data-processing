@@ -15,6 +15,7 @@ this is deferred until a second store is actually needed.
 from __future__ import annotations
 
 import math
+from collections.abc import Sequence
 from copy import copy
 from dataclasses import dataclass
 from datetime import datetime
@@ -562,7 +563,7 @@ def _sheet_rows_or_raise(
 
 def _validate_header(
     rows: list[list[object]],
-    expected_header: tuple[str, ...],
+    expected_header: Sequence[str],
     source_name: str,
     business_name: str,
 ) -> None:
@@ -832,6 +833,7 @@ def load_upload_data(
     dict[tuple[str, str], dict[str, Decimal]],
     dict[str, Decimal],
     dict[str, dict[str, int]],
+    dict[str, dict[str, Decimal]],
     list[CategoryCorrection],
     list[tuple[str, tuple[str, ...]]],
 ]:
@@ -980,6 +982,7 @@ def load_payment_data(
     dict[tuple[str, str], Decimal],
     Decimal,
     dict[str, int],
+    dict[str, Decimal],
     dict[str, PaymentDetailRecord],
     dict[str, tuple[PaymentDetailRecord, ...]],
 ]:
@@ -1446,7 +1449,10 @@ def _values_match(expected: object, actual: object) -> bool:
         return expected == actual
     if isinstance(expected, float) or isinstance(actual, float):
         try:
-            return math.isclose(float(expected), float(actual), rel_tol=1e-9, abs_tol=1e-9)
+            # 只要有一边是 float 就走数值比较；另一边可能是 str 或别的
+            # 类型，靠下面的 TypeError 兜住——这是有意为之的控制流，
+            # 不是漏判，所以在这里显式放行 mypy。
+            return math.isclose(float(expected), float(actual), rel_tol=1e-9, abs_tol=1e-9)  # type: ignore[arg-type]
         except (TypeError, ValueError):
             return False
     return expected == actual

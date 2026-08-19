@@ -77,7 +77,6 @@ module = [
     "processors.receipts",
     "processors.payment",
     "processors.coupon_report",
-    "processors.store_report",
     "processors.common.console",
     "processors.common.excel",
     "processors.coupons.sources",
