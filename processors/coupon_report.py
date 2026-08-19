@@ -13,6 +13,7 @@ module's public surface instead of reaching into
 processors.coupons.appliance's internals.
 """
 
+from collections.abc import Sequence
 from datetime import date, datetime
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
@@ -93,7 +94,7 @@ DIGITAL_SUMMARY_PROJECT_LABEL = "数码"
 def merged_reference_decisions(
     appliance_computation: appliance.CouponComputation,
     digital_computation: digital.CouponComputation,
-) -> list[tuple[object, ...]]:
+) -> Sequence[tuple[object, ...]]:
     """Label each project's decisions and interleave them into one report.
 
     Digital's decisions used to be computed and then thrown away, leaving its
@@ -226,7 +227,7 @@ def map_payment_appliance_key(category: str, brand: str) -> tuple[str, str]:
 
 
 def _parse_payment_summary_rows(
-    rows: list[list[object]],
+    rows: Sequence[Sequence[object]],
     source_name: str,
 ) -> tuple[
     dict[tuple[str, str], tuple[int, Decimal]],
@@ -380,18 +381,18 @@ def _parse_payment_summary_rows(
             f"分项合计 ({expected_grand_count}, {expected_grand_amount})"
         )
 
-    household_payments_agg: dict[tuple[str, str], list[object]] = {}
+    household_payments_agg: dict[tuple[str, str], tuple[int, Decimal]] = {}
     for cat, brand, amount, count in appliance_brand_rows:
         mapped_key = map_payment_appliance_key(cat, brand)
-        if mapped_key not in household_payments_agg:
-            household_payments_agg[mapped_key] = [0, Decimal("0")]
-        household_payments_agg[mapped_key][0] += count
-        household_payments_agg[mapped_key][1] += amount
+        prev_count, prev_amount = household_payments_agg.get(
+            mapped_key, (0, Decimal("0"))
+        )
+        household_payments_agg[mapped_key] = (
+            prev_count + count,
+            prev_amount + amount,
+        )
 
-    household_payments = {
-        key: (val[0], val[1])
-        for key, val in household_payments_agg.items()
-    }
+    household_payments = dict(household_payments_agg)
     return household_payments, appliance_total, digital_total
 
 
@@ -496,7 +497,7 @@ def append_payment_summary_columns(
         and r[2] == "已上传"
     ]
     app_brand_count_sum = sum(
-        (r[6] for r in appliance_brand_uploaded_rows if r[6] is not None),
+        (int(str(r[6])) for r in appliance_brand_uploaded_rows if r[6] is not None),
         0,
     )
     app_brand_amount_sum = sum(
@@ -537,7 +538,7 @@ def write_coupon_workbook(
     appliance_computation: appliance.CouponComputation,
     digital_computation: digital.CouponComputation,
     augmented_summary_rows: list[tuple[object, ...]],
-    decisions: list[tuple[object, ...]],
+    decisions: Sequence[tuple[object, ...]],
 ) -> None:
     """Write all 30 sheets in workbook order: 数据汇总, the two 明细总表, the
     group sheets, then the Processing Report."""
@@ -792,7 +793,7 @@ def _expected_coupon_output(
     appliance_computation: appliance.CouponComputation,
     digital_computation: digital.CouponComputation,
     augmented_summary_rows: list[tuple[object, ...]],
-    decisions: list[tuple[object, ...]],
+    decisions: Sequence[tuple[object, ...]],
 ) -> tuple[
     dict[str, list[tuple[object, ...]]],
     dict[str, set[tuple[tuple[int, int], tuple[int, int]]]],
@@ -843,7 +844,9 @@ def _expected_coupon_output(
             appliance.coupon_summary_project_merges(project_blocks)
         )
     )
-    expected_merges = {name: set() for name in expected_rows}
+    expected_merges: dict[str, set[tuple[tuple[int, int], tuple[int, int]]]] = {
+        name: set() for name in expected_rows
+    }
     expected_merges[appliance.SUMMARY_SHEET_NAME] = summary_merges
     return expected_rows, expected_merges
 
@@ -853,7 +856,7 @@ def validate_merged_coupon_output(
     appliance_computation: appliance.CouponComputation,
     digital_computation: digital.CouponComputation,
     augmented_summary_rows: list[tuple[object, ...]],
-    decisions: list[tuple[object, ...]],
+    decisions: Sequence[tuple[object, ...]],
 ) -> None:
     expected_rows, expected_merges = _expected_coupon_output(
         appliance_computation,
@@ -877,7 +880,7 @@ def validate_merged_coupon_output(
                 actual_rows,
                 expected_rows[sheet_name],
             )
-            actual_merges = set(sheet.merged_cell_ranges)
+            actual_merges = set(sheet.merged_cell_ranges or [])
             if actual_merges != expected_merges[sheet_name]:
                 raise RuntimeError(
                     f"{sheet_name}合并范围校验失败："

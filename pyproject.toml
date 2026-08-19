@@ -73,7 +73,6 @@ ignore_missing_imports = true
 # 这个列表只许缩短，不许加新条目——新文件必须一开始就是干净的。
 [[tool.mypy.overrides]]
 module = [
-    "processors.coupon_report",
     "processors.coupons.appliance",
 ]
 ignore_errors = true
