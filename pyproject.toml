@@ -68,17 +68,14 @@ files = ["main.py", "processors"]
 module = ["xlsxwriter.*"]
 ignore_missing_imports = true
 
-# 基线：引入 mypy 时这些文件共 49 个既有错误，一次清完不现实，
+# 基线：引入 mypy 时这些文件共 39 个既有错误，一次清完不现实，
 # 先把它们挡在门外，保证新代码和已清理的文件不再退化。
 # 这个列表只许缩短，不许加新条目——新文件必须一开始就是干净的。
 [[tool.mypy.overrides]]
 module = [
-    "processors.submitted",
     "processors.receipts",
     "processors.payment",
     "processors.coupon_report",
-    "processors.common.console",
-    "processors.common.excel",
     "processors.coupons.sources",
     "processors.coupons.matching",
     "processors.coupons.appliance",

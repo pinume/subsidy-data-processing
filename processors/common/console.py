@@ -56,7 +56,7 @@ _FULLWIDTH_FLOOR = 0x2E80
 
 def format_count(value: object) -> str:
     """Thousands-separated integer for counts (17682 -> 17,682)."""
-    return f"{int(value):,}"
+    return f"{int(str(value)):,}"
 
 
 def format_amount(value: object) -> str:
@@ -75,7 +75,7 @@ def display_path(path: object) -> str:
     working directory stays absolute rather than being misleading.
     """
     try:
-        return str(Path(path).resolve().relative_to(Path.cwd().resolve()))
+        return str(Path(str(path)).resolve().relative_to(Path.cwd().resolve()))
     except (OSError, ValueError):
         return str(path)
 
@@ -220,7 +220,7 @@ class ConsoleReporter:
         self.review_count += 1
         self._review.append((title, tuple(details)))
 
-    def output(self, path: object) -> None:
+    def output(self, path: Path | str) -> None:
         # Collected, not printed: paths are only shown once the transaction
         # commits (finish success); a rolled-back run prints none.
         self._outputs.append(Path(path))

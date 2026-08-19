@@ -173,11 +173,11 @@ def resolve_font() -> tuple[str, Path]:
                     path,
                 )
 
-        font_path = _find_font_file(file_names)
-        if font_path is not None:
+        discovered_path = _find_font_file(file_names)
+        if discovered_path is not None:
             return (
                 FONT_NAME if font_name == FONT_NAME else FALLBACK_FONT_NAME,
-                font_path,
+                discovered_path,
             )
 
     raise FileNotFoundError(
@@ -245,7 +245,7 @@ def width_measurer(value_font) -> Callable[[object], float]:
 
     if not widths_are_additive(value_font):
 
-        def measure(value: object) -> float:
+        def _measure_whole_string(value: object) -> float:
             text = measurement_text(value)
             if not text:
                 return 0
@@ -255,11 +255,11 @@ def width_measurer(value_font) -> Callable[[object], float]:
                 cache[text] = width
             return width
 
-        return measure
+        return _measure_whole_string
 
     character_widths: dict[str, float] = {}
 
-    def measure(value: object) -> float:
+    def _measure_by_character(value: object) -> float:
         text = measurement_text(value)
         if not text:
             return 0
@@ -275,7 +275,7 @@ def width_measurer(value_font) -> Callable[[object], float]:
             cache[text] = width
         return width
 
-    return measure
+    return _measure_by_character
 
 
 # 255 character units is Excel's widest column, at 7 pixels per unit.
@@ -558,10 +558,10 @@ def run_with_output_rollback(
                 dir=output_path.parent,
                 delete=False,
             ) as backup_file:
-                backup_path = Path(backup_file.name)
-            temporary_backups.add(backup_path)
-            shutil.copy2(output_path, backup_path)
-            backups[output_path] = backup_path
+                temp_backup_path = Path(backup_file.name)
+            temporary_backups.add(temp_backup_path)
+            shutil.copy2(output_path, temp_backup_path)
+            backups[output_path] = temp_backup_path
 
         return operation()
     except BaseException as operation_error:
