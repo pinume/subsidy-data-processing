@@ -287,6 +287,19 @@ def validate_template(workbook: Workbook) -> None:
         )
 
 
+def normalize_text(value: object) -> str:
+    if value is None:
+        return ""
+    text = str(value).strip()
+    replacements = {
+        "A.O.史密斯": "AO史密斯",
+        "美的系": "美的",
+        "东芝JX": "东芝",
+        "华为（终端）": "华为",
+    }
+    return replacements.get(text, text)
+
+
 @dataclass(frozen=True)
 class RowRule:
     row: int
@@ -352,17 +365,40 @@ UPLOAD_CATEGORIES = frozenset(
     if category
 )
 
+def _category_correction_exemptions(
+    rules: tuple[RowRule, ...],
+) -> frozenset[tuple[str, str, str]]:
+    """从行规则派生品类纠正的豁免键集合。
+
+    三个分量必须与 _correct_upload_category 的查表方式逐一对齐：
+    审核侧品类取 upload_categories，回款侧品类取 payment_categories
+    （两侧口径不同，例如 国产彩电/电视），品牌取两侧并集并统一过
+    normalize_text——查表用的 record.brand 是归一化后的值，这里不归一化
+    会造出永远匹配不上的键，让规则本该压制的纠正静默恢复，且不报错。
+
+    提取成函数是为了能对合成规则做回归测试：常量在导入期求值，
+    而 ROW_RULES 今天只有一条规则满足条件，覆盖不到上面这些坑。
+    """
+    return frozenset(
+        (
+            normalize_text(upload_category),
+            normalize_text(payment_category),
+            normalize_text(brand),
+        )
+        for rule in rules
+        if len(rule.upload_categories) > 1
+        for brand in (*rule.upload_brands, *rule.payment_brands)
+        for upload_category in rule.upload_categories
+        for payment_category in rule.payment_categories
+        if normalize_text(upload_category) != normalize_text(payment_category)
+    )
+
+
 # 品类纠正的豁免：某些品牌在行规则中横跨多个审核侧品类汇总到同一行，
 # 审核侧标注任一品类都是合理的，纠正反而会打破下游的合并逻辑。
 # 格式: frozenset of (审核侧品类, 回款侧品类, 品牌)
-CATEGORY_CORRECTION_EXEMPTIONS: frozenset[tuple[str, str, str]] = frozenset(
-    (upload_cat, other_cat, brand)
-    for rule in ROW_RULES
-    if len(rule.upload_categories) > 1
-    for brand in rule.upload_brands
-    for upload_cat in rule.upload_categories
-    for other_cat in rule.upload_categories
-    if upload_cat != other_cat
+CATEGORY_CORRECTION_EXEMPTIONS: frozenset[tuple[str, str, str]] = (
+    _category_correction_exemptions(ROW_RULES)
 )
 
 
@@ -484,19 +520,6 @@ def to_count(value: object) -> int:
     if not count.is_finite() or count != count.to_integral_value():
         raise ValueError(f"数量应为整数，实际为 {value!r}")
     return int(count)
-
-
-def normalize_text(value: object) -> str:
-    if value is None:
-        return ""
-    text = str(value).strip()
-    replacements = {
-        "A.O.史密斯": "AO史密斯",
-        "美的系": "美的",
-        "东芝JX": "东芝",
-        "华为（终端）": "华为",
-    }
-    return replacements.get(text, text)
 
 
 def safe_ratio(numerator: Decimal, denominator: Decimal) -> float | None:
