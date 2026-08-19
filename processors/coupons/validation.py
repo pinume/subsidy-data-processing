@@ -75,13 +75,13 @@ def validate_document_and_date_values(
     """Validate 单据号/单据日期 values and return a date or None."""
     if "收款" in str(document or ""):
         raise RuntimeError(f"销售用券第 {row_number} 行单据号仍包含“收款”")
-    if document_date not in (None, "") and not isinstance(
-        document_date, (date, datetime)
-    ):
-        raise RuntimeError(f"销售用券第 {row_number} 行单据日期不是日期值")
+    if document_date in (None, ""):
+        return None
     if isinstance(document_date, datetime):
         return document_date.date()
-    return document_date
+    if isinstance(document_date, date):
+        return document_date
+    raise RuntimeError(f"销售用券第 {row_number} 行单据日期不是日期值")
 
 
 def validate_remark_and_detail_values(
@@ -134,12 +134,16 @@ def validate_row_statuses_and_matched_subsidy(
         document_date = validate_document_and_date_values(
             document, row[1], row_number
         )
-        receipt_remark = remark_lookup.get(
-            (
-                normalize_document_number(document),
-                document_date,
-            ),
-            "",
+        receipt_remark = (
+            remark_lookup.get(
+                (
+                    normalize_document_number(document),
+                    document_date,
+                ),
+                "",
+            )
+            if document_date is not None
+            else ""
         )
         reference = normalize_receipt_identifier(
             row[summary_column]
@@ -148,7 +152,7 @@ def validate_row_statuses_and_matched_subsidy(
             expected_matched_rows > 0
             and row_number - 1 >= matched_start
         )
-        if expected_reference_supplement_matches:
+        if expected_reference_supplement_matches and document_date is not None:
             supplement_match = (
                 normalize_document_number(document),
                 document_date,

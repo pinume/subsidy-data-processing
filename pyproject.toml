@@ -75,6 +75,5 @@ ignore_missing_imports = true
 module = [
     "processors.coupon_report",
     "processors.coupons.appliance",
-    "processors.coupons.validation",
 ]
 ignore_errors = true
