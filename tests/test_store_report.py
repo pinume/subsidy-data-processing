@@ -870,6 +870,24 @@ class UploadCategoryCorrectionTests(unittest.TestCase):
         self.assertIn(("冰箱", "厨卫", "方太"), store_report.CATEGORY_CORRECTION_EXEMPTIONS)
         self.assertNotIn(("厨卫", "冰箱", "美的"), store_report.CATEGORY_CORRECTION_EXEMPTIONS)
 
+    def test_exemption_keys_use_payment_categories(self) -> None:
+        """回款侧品类与审核侧不同时，豁免键必须用回款侧品类。"""
+        rule = store_report.RowRule(
+            99, ("国产彩电", "冰箱"), ("海尔",), ("电视", "冰箱"), ("海尔",)
+        )
+        keys = store_report._category_correction_exemptions((rule,))
+        self.assertIn(("国产彩电", "电视", "海尔"), keys)
+        self.assertIn(("冰箱", "电视", "海尔"), keys)
+
+    def test_exemption_keys_normalize_brands(self) -> None:
+        """品牌别名必须归一化，否则与 record.brand 永远匹配不上。"""
+        rule = store_report.RowRule(
+            98, ("厨卫", "冰箱"), ("A.O.史密斯",), ("厨卫", "冰箱"), ("A.O.史密斯",)
+        )
+        keys = store_report._category_correction_exemptions((rule,))
+        self.assertIn(("厨卫", "冰箱", "AO史密斯"), keys)
+        self.assertNotIn(("厨卫", "冰箱", "A.O.史密斯"), keys)
+
     def test_exempts_kitchen_fotile_from_refrigerator_correction(self) -> None:
         amounts, _totals, _metrics, corrections, reviews = self._load(
             [
