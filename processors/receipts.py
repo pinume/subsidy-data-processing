@@ -6,6 +6,7 @@ variant, so this lives at the top level rather than under either project's
 package.
 """
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import date, datetime
 from pathlib import Path
@@ -185,11 +186,13 @@ def read_receipt_rows(source: Path) -> list[list[object]]:
         header_row = next(rows_iter, None)
         if title_row is None or header_row is None:
             raise ValueError(f"{source.name} 缺少总标题行或字段标题行")
-        header_row = [normalize_calamine_value(value) for value in header_row]
+        normalized_header: list[object] = [
+            normalize_calamine_value(value) for value in header_row
+        ]
 
         source_headers = [
             str(value).strip() if value is not None else ""
-            for value in header_row
+            for value in normalized_header
         ]
         missing_headers = [
             header for header in RECEIPTS_SOURCE_HEADER
@@ -204,14 +207,14 @@ def read_receipt_rows(source: Path) -> list[list[object]]:
             source_headers.index(header) for header in RECEIPTS_SOURCE_HEADER
         ]
 
-        def select(values: list[object]) -> list[object]:
+        def select(values: Sequence[object]) -> list[object]:
             return [
                 normalize_calamine_value(values[index])
                 if index < len(values) else None
                 for index in source_column_indexes
             ]
 
-        rows: list[list[object]] = [select(header_row)]
+        rows: list[list[object]] = [select(normalized_header)]
         for source_row in rows_iter:
             rows.append(select(source_row))
 
@@ -301,26 +304,27 @@ def receipt_output_sort_key(
     receipt_date: object,
     document_number: object,
     product_name: object,
-) -> tuple[int, str, bool, date, str, str]:
-    """Sort by 备注、日期、单据号、商品名称; missing dates sort last.
+) -> tuple[int, str | None, bool, date, str, str]:
+    """Group rows by known remark order, then date, then document/product.
 
-    An empty remark sorts before every actual remark, so ordinary sales stay
-    together at the top and the highlighted return/exchange rows form the
-    trailing section of the output. Remark groups use the explicit business
+    Remarks that match the national subsidy program sort in the business
     order above rather than their display text, so copy changes cannot
     silently reorder the output. Unknown remarks sort after all known groups.
     """
     normalized_remark = normalize_receipt_identifier(remark) or None
     known_remark = normalized_remark in RECEIPTS_REMARK_ORDER
-    normalized_date = (
-        receipt_date.date() if isinstance(receipt_date, datetime) else receipt_date
+    normalized_date: date | None = (
+        receipt_date.date() if isinstance(receipt_date, datetime)
+        else receipt_date if isinstance(receipt_date, date)
+        else None
     )
-    has_no_date = not isinstance(normalized_date, date)
+    has_no_date = normalized_date is None
+    sort_date: date = date.max if normalized_date is None else normalized_date
     return (
         RECEIPTS_REMARK_ORDER.get(normalized_remark, len(RECEIPTS_REMARK_ORDER)),
         "" if known_remark else normalized_remark,
         has_no_date,
-        date.max if has_no_date else normalized_date,
+        sort_date,
         normalize_receipt_identifier(document_number),
         normalize_receipt_identifier(product_name),
     )
@@ -700,9 +704,23 @@ def validate_receipts_output(
             ]
             expected = [comparable(tuple(issue)) for issue in expected_issues]
             if actual_issues != expected:
+                if len(actual_issues) != len(expected):
+                    raise RuntimeError(
+                        f"{ISSUES_SHEET_NAME}工作表行数校验失败："
+                        f"预期 {len(expected)} 条，实际 {len(actual_issues)} 条"
+                    )
+                # 条数相同才走到这里，逐行比对点名首个差异行——与本文件
+                # 其余校验一致，报"第几行不对"而不是只报总数。
+                first_row, wanted, actual = next(
+                    (row, w, a)
+                    for row, (a, w) in enumerate(
+                        zip(actual_issues, expected), start=2
+                    )
+                    if a != w
+                )
                 raise RuntimeError(
-                    f"{ISSUES_SHEET_NAME}工作表内容校验失败：预期 {len(expected)} 条，"
-                    f"实际 {len(actual_issues)} 条"
+                    f"{ISSUES_SHEET_NAME}工作表第 {first_row} 行内容校验失败："
+                    f"预期 {wanted}，实际 {actual}"
                 )
     finally:
         workbook.close()
@@ -758,10 +776,10 @@ def _write_receipts_workbook(
                 )
 
         measure = width_measurer(measurement_font)
-        maximum_widths = [measure(value) for value in RECEIPTS_OUTPUT_HEADER]
+        maximum_widths = [measure(header) for header in RECEIPTS_OUTPUT_HEADER]
         sheet.set_row(0, RECEIPTS_ROW_HEIGHT)
-        for column, value in enumerate(RECEIPTS_OUTPUT_HEADER):
-            sheet.write(0, column, value, header_format)
+        for column, header_name in enumerate(RECEIPTS_OUTPUT_HEADER):
+            sheet.write(0, column, header_name, header_format)
 
         for row_number, row in enumerate(output_rows, start=1):
             sheet.set_row(row_number, RECEIPTS_ROW_HEIGHT)

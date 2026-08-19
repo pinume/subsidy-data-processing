@@ -735,11 +735,30 @@ class IssuesSheetRoundTripTest(unittest.TestCase):
                 [("缺少匹配键", "5", "", "错误说明")],
             )
 
-            with self.assertRaisesRegex(RuntimeError, "问题明细工作表内容校验失败"):
+            with self.assertRaisesRegex(RuntimeError, "问题明细工作表第 2 行内容校验失败"):
                 receipts.validate_receipts_output(
                     path,
                     [],
                     [("缺少匹配键", "5", "", "说明")],
+                )
+
+    def test_validation_rejects_mismatched_issue_counts(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "收款单统计.xlsx"
+            receipts._write_receipts_workbook(
+                path,
+                [],
+                [("缺少匹配键", "5", "", "错误说明")],
+            )
+
+            with self.assertRaisesRegex(RuntimeError, "问题明细工作表行数校验失败"):
+                receipts.validate_receipts_output(
+                    path,
+                    [],
+                    [
+                        ("缺少匹配键", "5", "", "错误说明"),
+                        ("原票号未匹配", "6", "20260101ZH0001", "未找到原单"),
+                    ],
                 )
 
 
