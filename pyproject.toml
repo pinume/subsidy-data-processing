@@ -22,6 +22,9 @@ dev = [
     "pytest>=9.1.1",
     "pytest-randomly>=4.1.0",
     "ruff==0.16.1",
+    "mypy>=1.15",
+    "types-openpyxl",
+    "types-PyYAML",
 ]
 
 # Limit lockfile resolution to Linux; runtime still enforces via require_linux().
@@ -55,3 +58,31 @@ select = [
     "F",
     "I",
 ]
+
+[tool.mypy]
+python_version = "3.12"
+files = ["main.py", "processors"]
+
+# xlsxwriter 不发布 py.typed，也没有第三方 stubs。
+[[tool.mypy.overrides]]
+module = ["xlsxwriter.*"]
+ignore_missing_imports = true
+
+# 基线：引入 mypy 时这些文件共 49 个既有错误，一次清完不现实，
+# 先把它们挡在门外，保证新代码和已清理的文件不再退化。
+# 这个列表只许缩短，不许加新条目——新文件必须一开始就是干净的。
+[[tool.mypy.overrides]]
+module = [
+    "processors.submitted",
+    "processors.receipts",
+    "processors.payment",
+    "processors.coupon_report",
+    "processors.store_report",
+    "processors.common.console",
+    "processors.common.excel",
+    "processors.coupons.sources",
+    "processors.coupons.matching",
+    "processors.coupons.appliance",
+    "processors.coupons.validation",
+]
+ignore_errors = true
