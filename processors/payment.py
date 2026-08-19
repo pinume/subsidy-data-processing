@@ -15,6 +15,7 @@ from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from pathlib import Path
 
 from openpyxl import load_workbook
+from openpyxl.workbook.workbook import Workbook as OpenpyxlWorkbook
 from python_calamine import CalamineWorkbook
 from xlsxwriter import Workbook
 
@@ -407,7 +408,7 @@ def _collect_normalized_detail(
                     f"{subsidy_header!r} 是公式但没有缓存计算结果；"
                     "请先用 Excel/WPS 打开并保存，或将公式转换为数值"
                 )
-        encoded_category = normalized[category_index]
+        encoded_category = str(normalized[category_index]).strip() if normalized[category_index] is not None else ""
         financial_category = profile.category_map.get(encoded_category)
         if financial_category is None:
             raise ValueError(
@@ -689,7 +690,7 @@ def _process_sources(
         source_book = CalamineWorkbook.from_path(str(path))
         # Formula and error cell types aren't available from calamine's cached
         # values, so a blank subsidy needs a lazy openpyxl check of that cell.
-        formula_book: object | None = None
+        formula_book: OpenpyxlWorkbook | None = None
 
         def get_formula_book(path=path):
             nonlocal formula_book

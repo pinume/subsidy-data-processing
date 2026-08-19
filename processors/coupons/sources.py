@@ -433,7 +433,8 @@ def _read_header_row(path: Path) -> tuple[object, ...]:
         sheet = workbook.get_sheet_by_index(0)
         rows_iter = calamine_rows(sheet)
         next(rows_iter, None)  # title row
-        return tuple(next(rows_iter, None) or ())
+        second_row = next(rows_iter, None)
+        return tuple(second_row) if second_row is not None else ()
     finally:
         workbook.close()
 

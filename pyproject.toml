@@ -74,10 +74,7 @@ ignore_missing_imports = true
 [[tool.mypy.overrides]]
 module = [
     "processors.receipts",
-    "processors.payment",
     "processors.coupon_report",
-    "processors.coupons.sources",
-    "processors.coupons.matching",
     "processors.coupons.appliance",
     "processors.coupons.validation",
 ]

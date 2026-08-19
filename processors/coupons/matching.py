@@ -317,7 +317,10 @@ def fill_coupon_remarks(
     unmatched_rows: list[list[object]] = []
     matched_subsidy_total = Decimal("0")
     for row in rows[1:]:
-        key = (normalize_document_number(row[DOCUMENT_INDEX]), row[DATE_INDEX])
+        document_date = row[DATE_INDEX]
+        if not isinstance(document_date, date):
+            raise ValueError(f"行单据日期必须为 date 类型，实际为 {document_date!r}")
+        key = (normalize_document_number(row[DOCUMENT_INDEX]), document_date)
         remark = remark_lookup.get(key, "")
         row[REMARK_INDEX] = remark
         if remark:
@@ -358,7 +361,7 @@ def reference_decision(
 
 def _propose_corrections(
     included_rows: list[list[object]],
-    correction_index: dict,
+    correction_index: ReferenceCorrectionIndex,
     reference_universe: set[str],
     protected: set[int],
 ) -> tuple[dict[int, str], Counter[str], list[ReferenceDecision]]:
