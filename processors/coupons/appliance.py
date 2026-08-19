@@ -11,6 +11,7 @@ with a bundle of feature flags.
 
 import re
 from collections import Counter
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import date, datetime
 from decimal import Decimal, InvalidOperation
@@ -195,7 +196,10 @@ def fill_coupon_reference_supplement(
         ).upper()
         if current_reference in reference_universe:
             continue
-        key = (normalize_document_number(row[0]), row[1])
+        document_date = row[1]
+        if not isinstance(document_date, date):
+            continue
+        key = (normalize_document_number(row[0]), document_date)
         references = reference_lookup.get(key)
         if references is None:
             continue
@@ -357,7 +361,7 @@ def build_coupon_summary(
             if amount == 0:
                 zero_subsidy_count += 1
 
-    summary_rows = [
+    summary_rows: list[tuple[object, ...]] = [
         (
             *key,
             grouped_counts[key],
@@ -703,6 +707,7 @@ def compute_coupon_data(
         uploaded_subsidy_total,
     )
     group_sheets = build_coupon_group_sheets(rows, matched_count)
+    actual_source_total: Decimal | None
     if source_total is _SOURCE_TOTAL_UNSET:
         # rows and source_total are read together above; a caller that
         # supplies rows must supply source_total too, or the 合计 would need
@@ -712,7 +717,10 @@ def compute_coupon_data(
                 "compute_coupon_data() 收到 rows 但未收到 source_total："
                 "两者必须同时来自同一次 read_coupon_export()"
             )
-        source_total = export.source_total
+        actual_source_total = export.source_total
+    else:
+        assert source_total is None or isinstance(source_total, Decimal)
+        actual_source_total = source_total
     computed_total = Decimal(str(summary_rows[-1][4]))
 
     return CouponComputation(
@@ -736,7 +744,7 @@ def compute_coupon_data(
         uploaded_subsidy_count=uploaded_subsidy_count,
         uploaded_subsidy_total=uploaded_subsidy_total,
         zero_subsidy_count=zero_subsidy_count,
-        source_total=source_total,
+        source_total=actual_source_total,
         computed_total=computed_total,
         summary_rows=summary_rows,
         group_sheets=group_sheets,
@@ -791,7 +799,7 @@ def _validate_detail_ordering_and_brands(
 
 def _validate_appliance_summary_rows(
     computation: CouponComputation,
-    extra_summary_rows: list[tuple[object, ...]],
+    extra_summary_rows: Sequence[tuple[object, ...]],
     brand_column: int,
     remark_column: int,
     detail_column: int,
@@ -817,7 +825,7 @@ def _validate_appliance_summary_rows(
     uploaded_row, unuploaded_row, total_row = actual_summary_rows[
         tail_start:tail_start + 3
     ]
-    if sum(row[3] for row in brand_summary_rows) != (
+    if sum(int(str(row[3])) for row in brand_summary_rows) != (
         expected_data_rows
         - expected_matched_rows
         - expected_excluded_category_rows
@@ -834,7 +842,9 @@ def _validate_appliance_summary_rows(
             "销售用券汇总“已上传”未与家电_已上传的补贴金额一致："
             f"{uploaded_row[3]} / {uploaded_row[4]}"
         )
-    if uploaded_row[3] + unuploaded_row[3] != total_row[3]:
+    if int(str(uploaded_row[3])) + int(str(unuploaded_row[3])) != int(
+        str(total_row[3])
+    ):
         raise RuntimeError("销售用券汇总合计数量校验失败")
     if Decimal(str(uploaded_row[4])) + Decimal(str(unuploaded_row[4])) != (
         Decimal(str(total_row[4]))
@@ -876,9 +886,13 @@ def _validate_appliance_summary_rows(
 
     seen_brand_keys: set[tuple[str, str, str]] = set()
     actual_brand_returns: dict[tuple[str, str], int] = {}
-    for row in brand_summary_rows:
-        category, brand, status = row[0], row[1], row[2]
-        returned_val = row[5]
+    for summary_row in brand_summary_rows:
+        category, brand, status = (
+            str(summary_row[0] or ""),
+            str(summary_row[1] or ""),
+            str(summary_row[2] or ""),
+        )
+        returned_val = summary_row[5]
         if status not in ("已上传", "未上传"):
             raise RuntimeError(f"销售用券汇总品牌行状态无效：{status!r}")
         key = (category, brand, status)
@@ -909,7 +923,7 @@ def _validate_appliance_summary_rows(
 
 def validate_computation(
     computation: CouponComputation,
-    extra_summary_rows: list[tuple[object, ...]] = (),
+    extra_summary_rows: Sequence[tuple[object, ...]] = (),
 ) -> None:
     """Validate business invariants before serializing the workbook."""
     rows = computation.rows
