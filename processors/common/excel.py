@@ -3,7 +3,7 @@ import re
 import shutil
 import sys
 import time
-from collections.abc import Callable, Iterable, Iterator
+from collections.abc import Callable, Iterable, Iterator, Sequence
 from dataclasses import dataclass
 from datetime import date, datetime
 from pathlib import Path
@@ -12,6 +12,8 @@ from tempfile import NamedTemporaryFile
 from openpyxl import Workbook
 from PIL import ImageFont
 from python_calamine import CalamineSheet
+
+from processors.common.console import ConsoleReporter
 
 FONT_NAME = "Maple Mono NF CN"
 FALLBACK_FONT_NAME = "微软雅黑"
@@ -595,3 +597,22 @@ def run_with_output_rollback(
             raise OutputCleanupError(
                 "输出已提交，备份清理失败：" + "；".join(cleanup_errors)
             )
+
+
+def warn_if_stale(
+    reporter: ConsoleReporter,
+    output_file: Path,
+    raw_files: Sequence[Path],
+    *,
+    warning_title: str,
+    suggestion: str,
+) -> None:
+    """If output_file is older than any raw_file, log a review_required warning."""
+    if output_file.exists() and raw_files:
+        latest_raw_mtime = max(f.stat().st_mtime for f in raw_files)
+        if output_file.stat().st_mtime < latest_raw_mtime:
+            reporter.review_required(
+                warning_title,
+                (f"{output_file.name} 的修改时间早于源数据文件，{suggestion}",),
+            )
+

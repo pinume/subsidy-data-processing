@@ -2051,5 +2051,60 @@ class RollbackTests(unittest.TestCase):
             self.assertEqual(list(output_dir.iterdir()), [])
 
 
+class StoreReportFreshnessAndEmptyBrandTest(unittest.TestCase):
+    def test_load_upload_data_rejects_empty_brand_in_detail_row(self) -> None:
+        workbook = Workbook()
+        sheet = workbook.active
+        sheet.title = store_report.UPLOAD_SHEET_NAME
+        sheet.append(store_report.UPLOAD_HEADER)
+        sheet.append(("冰箱", "海尔", "已上传", 1, 100))
+        sheet.append(("家电", None, "已上传", 0, 0))
+        sheet.append((None, None, "未上传", 0, 0))
+        sheet.append((None, None, "合计", 0, 0))
+        sheet.append(("数码", None, "已上传", 0, 0))
+        sheet.append((None, None, "未上传", 0, 0))
+        sheet.append((None, None, "合计", 0, 0))
+        _write_upload_detail_sheet(
+            workbook,
+            [
+                _upload_detail_row(
+                    document="DOC_NO_BRAND",
+                    category="冰箱",
+                    brand="",
+                    reference="12345678901N",
+                    subsidy=100,
+                    remark="已上传",
+                )
+            ],
+        )
+        with TemporaryDirectory() as directory:
+            upload_file = Path(directory) / "自定义审核明细.xlsx"
+            workbook.save(upload_file)
+            with self.assertRaisesRegex(
+                ValueError,
+                "自定义审核明细.xlsx 存在品牌为空的明细行（单据号：DOC_NO_BRAND，品类：冰箱）",
+            ):
+                store_report.load_upload_data(upload_file)
+
+    def test_check_dependency_freshness_warns_when_dependency_outdated(self) -> None:
+        import os
+        with TemporaryDirectory() as directory:
+            data_dir = Path(directory)
+            coupon_raw = data_dir / "2026年销售用券情况统计.xlsx"
+            coupon_raw.write_bytes(b"mock coupon raw")
+            out_file = data_dir / "审核明细.xlsx"
+            out_file.write_bytes(b"mock upload")
+
+            os.utime(out_file, (1000, 1000))
+            os.utime(coupon_raw, (2000, 2000))
+
+            output = io.StringIO()
+            reporter = store_report.ConsoleReporter(stream=output)
+            with patch.dict(store_report.__dict__, {"DATA_DIR": data_dir, "UPLOAD_FILE": out_file}):
+                store_report._check_dependency_freshness(reporter)
+            self.assertTrue(any("审核明细依赖产物可能已过期" in r[0] for r in reporter._review))
+
+
 if __name__ == "__main__":
     unittest.main()
+

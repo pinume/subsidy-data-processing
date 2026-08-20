@@ -28,12 +28,14 @@ from openpyxl.styles import Alignment, Font
 from openpyxl.workbook.workbook import Workbook
 from python_calamine import CalamineWorkbook
 
+from processors import payment
 from processors.common.config import load_report_brand_mapping
 from processors.common.console import ConsoleReporter
 from processors.common.excel import (
     calamine_rows,
     resolve_font,
     save_workbook_atomically,
+    warn_if_stale,
 )
 from processors.common.paths import find_data_files, resolve_unique_file
 from processors.common.references import normalize_reference
@@ -42,6 +44,7 @@ from processors.coupon_report import SUBSIDY_YEAR
 from processors.coupon_report import SUMMARY_CORE_HEADER as UPLOAD_HEADER
 from processors.coupon_report import SUMMARY_SHEET_NAME as UPLOAD_SHEET_NAME
 from processors.coupons import appliance as coupon_appliance
+from processors.coupons import sources as coupon_sources
 from processors.coupons.matching import as_currency
 from processors.payment import APPLIANCE_CATEGORY_MAP as PAYMENT_CATEGORY_MAP
 from processors.payment import DERIVED_HEADERS as PAYMENT_DERIVED_HEADERS
@@ -766,6 +769,7 @@ def _aggregate_upload_detail(
     detail_rows: list[list[object]],
     payment_index: dict[str, PaymentDetailRecord],
     ambiguous_refs: dict[str, tuple[PaymentDetailRecord, ...]],
+    source_name: str = UPLOAD_FILE.name,
 ) -> tuple[
     dict[tuple[str, str], dict[str, Decimal]],  # 纠正前
     dict[tuple[str, str], dict[str, Decimal]],  # 纠正后
@@ -798,9 +802,14 @@ def _aggregate_upload_detail(
         remark = normalize_text(row[remark_index])
         if category == "数码" or remark not in ("已上传", "未上传"):
             continue
+        document_number = str(row[document_index] or "")
+        if not brand:
+            raise ValueError(
+                f"{source_name} 存在品牌为空的明细行（单据号：{document_number}，品类：{category}），"
+                "请先在源数据或配置中补全品牌识别规则"
+            )
         amount = to_decimal(row[subsidy_index])
         reference = normalize_reference(row[reference_index])
-        document_number = str(row[document_index] or "")
 
         # 纠正前聚合：与数据汇总品牌行逐键比对（load_upload_data 内校验），
         # 任何一行被意外跳过、状态改名或品牌归一化漂移都会在这里暴露。
@@ -943,6 +952,7 @@ def load_upload_data(
         detail_rows,
         payment_index,
         ambiguous_refs,
+        source_name=upload_file.name,
     )
 
     if pre_amounts != summary_amounts:
@@ -1622,7 +1632,33 @@ def report_category_corrections(
     reporter.corrected(f"审核明细品类纠正：{len(corrections)} 条", tuple(details))
 
 
+def _check_dependency_freshness(reporter: ConsoleReporter) -> None:
+    data_dir = globals().get("DATA_DIR")
+    if data_dir is None or not data_dir.exists():
+        return
+
+    warn_if_stale(
+        reporter,
+        UPLOAD_FILE,
+        find_data_files(
+            data_dir, coupon_sources.COUPON_STATISTICS_KEYWORD, (".xlsx",)
+        ),
+        warning_title="审核明细依赖产物可能已过期",
+        suggestion="建议先运行模式 4：审核明细",
+    )
+    warn_if_stale(
+        reporter,
+        PAYMENT_FILE,
+        find_data_files(
+            data_dir, payment.SOURCE_FILE_KEYWORD, payment.SUPPORTED_SUFFIXES
+        ),
+        warning_title="回款明细依赖产物可能已过期",
+        suggestion="建议先运行模式 3：回款明细",
+    )
+
+
 def process_store_report(reporter: ConsoleReporter) -> None:
+    _check_dependency_freshness(reporter)
     timestamp = current_timestamp()
     font_name, _ = resolve_font()
     payment_data, digital_payment, payment_counts, payment_amounts, payment_index, ambiguous_refs = (
