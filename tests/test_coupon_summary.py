@@ -1296,6 +1296,9 @@ class SheetHeaderContractTests(unittest.TestCase):
         self.assertIn("备注", coupons_digital.COUPON_OUTPUT_HEADER)
         self.assertEqual(appliance.DETAILS_SHEET_NAME, "家电-明细总表")
         self.assertEqual(coupons_digital.DETAILS_SHEET_NAME, "数码-明细总表")
+        self.assertEqual(
+            appliance.DIGITAL_DETAILS_SHEET_NAME, coupons_digital.DETAILS_SHEET_NAME
+        )
 
 
 class SourceTotalGapTest(unittest.TestCase):

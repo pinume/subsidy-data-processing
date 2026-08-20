@@ -103,10 +103,10 @@ LITERAL_EXPECTED_MERGED_RANGES: frozenset[str] = frozenset({
 })
 
 LITERAL_ROW_RULES: tuple[store_report.RowRule, ...] = (
-    store_report.RowRule(3, ("冰箱",), ("海尔", "卡萨帝"), ("冰箱",), ("海尔", "卡萨帝"), fill_digital=False),
-    store_report.RowRule(4, ("洗衣机",), ("海尔", "卡萨帝"), ("洗衣机",), ("海尔", "卡萨帝"), fill_digital=False),
-    store_report.RowRule(5, ("冰箱",), ("美的", "COLMO", "东芝"), ("冰箱",), ("美的系", "COLMO", "东芝JX"), fill_digital=False),
-    store_report.RowRule(6, ("洗衣机",), ("美的", "小天鹅", "COLMO"), ("洗衣机",), ("美的系", "小天鹅", "COLMO"), fill_digital=False),
+    store_report.RowRule(3, ("冰箱",), ("海尔",), ("冰箱",), ("海尔",), fill_digital=False),
+    store_report.RowRule(4, ("洗衣机",), ("海尔",), ("洗衣机",), ("海尔",), fill_digital=False),
+    store_report.RowRule(5, ("冰箱",), ("美的", "东芝"), ("冰箱",), ("美的",), fill_digital=False),
+    store_report.RowRule(6, ("洗衣机",), ("美的",), ("洗衣机",), ("美的",), fill_digital=False),
     store_report.RowRule(7, ("冰箱",), ("西门子",), ("冰箱",), ("西门子",), fill_digital=False),
     store_report.RowRule(8, ("洗衣机",), ("西门子",), ("洗衣机",), ("西门子",), fill_digital=False),
     store_report.RowRule(9, ("冰箱",), ("博世",), ("冰箱",), ("博世",), fill_digital=False),
@@ -117,20 +117,20 @@ LITERAL_ROW_RULES: tuple[store_report.RowRule, ...] = (
     store_report.RowRule(14, ("国产彩电",), ("海信",), ("电视",), ("海信",), fill_digital=False),
     store_report.RowRule(15, ("国产彩电",), ("创维",), ("电视",), ("创维",), fill_digital=False),
     store_report.RowRule(16, ("国产彩电",), ("TCL",), ("电视",), ("TCL",), fill_digital=False),
-    store_report.RowRule(17, ("国产彩电",), ("海尔", "卡萨帝"), ("电视",), ("海尔", "卡萨帝"), fill_digital=False),
-    store_report.RowRule(18, ("国产彩电",), ("华为", "华为（终端）"), ("电视",), ("华为", "华为（终端）"), fill_digital=False),
+    store_report.RowRule(17, ("国产彩电",), ("海尔",), ("电视",), ("海尔",), fill_digital=False),
+    store_report.RowRule(18, ("国产彩电",), ("华为",), ("电视",), ("华为",), fill_digital=False),
     store_report.RowRule(19, ("空调",), ("格力",), ("空调",), ("格力",), fill_digital=False),
     store_report.RowRule(20, ("空调",), ("美的",), ("空调",), ("美的",), fill_digital=False),
-    store_report.RowRule(21, ("空调",), ("海尔", "卡萨帝"), ("空调",), ("海尔", "卡萨帝"), fill_digital=False),
+    store_report.RowRule(21, ("空调",), ("海尔",), ("空调",), ("海尔",), fill_digital=False),
     store_report.RowRule(22, ("空调",), ("海信",), ("空调",), ("海信",), fill_digital=False),
     store_report.RowRule(23, ("空调",), ("奥克斯",), ("空调",), ("奥克斯",), fill_digital=False),
     store_report.RowRule(24, ("空调",), ("科龙",), ("空调",), ("科龙",), fill_digital=False),
     store_report.RowRule(25, ("空调",), ("TCL",), ("空调",), ("TCL",), fill_digital=False),
     store_report.RowRule(26, ("厨卫",), ("老板",), ("厨卫",), ("老板",), fill_digital=False),
     store_report.RowRule(27, ("厨卫", "冰箱"), ("方太",), ("厨卫", "冰箱"), ("方太",), fill_digital=False),
-    store_report.RowRule(28, ("厨卫",), ("AO史密斯", "A.O.史密斯"), ("厨卫",), ("AO史密斯", "A.O.史密斯"), fill_digital=False),
-    store_report.RowRule(29, ("厨卫",), ("海尔", "卡萨帝"), ("厨卫",), ("海尔", "卡萨帝"), fill_digital=False),
-    store_report.RowRule(30, ("厨卫",), ("美的", "COLMO"), ("厨卫",), ("美的系", "美的", "COLMO"), fill_digital=False),
+    store_report.RowRule(28, ("厨卫",), ("AO史密斯",), ("厨卫",), ("AO史密斯",), fill_digital=False),
+    store_report.RowRule(29, ("厨卫",), ("海尔",), ("厨卫",), ("海尔",), fill_digital=False),
+    store_report.RowRule(30, ("厨卫",), ("美的",), ("厨卫",), ("美的",), fill_digital=False),
     store_report.RowRule(31, ("厨卫",), ("万家乐",), ("厨卫",), ("万家乐",), fill_digital=False),
     store_report.RowRule(32, (), (), ("数码",), (), fill_digital=True),
 )
@@ -140,21 +140,21 @@ LITERAL_BRAND_GROUP_RULES: tuple[store_report.BrandGroupRule, ...] = (
         40,
         "海尔系",
         (
-            store_report.BrandGroupCategory("冰箱", "冰箱", ("海尔", "卡萨帝")),
-            store_report.BrandGroupCategory("洗衣机", "洗衣机", ("海尔", "卡萨帝")),
-            store_report.BrandGroupCategory("国产彩电", "电视", ("海尔", "卡萨帝")),
-            store_report.BrandGroupCategory("空调", "空调", ("海尔", "卡萨帝")),
-            store_report.BrandGroupCategory("厨卫", "厨卫", ("海尔", "卡萨帝")),
+            store_report.BrandGroupCategory("冰箱", "冰箱", ("海尔",)),
+            store_report.BrandGroupCategory("洗衣机", "洗衣机", ("海尔",)),
+            store_report.BrandGroupCategory("国产彩电", "电视", ("海尔",)),
+            store_report.BrandGroupCategory("空调", "空调", ("海尔",)),
+            store_report.BrandGroupCategory("厨卫", "厨卫", ("海尔",)),
         ),
     ),
     store_report.BrandGroupRule(
         41,
         "美的系",
         (
-            store_report.BrandGroupCategory("冰箱", "冰箱", ("美的", "COLMO", "东芝")),
-            store_report.BrandGroupCategory("洗衣机", "洗衣机", ("美的", "小天鹅", "COLMO")),
+            store_report.BrandGroupCategory("冰箱", "冰箱", ("美的", "东芝")),
+            store_report.BrandGroupCategory("洗衣机", "洗衣机", ("美的",)),
             store_report.BrandGroupCategory("空调", "空调", ("美的",)),
-            store_report.BrandGroupCategory("厨卫", "厨卫", ("美的", "COLMO")),
+            store_report.BrandGroupCategory("厨卫", "厨卫", ("美的",)),
         ),
     ),
     store_report.BrandGroupRule(
@@ -175,7 +175,7 @@ LITERAL_BRAND_GROUP_RULES: tuple[store_report.BrandGroupRule, ...] = (
         "海信系",
         (
             store_report.BrandGroupCategory("国产彩电", "电视", ("海信",)),
-            store_report.BrandGroupCategory("空调", "空调", ("海信", "科龙")),
+            store_report.BrandGroupCategory("空调", "空调", ("海信",)),
         ),
     ),
     store_report.BrandGroupRule(
@@ -1338,11 +1338,11 @@ class BrandGroupTests(unittest.TestCase):
         rule = next(rule for rule in store_report.BRAND_GROUP_RULES if rule.name == "海尔系")
         upload_data = {
             ("冰箱", "海尔"): {"已上传": Decimal("100"), "未上传": Decimal("20")},
-            ("国产彩电", "卡萨帝"): {"已上传": Decimal("50"), "未上传": Decimal("0")},
+            ("国产彩电", "海尔"): {"已上传": Decimal("50"), "未上传": Decimal("0")},
         }
         payment_data = {
             ("冰箱", "海尔"): Decimal("60"),
-            ("电视", "卡萨帝"): Decimal("30"),
+            ("电视", "海尔"): Decimal("30"),
         }
 
         occurred, uploaded, paid = store_report.sum_brand_group(upload_data, payment_data, rule.categories)
@@ -1385,7 +1385,7 @@ class BrandGroupTests(unittest.TestCase):
         sheet = Workbook().active
         upload_data = {
             ("冰箱", "海尔"): {"已上传": Decimal("100"), "未上传": Decimal("20")},
-            ("国产彩电", "卡萨帝"): {"已上传": Decimal("50"), "未上传": Decimal("10")},
+            ("国产彩电", "海尔"): {"已上传": Decimal("50"), "未上传": Decimal("10")},
             ("空调", "美的"): {"已上传": Decimal("200"), "未上传": Decimal("30")},
             ("空调", "格力"): {"已上传": Decimal("80"), "未上传": Decimal("15")},
             ("冰箱", "西门子"): {"已上传": Decimal("70"), "未上传": Decimal("10")},
@@ -1395,7 +1395,7 @@ class BrandGroupTests(unittest.TestCase):
         }
         payment_data = {
             ("冰箱", "海尔"): Decimal("60"),
-            ("电视", "卡萨帝"): Decimal("30"),
+            ("电视", "海尔"): Decimal("30"),
             ("空调", "美的"): Decimal("115"),
             ("空调", "格力"): Decimal("38"),
             ("冰箱", "西门子"): Decimal("32"),
@@ -1658,6 +1658,30 @@ class TemplateValidationTests(unittest.TestCase):
         self.assertIn("冰箱", store_report.UPLOAD_CATEGORIES)
         self.assertIn("厨卫", store_report.UPLOAD_CATEGORIES)
         self.assertNotIn("电视", store_report.UPLOAD_CATEGORIES)
+
+    def test_rules_never_list_a_normalized_away_brand(self) -> None:
+        """除模板物理保留行（第 24 行科龙）外，规则不应列出已被上游归一化掉的别名。"""
+        from processors.common.config import (
+            load_brand_mapping,
+            load_report_brand_mapping,
+        )
+
+        impossible = set(load_brand_mapping()) | set(load_report_brand_mapping())
+        # 第 24 行在当前模板中物理存在“科龙”标签，保留行规则以对齐模板契约
+        impossible.discard("科龙")
+
+        listed = {
+            b
+            for r in store_report.ROW_RULES
+            for b in (*r.upload_brands, *r.payment_brands)
+        }
+        listed |= {
+            b
+            for g in store_report.BRAND_GROUP_RULES
+            for c in g.categories
+            for b in c.brands
+        }
+        self.assertEqual(listed & impossible, set())
 
     def test_summary_header_compatibility_with_store_report(self) -> None:
         """审核明细的 SUMMARY_HEADER 扩展为 8 列后，前 5 列仍与 SUMMARY_CORE_HEADER 完全一致。"""

@@ -110,6 +110,12 @@ class BrandConfigValidationTest(unittest.TestCase):
                     load_from(contents, payment=True)
                 self.assertIn("payment_brands.yaml", str(caught.exception))
 
+    def test_robam_brand_keywords_are_loaded(self) -> None:
+        cfg = load_payment_brand_config()
+        appliance_brands = {b: kw for b, kw in cfg.appliance_brand_keywords}
+        self.assertIn("老板", appliance_brands)
+        self.assertEqual(appliance_brands["老板"], ("老板", "ROBAM"))
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -48,8 +48,8 @@ from .validation import (
 )
 
 DETAILS_SHEET_NAME = "家电-明细总表"
-# Owned here only to keep this module's own group-sheet titles from
-# colliding with processors.coupons.digital's / coupon_report.py's sheets.
+# Must stay in sync with processors.coupons.digital.DETAILS_SHEET_NAME.
+# Defined locally to avoid circular import with digital.py.
 DIGITAL_DETAILS_SHEET_NAME = "数码-明细总表"
 REFERENCE_REPORT_SHEET_NAME = "Processing Report"
 
