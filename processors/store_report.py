@@ -28,6 +28,7 @@ from openpyxl.styles import Alignment, Font
 from openpyxl.workbook.workbook import Workbook
 from python_calamine import CalamineWorkbook
 
+from processors.common.config import load_report_brand_mapping
 from processors.common.console import ConsoleReporter
 from processors.common.excel import (
     calamine_rows,
@@ -291,13 +292,7 @@ def normalize_text(value: object) -> str:
     if value is None:
         return ""
     text = str(value).strip()
-    replacements = {
-        "A.O.史密斯": "AO史密斯",
-        "美的系": "美的",
-        "东芝JX": "东芝",
-        "华为（终端）": "华为",
-    }
-    return replacements.get(text, text)
+    return load_report_brand_mapping().get(text, text)
 
 
 @dataclass(frozen=True)

@@ -21,6 +21,7 @@ from pathlib import Path
 from python_calamine import CalamineWorkbook
 from xlsxwriter import Workbook as XlsxWorkbook
 
+from processors.common.config import load_report_brand_mapping
 from processors.common.console import ConsoleReporter, format_amount, format_count
 from processors.common.excel import (
     calamine_rows,
@@ -217,10 +218,7 @@ def digital_extra_summary_rows(
 def map_payment_appliance_key(category: str, brand: str) -> tuple[str, str]:
     """Map payment category and brand to the coupon report naming conventions."""
     target_category = "国产彩电" if category == "电视" else category
-    target_brand = {
-        "美的系": "美的",
-        "A.O.史密斯": "AO史密斯",
-    }.get(brand, brand)
+    target_brand = load_report_brand_mapping().get(brand, brand)
     if (target_category, target_brand) == ("冰箱", "方太"):
         target_category, target_brand = ("厨卫", "方太")
     return target_category, target_brand
@@ -272,7 +270,7 @@ def _parse_payment_summary_rows(
 
         if current_category == "合计" or cat_cell == "合计":
             try:
-                tot_amount = Decimal(str(amount_cell)).quantize(Decimal("0.01"))
+                tot_amount = matching.as_currency(Decimal(str(amount_cell)))
             except (InvalidOperation, TypeError, ValueError):
                 raise ValueError(
                     f"{source_name} 汇总表第 {row_number} 行合计金额无效：{amount_cell!r}"
@@ -326,7 +324,7 @@ def _parse_payment_summary_rows(
 
         brand = str(brand_cell).strip()
         try:
-            amount = Decimal(str(amount_cell)).quantize(Decimal("0.01"))
+            amount = matching.as_currency(Decimal(str(amount_cell)))
         except (InvalidOperation, TypeError, ValueError):
             raise ValueError(
                 f"{source_name} 汇总表第 {row_number} 行金额无效：{amount_cell!r}"
