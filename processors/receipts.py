@@ -333,6 +333,7 @@ def receipt_output_sort_key(
 def prepare_receipt_data(kept_rows: list[list[object]], source_name: str):
     records: list[ReceiptRecord] = []
     key_rows: dict[str, list[int]] = {}
+    excluded_match_keys: set[str] = set()
     referenced_original_invoice_numbers: set[str] = set()
     bridge_originals_by_match_key: dict[str, set[str]] = {}
     excluded_product_records: list[ExcludedProductRecord] = []
@@ -349,13 +350,27 @@ def prepare_receipt_data(kept_rows: list[list[object]], source_name: str):
 
         product_name = normalize_receipt_identifier(row[3])
         if RECEIPTS_EXCLUDED_PRODUCT_KEYWORD in product_name:
+            excluded_doc = normalize_document_number(row[0])
+            try:
+                excluded_date = normalize_receipt_date(
+                    row[1], source_row=source_row, source_name=source_name
+                )
+            except ValueError:
+                excluded_date = None
             excluded_product_records.append(
                 ExcludedProductRecord(
                     source_row=source_row,
-                    document_number=normalize_document_number(row[0]),
+                    document_number=excluded_doc,
                     product_name=product_name,
                 )
             )
+            excluded_key = (
+                receipt_match_key(excluded_date, excluded_doc)
+                if excluded_date is not None and excluded_doc
+                else ""
+            )
+            if excluded_key:
+                excluded_match_keys.add(excluded_key)
             continue
 
         document_number = normalize_document_number(row[0])
@@ -490,7 +505,11 @@ def prepare_receipt_data(kept_rows: list[list[object]], source_name: str):
                     "原票号应为6位日期加单据号",
                 )
             )
-        if has_original and original_invoice_number not in key_rows:
+        if (
+            has_original
+            and original_invoice_number not in key_rows
+            and original_invoice_number not in excluded_match_keys
+        ):
             is_prior_period_reference = (
                 min_receipt_year is not None
                 and is_valid_original_invoice_number(original_invoice_number)

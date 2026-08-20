@@ -107,6 +107,32 @@ class PrepareReceiptDataIssuesTest(unittest.TestCase):
             ),
         )
 
+    def test_beiguo_referenced_original_invoice_is_not_reported_as_unmatched(self) -> None:
+        """A return referencing an excluded 北国 original order must not be reported
+        as an unmatched original invoice issue."""
+        kept_rows = [
+            HEADER,
+            ["ZH0001", "2026-01-24", "", "北国电器"],
+            ["ZH0002", "2026-01-25", "260124ZH0001", "美的空调"],
+        ]
+
+        output_rows, stats, issues = prepare(kept_rows)
+        self.assertEqual([row[0] for row in output_rows], ["ZH0002"])
+        self.assertEqual(issues, [])
+
+    def test_beiguo_excluded_row_with_corrupt_date_does_not_fail(self) -> None:
+        """A corrupt date on a row excluded by business logic must not crash Mode 2."""
+        kept_rows = [
+            HEADER,
+            ["ZH0001", "corrupted-date-not-a-date", "", "北国电器"],
+            ["ZH0002", "2026-01-25", "", "美的空调"],
+        ]
+
+        output_rows, stats, issues = prepare(kept_rows)
+        self.assertEqual([row[0] for row in output_rows], ["ZH0002"])
+        self.assertEqual(len(stats["北国剔除明细"]), 1)
+        self.assertEqual(issues, [])
+
     def test_beiguo_details_list_every_row_in_verbose_mode(self) -> None:
         """The exclusion is a normal statistic; verbose mode traces every
         source row, with no cap."""
