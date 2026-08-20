@@ -21,13 +21,17 @@ from pathlib import Path
 from python_calamine import CalamineWorkbook
 from xlsxwriter import Workbook as XlsxWorkbook
 
+from processors import payment, receipts, submitted
+from processors.common.config import load_report_brand_mapping
 from processors.common.console import ConsoleReporter, format_amount, format_count
 from processors.common.excel import (
     calamine_rows,
     load_measurement_font,
     resolve_font,
+    warn_if_stale,
     write_xlsx_atomically,
 )
+from processors.common.paths import find_data_files
 from processors.coupons import appliance, digital, matching, sources, xlsx_output
 from processors.coupons.report_contract import (
     SUBSIDY_YEAR,
@@ -217,10 +221,7 @@ def digital_extra_summary_rows(
 def map_payment_appliance_key(category: str, brand: str) -> tuple[str, str]:
     """Map payment category and brand to the coupon report naming conventions."""
     target_category = "国产彩电" if category == "电视" else category
-    target_brand = {
-        "美的系": "美的",
-        "A.O.史密斯": "AO史密斯",
-    }.get(brand, brand)
+    target_brand = load_report_brand_mapping().get(brand, brand)
     if (target_category, target_brand) == ("冰箱", "方太"):
         target_category, target_brand = ("厨卫", "方太")
     return target_category, target_brand
@@ -272,7 +273,7 @@ def _parse_payment_summary_rows(
 
         if current_category == "合计" or cat_cell == "合计":
             try:
-                tot_amount = Decimal(str(amount_cell)).quantize(Decimal("0.01"))
+                tot_amount = matching.as_currency(Decimal(str(amount_cell)))
             except (InvalidOperation, TypeError, ValueError):
                 raise ValueError(
                     f"{source_name} 汇总表第 {row_number} 行合计金额无效：{amount_cell!r}"
@@ -326,7 +327,7 @@ def _parse_payment_summary_rows(
 
         brand = str(brand_cell).strip()
         try:
-            amount = Decimal(str(amount_cell)).quantize(Decimal("0.01"))
+            amount = matching.as_currency(Decimal(str(amount_cell)))
         except (InvalidOperation, TypeError, ValueError):
             raise ValueError(
                 f"{source_name} 汇总表第 {row_number} 行金额无效：{amount_cell!r}"
@@ -623,7 +624,41 @@ def write_coupon_workbook(
         )
 
 
+def _check_dependency_freshness(reporter: ConsoleReporter) -> None:
+    data_dir = getattr(sources, "DATA_DIR", None)
+    if data_dir is None or not data_dir.exists():
+        return
+
+    warn_if_stale(
+        reporter,
+        PAYMENT_FILE,
+        find_data_files(
+            data_dir, payment.SOURCE_FILE_KEYWORD, payment.SUPPORTED_SUFFIXES
+        ),
+        warning_title="回款明细依赖产物可能已过期",
+        suggestion="建议先运行模式 3：回款明细",
+    )
+    warn_if_stale(
+        reporter,
+        receipts.OUTPUT_FILE,
+        find_data_files(
+            data_dir, receipts.RECEIPT_STATISTICS_KEYWORD, (".xlsx",)
+        ),
+        warning_title="收款单统计依赖产物可能已过期",
+        suggestion="建议先运行模式 2：收款单统计",
+    )
+    for profile_name, marker in submitted.SUBMITTED_FILE_MARKERS.items():
+        warn_if_stale(
+            reporter,
+            submitted.PROFILES[profile_name].output_file,
+            find_data_files(data_dir, marker, (".xlsx",)),
+            warning_title=f"{profile_name}已上传数据依赖产物可能已过期",
+            suggestion="建议先运行模式 1：已上传数据",
+        )
+
+
 def process_coupon_sales(reporter: ConsoleReporter) -> None:
+    _check_dependency_freshness(reporter)
     coupon_source = sources.COUPON_SOURCE_FILE
     if coupon_source is None:
         # compute_coupon_data() raises the same FileNotFoundError once it

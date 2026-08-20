@@ -90,6 +90,18 @@ def load_brand_mapping() -> dict[str, str]:
 
 
 @lru_cache(maxsize=1)
+def load_report_brand_mapping() -> dict[str, str]:
+    if not BRAND_MAPPING_FILE.exists():
+        return {}
+
+    config = _load_yaml_mapping(BRAND_MAPPING_FILE)
+    return _string_mapping(
+        config.get("report_brand_mapping"),
+        f"{BRAND_MAPPING_FILE.name} 的 report_brand_mapping",
+    )
+
+
+@lru_cache(maxsize=1)
 def load_merchants() -> dict[str, str]:
     """Map each data type (家电 / 数码) to its merchant id.
 

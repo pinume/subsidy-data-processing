@@ -365,7 +365,7 @@ def build_coupon_summary(
         (
             *key,
             grouped_counts[key],
-            float(grouped_totals[key].quantize(Decimal("0.01"))),
+            float(as_currency(grouped_totals[key])),
             grouped_returned_counts[key] or None,
         )
         for key in sorted(grouped_counts)

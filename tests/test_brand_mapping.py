@@ -49,6 +49,14 @@ class BrandMappingTest(unittest.TestCase):
             {"海尔": "海尔系"},
         )
 
+    def test_expected_report_brand_replacements_are_loaded_from_config(self):
+        from processors.common.config import load_report_brand_mapping
+        mapping = load_report_brand_mapping()
+        self.assertEqual(mapping["美的系"], "美的")
+        self.assertEqual(mapping["A.O.史密斯"], "AO史密斯")
+        self.assertEqual(mapping["东芝JX"], "东芝")
+        self.assertEqual(mapping["华为（终端）"], "华为")
+
 
 class BrandConfigValidationTest(unittest.TestCase):
     def test_payment_brand_keywords_preserve_boundary_spaces(self) -> None:
