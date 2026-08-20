@@ -1001,5 +1001,73 @@ class ValidatorRejectsBadOutputTest(unittest.TestCase):
         self.tamper_with_subsidy("审核通过")
 
 
+class SubmittedAmountErrorCellTest(unittest.TestCase):
+    def test_rejects_excel_error_cell_in_amount(self) -> None:
+        profile_name = "家电"
+        with tempfile.TemporaryDirectory() as directory:
+            data_dir = Path(directory)
+            marker = submitted_file_marker(profile_name)
+            source_path = data_dir / f"{marker}_export.xlsx"
+            workbook = Workbook()
+            sheet = workbook.active
+            sheet.append(["报表标题"])
+            sheet.append(list(SUBMITTED_HEADER))
+            row = submitted_row(SUBMITTED_HEADER)
+            sheet.append(row)
+            amount_col = column_index_from_string(AMOUNT_COLUMN)
+            sheet.cell(row=3, column=amount_col, value="#N/A")
+            workbook.save(source_path)
+            workbook.close()
+
+            submitted.configure_data_dir(data_dir)
+            with self.assertRaisesRegex(ValueError, "是 Excel 错误值"):
+                submitted.build_report(profile_name)
+
+    def test_rejects_formula_without_cached_value_in_amount(self) -> None:
+        profile_name = "家电"
+        with tempfile.TemporaryDirectory() as directory:
+            data_dir = Path(directory)
+            marker = submitted_file_marker(profile_name)
+            source_path = data_dir / f"{marker}_export.xlsx"
+            workbook = Workbook()
+            sheet = workbook.active
+            sheet.append(["报表标题"])
+            sheet.append(list(SUBMITTED_HEADER))
+            row = submitted_row(SUBMITTED_HEADER)
+            sheet.append(row)
+            amount_col = column_index_from_string(AMOUNT_COLUMN)
+            sheet.cell(row=3, column=amount_col, value="=SUM(A1:A2)")
+            workbook.save(source_path)
+            workbook.close()
+
+            submitted.configure_data_dir(data_dir)
+            with self.assertRaisesRegex(ValueError, "是公式但没有缓存计算结果"):
+                submitted.build_report(profile_name)
+
+    def test_accepts_genuinely_blank_amount_cells_without_error(self) -> None:
+        profile_name = "家电"
+        with tempfile.TemporaryDirectory() as directory:
+            data_dir = Path(directory)
+            marker = submitted_file_marker(profile_name)
+            source_path = data_dir / f"{marker}_export.xlsx"
+            workbook = Workbook()
+            sheet = workbook.active
+            sheet.append(["报表标题"])
+            sheet.append(list(SUBMITTED_HEADER))
+            row1 = submitted_row(SUBMITTED_HEADER, reference="12345678901N")
+            row1[column_index_from_string(AMOUNT_COLUMN) - 1] = None
+            sheet.append(row1)
+            row2 = submitted_row(SUBMITTED_HEADER, reference="12345678902N")
+            row2[column_index_from_string(AMOUNT_COLUMN) - 1] = ""
+            sheet.append(row2)
+            workbook.save(source_path)
+            workbook.close()
+
+            submitted.configure_data_dir(data_dir)
+            report = submitted.build_report(profile_name)
+            self.assertEqual(report.data_row_count, 2)
+
+
 if __name__ == "__main__":
     unittest.main()
+

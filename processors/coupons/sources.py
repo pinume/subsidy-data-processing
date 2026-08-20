@@ -554,8 +554,9 @@ def read_coupon_export(
         blank_subsidy_cells = {
             (row_number, column)
             for row_number, values in enumerate(all_rows[2:-1], start=3)
+            if (family_column >= len(values) or values[family_column] in (None, ""))
+            and (digital_column >= len(values) or values[digital_column] in (None, ""))
             for column in (family_column, digital_column)
-            if column >= len(values) or values[column] in (None, "")
         }
         if blank_subsidy_cells:
             source_type_book = load_workbook(

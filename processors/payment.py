@@ -350,18 +350,28 @@ def _collect_normalized_detail(
     subsidy_index_in_headers = profile.detail_headers.index("补贴金额")
     subsidy_header = "补贴金额"
     formula_rows_iterator = None
+    peeked_row = None
 
     def _find_source_cell(row_number: int, column_index: int):
         # Advances the cell-preserving iterator forward only as far as needed;
         # opens the (expensive) openpyxl workbook lazily on first use.
-        nonlocal formula_rows_iterator
+        nonlocal formula_rows_iterator, peeked_row
         if formula_rows_iterator is None:
             formula_sheet = formula_workbook()[sheet_name]
             formula_rows_iterator = _iter_actual_cell_rows_with_numbers(formula_sheet)
+        if peeked_row is not None:
+            formula_row_number, formula_row = peeked_row
+            if formula_row_number == row_number:
+                peeked_row = None
+                return _cell_value(formula_row, column_index)
+            if formula_row_number > row_number:
+                return None
+            peeked_row = None
         for formula_row_number, formula_row in formula_rows_iterator:
             if formula_row_number == row_number:
                 return _cell_value(formula_row, column_index)
             if formula_row_number > row_number:
+                peeked_row = (formula_row_number, formula_row)
                 break
         return None
 

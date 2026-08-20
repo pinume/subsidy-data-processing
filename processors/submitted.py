@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from pathlib import Path
 
+from openpyxl import load_workbook
 from openpyxl.utils import column_index_from_string
 from python_calamine import CalamineWorkbook
 from xlsxwriter import Workbook
@@ -234,6 +235,7 @@ def build_report(
             # after input validation and records the removal first.
             deleted_invalid_files.append(path.name)
             continue
+        formula_book = None
         try:
             rows = (
                 _trim_trailing_none(row)
@@ -272,10 +274,15 @@ def build_report(
             elif header != expected_header:
                 raise ValueError(f"{path.name} 的表头与第一个文件不一致")
 
+            blank_amount_rows: set[int] = set()
             for source_row, row in enumerate(rows, start=3):
                 selected_row = select_columns(row)
                 if not any(value not in (None, "") for value in selected_row):
                     continue
+
+                raw_amount = selected_row[2]
+                if raw_amount in (None, ""):
+                    blank_amount_rows.add(source_row)
 
                 output_row = add_subsidy_column(
                     selected_row,
@@ -317,8 +324,47 @@ def build_report(
 
                 data_rows.append(output_row)
                 data_row_count += 1
+
+            if blank_amount_rows:
+                amount_col = column_index_from_string("F")
+                min_r = min(blank_amount_rows)
+                max_r = max(blank_amount_rows)
+                formula_book = load_workbook(path, read_only=True, data_only=False)
+                try:
+                    sheet = formula_book.worksheets[0]
+                    if hasattr(sheet, "reset_dimensions"):
+                        sheet.reset_dimensions()
+                    for row_idx, row_cells in enumerate(
+                        sheet.iter_rows(
+                            min_row=min_r,
+                            max_row=max_r,
+                            min_col=amount_col,
+                            max_col=amount_col,
+                        ),
+                        start=min_r,
+                    ):
+                        if row_idx not in blank_amount_rows:
+                            continue
+                        cell = row_cells[0]
+                        if cell.data_type == "e":
+                            raise ValueError(
+                                f"{path.name} 第 {row_idx} 行字段“交易金额”"
+                                f"是 Excel 错误值：{cell.value!r}"
+                            )
+                        if cell.data_type == "f":
+                            raise ValueError(
+                                f"{path.name} 第 {row_idx} 行字段“交易金额”"
+                                "是公式但没有缓存计算结果；"
+                                "请先用 Excel/WPS 打开并保存，或将公式转换为数值"
+                            )
+                finally:
+                    formula_book.close()
+                    formula_book = None
+
             valid_file_count += 1
         finally:
+            if formula_book is not None:
+                formula_book.close()
             source_workbook.close()
 
     if output_header is None:

@@ -680,14 +680,33 @@ class PaymentPipelineTests(unittest.TestCase):
 
             self.assertEqual(list(output_dir.iterdir()), [])
 
-    def test_empty_data_directory_is_reported(self) -> None:
+    def test_find_source_cell_preserves_peeked_row(self) -> None:
+        profile = payment.PROFILES["家电"]
         with TemporaryDirectory(dir=".") as temporary_dir:
             temporary_path = Path(temporary_dir).resolve()
-            (temporary_path / "data").mkdir()
+            data_dir = temporary_path / "data"
+            data_dir.mkdir()
+            output_dir = temporary_path / "output"
+            output_dir.mkdir()
 
-            with self.assertRaisesRegex(FileNotFoundError, "回款原始数据文件"):
-                self._run(temporary_path, {"家电": "ABC123", "数码": "ABC123"})
+            source_path = data_dir / "以旧换新补贴明细_test.xlsx"
+            wb = Workbook()
+            ws = wb.active
+            ws.append(profile.detail_headers)
+            row2 = _detail_row(profile, "A04-空调", "格力空调", None)
+            ws.append(row2)
+            ws.append([])
+            row4 = _detail_row(profile, "A04-空调", "格力空调", None)
+            ws.append(row4)
+            subsidy_col = profile.detail_headers.index("补贴金额") + 1
+            ws.cell(row=4, column=subsidy_col, value="#N/A")
+            wb.save(source_path)
+            wb.close()
+
+            with self.assertRaisesRegex(ValueError, "是 Excel 错误值"):
+                self._run(temporary_path, {"家电": "ABC123"})
 
 
 if __name__ == "__main__":
     unittest.main()
+
